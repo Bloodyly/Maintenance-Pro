@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- 
+        Bewusste Design-Spezifikation: HTTP-Klartext-Verkehr ist erlaubt 
+        für alle IP-Adressen und konfigurierte Domains, da Transport-Verschlüsselung 
+        direkt in der App über AES-256-GCM für Credentials und Payloads geritzt wird.
+    -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

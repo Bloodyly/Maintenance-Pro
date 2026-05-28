@@ -1,0 +1,9 @@
+{
+  "name": "Auslöselisten - Field Service",
+  "description": "Eine Android-App für Field-Service-Techniker zur Wartung von Brandmelde-, ELA- und Gefahrenmeldeanlagen mit dynamischen Auslöselisten und Offline-First-Verschlüsselung.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

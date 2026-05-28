@@ -1,0 +1,88 @@
+version: "3.8"
+
+services:
+  # 1. WebUI Service - Private internal management interface
+  webui:
+    build: ./webui
+    container_name: maintenance_webui
+    restart: unless-stopped
+    environment:
+      - PORT=8080
+      - DB_PATH=/shared_db/protocols.db
+      - SAMBA_SHARE_PATH=/samba_shares
+    volumes:
+      - db_data:/shared_db:ro  # Database accesses via RO (read-only) or RW depending on needs
+      - samba_data:/samba_shares:rw # Direct write to Samba share for protocol storage
+    networks:
+      - internal_lan
+    ports:
+      - "8080:8080" # Exposed only to the internal corporate LAN
+
+  # 2. Netlink Service - Public-facing API handler with Android Clients
+  netlink:
+    build: ./netlink
+    container_name: maintenance_netlink
+    restart: unless-stopped
+    environment:
+      - PORT=3000
+      - DB_PATH=/shared_db/protocols.db
+      - SERVER_CODEWORD=77-XJ-900-PLX-22 # Symmetrischem AES Key
+    volumes:
+      - db_data:/shared_db:rw  # SHARED DIRECTORY WITH THE DB (ProtocolDB Volume)
+    networks:
+      - internet_wan # Only has internet access, no internal_lan connection
+    ports:
+      - "3000:3000" # Public gateway for secure HTTPS/HTTP requests from apps
+
+  # 3. ProtocolDB Service - Internal database explorer and schema validator
+  # Uses the shared SQLite workspace volume, keeping it separated from the WAN netlink network
+  protocol_db:
+    image: alpine:latest
+    container_name: maintenance_protocol_db
+    restart: unless-stopped
+    volumes:
+      - db_data:/shared_db:rw
+    command: /bin/sh -c "echo 'Database service running. Holding shared DB directory...' && tail -f /dev/null"
+    networks:
+      - internal_lan # Accessible only internally, no WAN connection
+
+  # 4. ProtocolCore - Automated processing, evaluation, interpretation & backup worker
+  protocol_core:
+    build: ./protocol_core
+    container_name: maintenance_protocol_core
+    restart: unless-stopped
+    environment:
+      - DB_PATH=/shared_db/protocols.db
+      - SAMBA_SHARE_PATH=/samba_shares
+    volumes:
+      - db_data:/shared_db:rw
+      - samba_data:/samba_shares:rw
+    networks:
+      - internal_lan
+
+  # 5. Samba Service - Exposes network shared folders
+  samba:
+    build: ./samba
+    container_name: maintenance_samba
+    restart: unless-stopped
+    ports:
+      - "139:139"
+      - "445:445"
+    volumes:
+      - samba_data:/samba_shares:rw
+    networks:
+      - internal_lan
+
+networks:
+  # Secure Internal LAN Network: Has no internet access (strictly private)
+  internal_lan:
+    internal: true
+  # WAN Internet Network: Allows external access, connecting Netlink with Android apps
+  internet_wan:
+    driver: bridge
+
+volumes:
+  # Shared sqlite/db storage directory (Strictly bridges Netlink & ProtocolDB)
+  db_data:
+  # Shared Samba folders volume
+  samba_data:

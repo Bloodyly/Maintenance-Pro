@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Maintenance Pro</string>
+    <string name="title_configuration">Systemkonfiguration</string>
+    <string name="title_search">Auslöselisten</string>
+    <string name="title_inspections">Lokale Wartungen</string>
+    <string name="title_matrix_edit">Matrix-Konfiguration</string>
+    
+    <!-- Settings Labels -->
+    <string name="label_server_address">Server-Adresse</string>
+    <string name="label_port">Port</string>
+    <string name="label_username">Benutzername</string>
+    <string name="label_password">Passwort</string>
+    <string name="label_mainkey">Codewort</string>
+    <string name="label_device_status">Gerätestatus</string>
+    <string name="label_app_version">App-Version</string>
+    <string name="warning_restart">Änderungen an der Server-Konfiguration erfordern einen Neustart der App für die vollständige Synchronisierung.</string>
+    
+    <!-- Buttons -->
+    <string name="btn_save">Speichern</string>
+    <string name="btn_clear_cache">Cache löschen</string>
+    <string name="btn_download">Laden</string>
+    <string name="btn_cancel">Abbrechen</string>
+    <string name="btn_sync">Synchronisieren</string>
+    <string name="btn_add_group">GRUPPE HINZUFÜGEN</string>
+    <string name="btn_add_slot">SLOT HINZUFÜGEN</string>
+    <string name="btn_discard">Verwerfen</string>
+    <string name="btn_archives">Archiv</string>
+    <string name="btn_qr_scan">QR Setup</string>
+    
+    <!-- Status & Alerts -->
+    <string name="status_online">ONLINE</string>
+    <string name="status_offline">OFFLINE</string>
+    <string name="status_downloaded">Heruntergeladen</string>
+    <string name="status_ready_to_download">Bereit zum Download</string>
+    <string name="status_synchronized">Synchronisiert</string>
+    <string name="status_archived">Archiviert</string>
+    <string name="error_decryption">Fehler beim Entschlüsseln! Falsches Codewort?</string>
+    <string name="error_fetch">Serververbindung fehlgeschlagen.</string>
+    <string name="empty_results">Keine Ergebnisse gefunden.</string>
+    
+    <!-- Matrix Warning -->
+    <string name="matrix_warning_title">Strukturänderung aktiv</string>
+    <string name="matrix_warning_desc">Sie bearbeiten das Melder-Matrix-Layout. Das Hinzufügen von Spalten wirkt sich auf alle Gruppen aus.</string>
+    <string name="confirm_delete_group">Möchten Sie diese Gruppe wirklich löschen?</string>
+</resources>
