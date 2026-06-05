@@ -3,16 +3,12 @@ FROM alpine:3.18
 # Install Samba utilities
 RUN apk add --no-cache samba samba-common-tools bash
 
-# Copy custom config
+# Copy custom config & startup script
 COPY smb.conf /etc/samba/smb.conf
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 
-# Setup directory structures
-RUN mkdir -p /samba_shares/Melderlisten \
-    && mkdir -p /samba_shares/Protokolle \
-    && mkdir -p /samba_shares/Archiv \
-    && chmod -R 777 /samba_shares
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 139 445
 
-# Start smbd and nmbd processes in foreground
-CMD ["smbd", "--foreground", "--no-process-group", "--log-stdout"]
+CMD ["/usr/local/bin/entrypoint.sh"]

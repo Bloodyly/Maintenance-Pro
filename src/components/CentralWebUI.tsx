@@ -35,7 +35,8 @@ import {
   AlertCircle,
   SlidersHorizontal,
   Undo,
-  Redo
+  Redo,
+  Play
 } from "lucide-react";
 import * as XLSX from "xlsx";
 
@@ -2269,146 +2270,233 @@ export default function CentralWebUI({
             </button>
           </div>
 
-          {/* Users Table / Grid */}
-          <div className="bg-white border-2 border-slate-200 rounded-lg shadow-sm overflow-hidden flex flex-col">
-            <div className="bg-slate-100 px-4 py-3 border-b border-slate-200 flex justify-between items-center text-xs font-mono">
-              <span className="font-bold text-slate-700">Aktive Benutzerkonten im SQLite Mandantenspeicher</span>
-              <span className="text-slate-500 uppercase text-[9px] bg-white border px-1.5 py-0.5 rounded">
-                Partition: md_{currentTenant?.id}.db
-              </span>
-            </div>
+          {/* Layout Grid for Employee Table & Play Store QR */}
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 items-start">
+            
+            {/* Left Column: Users Table / Grid */}
+            <div className="bg-white border-2 border-slate-200 rounded-lg shadow-sm overflow-hidden flex flex-col lg:col-span-3">
+              <div className="bg-slate-100 px-4 py-3 border-b border-slate-200 flex justify-between items-center text-xs font-mono">
+                <span className="font-bold text-slate-700">Aktive Benutzerkonten im SQLite Mandantenspeicher</span>
+                <span className="text-slate-500 uppercase text-[9px] bg-white border px-1.5 py-0.5 rounded">
+                  Partition: md_{currentTenant?.id}.db
+                </span>
+              </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-400 font-bold uppercase tracking-wider text-[10px]">
-                    <th className="py-3.5 px-4 font-mono">Mitarbeiter</th>
-                    <th className="py-3.5 px-4 font-mono">Rolle / Berechtigung</th>
-                    <th className="py-3.5 px-4 font-mono">Credentials (Login)</th>
-                    <th className="py-3.5 px-4 font-mono">Mainkey (Codewort)</th>
-                    <th className="py-3.5 px-4 font-mono">Zustand</th>
-                    <th className="py-3.5 px-4 text-center font-mono w-72">Geräte - Einrichtung & Verwaltung</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 font-sans">
-                  {currentTenant?.users && currentTenant.users.length > 0 ? (
-                    currentTenant.users.map((u: any) => {
-                      const isLocked = u.status === "Gesperrt";
-                      return (
-                        <tr key={u.id} className={`hover:bg-slate-50 transition-colors ${isLocked ? "bg-red-50/10" : ""}`}>
-                          
-                          {/* Name */}
-                          <td className="py-4 px-4">
-                            <div className="flex items-center gap-2.5">
-                              <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold font-mono text-xs ${
-                                isLocked ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"
-                              }`}>
-                                {u.name.split(" ").map((n: string) => n[0]).join("")}
-                              </div>
-                              <div>
-                                <p className="font-bold text-slate-800">{u.name}</p>
-                                <p className="text-[10px] text-slate-400 font-mono mt-0.5">ID: {u.id}</p>
-                              </div>
-                            </div>
-                          </td>
-
-                          {/* Rolle */}
-                          <td className="py-4 px-4">
-                            <span className={`inline-block px-2.5 py-1 rounded font-bold text-[10px] font-sans ${
-                              u.role === "Büro-Administrator" 
-                                ? "bg-purple-100 text-purple-800"
-                                : "bg-sky-100 text-sky-800"
-                            }`}>
-                              {u.role}
-                            </span>
-                          </td>
-
-                          {/* Credentials */}
-                          <td className="py-4 px-4 font-mono">
-                            <div className="space-y-0.5">
-                              <p className="text-[11px] text-slate-700"><span className="text-slate-400 text-[10px] select-none">Benutzer:</span> {u.username}</p>
-                              <p className="text-[10px] text-slate-505"><span className="text-slate-400 text-[9px] select-none">Passwort:</span> {u.password}</p>
-                            </div>
-                          </td>
-
-                          {/* Codewort */}
-                          <td className="py-4 px-4 font-mono text-xs text-slate-700">
-                            {u.codeword}
-                          </td>
-
-                          {/* Status */}
-                          <td className="py-4 px-4">
-                            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-bold rounded-full ${
-                              isLocked 
-                                ? "bg-red-100 text-red-800 font-semibold"
-                                : "bg-green-100 text-green-800 font-semibold"
-                            }`}>
-                              <span className={`w-1.5 h-1.5 rounded-full ${isLocked ? "bg-red-500" : "bg-green-500"}`}></span>
-                              {u.status}
-                            </span>
-                          </td>
-
-                          {/* Actions */}
-                          <td className="py-4 px-4 justify-end flex items-center gap-1.5">
-                            
-                            {/* Toggle Lock Actions */}
-                            <button
-                              onClick={() => handleToggleBlockUser(u.id)}
-                              className={`px-3 py-1.5 text-[10px] font-bold rounded shadow-sm border transition-all flex items-center gap-0.5 cursor-pointer ${
-                                isLocked 
-                                  ? "bg-amber-500 hover:bg-amber-600 text-white border-amber-600"
-                                  : "bg-slate-100 hover:bg-slate-205 text-slate-700 border-slate-300"
-                              }`}
-                              title={isLocked ? "Profil entsperren und aktiv schalten" : "Profil sperren (Login sperren)"}
-                            >
-                              {isLocked ? "Freigeben" : "Sperren"}
-                            </button>
-
-                            {/* QR Code trigger */}
-                            <button
-                              onClick={() => setQrModalUser(u)}
-                              className="px-3 py-1.5 bg-white border-2 border-[#003d9b] text-[#003d9b] hover:bg-indigo-50 font-bold text-[10px] rounded shadow-sm flex items-center gap-1 transition-colors cursor-pointer"
-                              title="Einrichtungs-QR für QR Scanner der Android App anzeigen"
-                            >
-                              <QrCode size={11} /> Einstiegs-QR
-                            </button>
-
-                            {/* onboarding sheet */}
-                            <button
-                              onClick={() => setOnboardingModalUser(u)}
-                              className="px-3 py-1.5 bg-white border-2 border-emerald-600 text-emerald-600 hover:bg-emerald-50 font-bold text-[10px] rounded shadow-sm flex items-center gap-1 transition-colors cursor-pointer"
-                              title="Offizielles Onboarding Hinweisblatt mit QR Code zum drucken erstellen"
-                            >
-                              <Printer size={11} /> Hinweisblatt
-                            </button>
-
-                            {/* Delete Button */}
-                            <button
-                              onClick={() => {
-                                if (confirm(`Möchten Sie den Mitarbeiter "${u.name}" dauerhaft löschen?`)) {
-                                  handleDeleteUser(u.id);
-                                }
-                              }}
-                              className="p-1 px-3 py-1.5 text-center bg-red-600 hover:bg-red-700 text-white font-bold text-[10px] rounded shadow-sm transition-colors cursor-pointer"
-                              title="Mitarbeiter aus dem Mandanten entfernen"
-                            >
-                              <Trash2 size={11} />
-                            </button>
-
-                          </td>
-                        </tr>
-                      );
-                    })
-                  ) : (
-                    <tr>
-                      <td colSpan={6} className="py-12 text-center text-slate-400 font-mono text-xs">
-                        Keine Mitarbeiterprofile in diesem Mandanten hinterlegt. Klicken Sie auf "+ Mitarbeiter anlegen" um neu zu initialisieren.
-                      </td>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-400 font-bold uppercase tracking-wider text-[10px]">
+                      <th className="py-3.5 px-4 font-mono">Mitarbeiter</th>
+                      <th className="py-3.5 px-4 font-mono">Rolle / Berechtigung</th>
+                      <th className="py-3.5 px-4 font-mono">Credentials (Login)</th>
+                      <th className="py-3.5 px-4 font-mono">Mainkey (Codewort)</th>
+                      <th className="py-3.5 px-4 font-mono">Zustand</th>
+                      <th className="py-3.5 px-4 text-center font-mono w-72">Geräte - Einrichtung & Verwaltung</th>
                     </tr>
-                  )}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-sans">
+                    {currentTenant?.users && currentTenant.users.length > 0 ? (
+                      currentTenant.users.map((u: any) => {
+                        const isLocked = u.status === "Gesperrt";
+                        return (
+                          <tr key={u.id} className={`hover:bg-slate-50 transition-colors ${isLocked ? "bg-red-50/10" : ""}`}>
+                            
+                            {/* Name */}
+                            <td className="py-4 px-4">
+                              <div className="flex items-center gap-2.5">
+                                <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold font-mono text-xs ${
+                                  isLocked ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"
+                                }`}>
+                                  {u.name.split(" ").map((n: string) => n[0]).join("")}
+                                </div>
+                                <div>
+                                  <p className="font-bold text-slate-800">{u.name}</p>
+                                  <p className="text-[10px] text-slate-400 font-mono mt-0.5">ID: {u.id}</p>
+                                </div>
+                              </div>
+                            </td>
+
+                            {/* Rolle */}
+                            <td className="py-4 px-4">
+                              <span className={`inline-block px-2.5 py-1 rounded font-bold text-[10px] font-sans ${
+                                u.role === "Büro-Administrator" 
+                                  ? "bg-purple-100 text-purple-800"
+                                  : "bg-sky-100 text-sky-800"
+                              }`}>
+                                {u.role}
+                              </span>
+                            </td>
+
+                            {/* Credentials */}
+                            <td className="py-4 px-4 font-mono">
+                              <div className="space-y-0.5">
+                                <p className="text-[11px] text-slate-700"><span className="text-slate-400 text-[10px] select-none">Benutzer:</span> {u.username}</p>
+                                <p className="text-[10px] text-slate-505"><span className="text-slate-400 text-[9px] select-none">Passwort:</span> {u.password}</p>
+                              </div>
+                            </td>
+
+                            {/* Codewort */}
+                            <td className="py-4 px-4 font-mono text-xs text-slate-700">
+                              {u.codeword}
+                            </td>
+
+                            {/* Status */}
+                            <td className="py-4 px-4">
+                              <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-bold rounded-full ${
+                                isLocked 
+                                  ? "bg-red-100 text-red-800 font-semibold"
+                                  : "bg-green-100 text-green-800 font-semibold"
+                              }`}>
+                                <span className={`w-1.5 h-1.5 rounded-full ${isLocked ? "bg-red-500" : "bg-green-500"}`}></span>
+                                {u.status}
+                              </span>
+                            </td>
+
+                            {/* Actions */}
+                            <td className="py-4 px-4 justify-end flex items-center gap-1.5">
+                              
+                              {/* Toggle Lock Actions */}
+                              <button
+                                onClick={() => handleToggleBlockUser(u.id)}
+                                className={`px-3 py-1.5 text-[10px] font-bold rounded shadow-sm border transition-all flex items-center gap-0.5 cursor-pointer ${
+                                  isLocked 
+                                    ? "bg-amber-500 hover:bg-amber-600 text-white border-amber-600"
+                                    : "bg-slate-100 hover:bg-slate-205 text-slate-700 border-slate-300"
+                                }`}
+                                title={isLocked ? "Profil entsperren und aktiv schalten" : "Profil sperren (Login sperren)"}
+                              >
+                                {isLocked ? "Freigeben" : "Sperren"}
+                              </button>
+
+                              {/* QR Code trigger */}
+                              <button
+                                onClick={() => setQrModalUser(u)}
+                                className="px-3 py-1.5 bg-white border-2 border-[#003d9b] text-[#003d9b] hover:bg-indigo-50 font-bold text-[10px] rounded shadow-sm flex items-center gap-1 transition-colors cursor-pointer"
+                                title="Einrichtungs-QR für QR Scanner der Android App anzeigen"
+                              >
+                                <QrCode size={11} /> Einstiegs-QR
+                              </button>
+
+                              {/* onboarding sheet */}
+                              <button
+                                onClick={() => setOnboardingModalUser(u)}
+                                className="px-3 py-1.5 bg-white border-2 border-emerald-600 text-emerald-600 hover:bg-emerald-50 font-bold text-[10px] rounded shadow-sm flex items-center gap-1 transition-colors cursor-pointer"
+                                title="Offizielles Onboarding Hinweisblatt mit QR Code zum drucken erstellen"
+                              >
+                                <Printer size={11} /> Hinweisblatt
+                              </button>
+
+                              {/* Delete Button */}
+                              <button
+                                onClick={() => {
+                                  if (confirm(`Möchten Sie den Mitarbeiter "${u.name}" dauerhaft löschen?`)) {
+                                    handleDeleteUser(u.id);
+                                  }
+                                }}
+                                className="p-1 px-3 py-1.5 text-center bg-red-600 hover:bg-red-700 text-white font-bold text-[10px] rounded shadow-sm transition-colors cursor-pointer"
+                                title="Mitarbeiter aus dem Mandanten entfernen"
+                              >
+                                <Trash2 size={11} />
+                              </button>
+
+                            </td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={6} className="py-12 text-center text-slate-400 font-mono text-xs">
+                          Keine Mitarbeiterprofile in diesem Mandanten hinterlegt. Klicken Sie auf "+ Mitarbeiter anlegen" um neu zu initialisieren.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
+
+            {/* Right Column: Google Play Store App Download Card */}
+            <div className="bg-slate-900 border-2 border-slate-800 rounded-lg p-5 shadow-md text-white space-y-4 flex flex-col items-center justify-between lg:col-span-1 min-h-[440px]">
+              {/* Card Header */}
+              <div className="w-full text-left space-y-1">
+                <div className="flex items-center gap-1.5 text-[9px] font-extrabold uppercase text-emerald-400 tracking-wider font-mono">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  Geprüft &amp; Veröffentlicht
+                </div>
+                <h3 className="text-xs font-black text-slate-100 uppercase tracking-wide flex items-center gap-1.5 pt-0.5">
+                  <Play size={13} className="text-[#00c1f6]" /> Android Service-App
+                </h3>
+                <p className="text-[10px] text-slate-400 leading-normal">
+                  Installieren Sie die offizielle App auf den Arbeitsgeräten Ihrer Außendiensttechniker für den Vor-Ort-Gebrauch.
+                </p>
+              </div>
+
+              {/* Advanced SVG Play Store QR Code */}
+              <div className="p-3 bg-white rounded-lg shadow-sm flex justify-center items-center">
+                <svg className="w-32 h-32 select-none" viewBox="0 0 100 100">
+                  {/* QR Code Anchor Boxes */}
+                  <rect x="5" y="5" width="25" height="25" fill="#0f172a" rx="3" />
+                  <rect x="10" y="10" width="15" height="15" fill="white" rx="1" />
+                  <rect x="13" y="13" width="9" height="9" fill="#003d9b" rx="1" />
+
+                  <rect x="70" y="5" width="25" height="25" fill="#0f172a" rx="3" />
+                  <rect x="75" y="10" width="15" height="15" fill="white" rx="1" />
+                  <rect x="78" y="13" width="9" height="9" fill="#003d9b" rx="1" />
+
+                  <rect x="5" y="70" width="25" height="25" fill="#0f172a" rx="3" />
+                  <rect x="10" y="75" width="15" height="15" fill="white" rx="1" />
+                  <rect x="13" y="78" width="9" height="9" fill="#003d9b" rx="1" />
+
+                  {/* Simulated random QR data blocks using fine SVG paths */}
+                  <path d="M 35 10 L 40 10 M 45 10 L 55 10 M 60 10 L 65 10" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" />
+                  <path d="M 35 15 L 45 15 M 50 15 L 55 15 M 65 15 L 65 20" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" />
+                  <path d="M 35 20 L 50 20 M 60 20 L 65 20" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" />
+                  <path d="M 35 25 L 40 25 M 48 25 L 58 25 M 62 25 L 65 25" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" />
+
+                  <path d="M 10 35 L 25 35 M 35 35 L 45 35 M 55 35 L 75 35 M 85 35 L 90 35" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" />
+                  <path d="M 5 40 L 15 40 M 30 40 L 40 40 M 50 40 L 65 40 M 75 40 L 95 40" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" />
+                  <path d="M 15 45 L 20 45 M 35 45 L 55 45 M 60 45 L 80 45" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" />
+                  <path d="M 5 50 L 25 50 M 30 50 L 50 50 M 55 50 L 65 50 M 70 50 L 95 50" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" />
+                  <path d="M 10 55 L 20 55 M 35 55 L 45 55 M 55 55 L 75 55 M 80 55 L 90 55" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" />
+
+                  <path d="M 35 70 L 45 70 M 55 70 L 65 70 M 80 70 L 90 70" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" />
+                  <path d="M 35 75 L 40 75 M 50 75 L 65 75 M 75 75 L 95 75" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" />
+                  <path d="M 35 80 L 55 80 M 60 80 L 70 80 M 85 80 L 90 80" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" />
+                  <path d="M 35 85 L 40 85 M 48 85 L 58 85 M 68 85 L 78 85 M 85 85 L 95 85" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" />
+                  <path d="M 35 90 L 45 90 M 50 90 L 60 90 M 70 90 L 90 90" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" />
+
+                  {/* Center Google Play themed visual target box */}
+                  <rect x="41" y="41" width="18" height="18" fill="white" rx="3.5" stroke="#0f172a" strokeWidth="1" />
+                  {/* Play store icon colored triangles */}
+                  <path d="M 45 44 L 54.5 49.5 L 45 55 Z" fill="#00C1F6" />
+                  <path d="M 45 44 L 49.5 48.5 L 45 52 Z" fill="#FF2C54" />
+                  <path d="M 49.5 48.5 L 54.5 49.5 L 51 51.5 Z" fill="#FFBA00" />
+                  <path d="M 45 52 L 51 52 L 54.5 49.5 L 45 55 Z" fill="#00E57F" />
+                </svg>
+              </div>
+
+              <div className="w-full space-y-2.5 text-center">
+                <span className="inline-block bg-slate-850 border border-slate-800 px-3 py-1.5 rounded text-[8.5px] font-mono tracking-tight text-slate-300 w-full">
+                  App Store Package ID: 
+                  <span className="block font-bold text-[#00c1f6] uppercase tracking-normal text-[8.5px] mt-0.5">com.securesys.maintenance</span>
+                </span>
+                
+                <p className="text-[10.5px] text-slate-400 leading-normal">
+                  Scannen Sie den QR-Code mit der Handy-Kamera ein, um die App im Google Play Store schnell aufzurufen.
+                </p>
+
+                <a 
+                  href="https://play.google.com/store/apps/details?id=com.securesys.maintenance.service" 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-[#00c1f6]/10 hover:bg-[#00c1f6]/20 text-[#00c1f6] border border-[#00c1f6]/30 font-extrabold text-xs rounded transition-all cursor-pointer shadow-sm active:scale-95"
+                  title="Öffne Mock Play Store Link"
+                >
+                  <Play size={11} fill="currentColor" /> Play Store öffnen
+                </a>
+              </div>
+            </div>
+
           </div>
         </div>
       )}
