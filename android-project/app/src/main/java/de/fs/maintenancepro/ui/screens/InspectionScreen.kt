@@ -42,6 +42,16 @@ fun InspectionScreen(
     val allProtocols by viewModel.protocols.collectAsState(initial = emptyList())
     val protocolEntity = allProtocols.find { it.id == protocolId }
 
+    LaunchedEffect(protocolId) {
+        viewModel.setActiveProtocolId(protocolId)
+    }
+
+    DisposableEffect(protocolId) {
+        onDispose {
+            viewModel.setActiveProtocolId(null)
+        }
+    }
+
     if (protocolEntity == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()

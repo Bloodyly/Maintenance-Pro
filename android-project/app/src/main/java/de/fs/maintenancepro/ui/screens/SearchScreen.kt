@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import de.fs.maintenancepro.R
 import de.fs.maintenancepro.data.remote.ProtocolItemDto
+import de.fs.maintenancepro.ui.components.StatusHeaderBadge
 import de.fs.maintenancepro.ui.theme.*
 import de.fs.maintenancepro.ui.viewmodel.MainViewModel
 
@@ -40,6 +41,7 @@ fun SearchScreen(
 ) {
     val searchQuery by viewModel.searchQuery.collectAsState()
     val isOffline by viewModel.isOffline.collectAsState()
+    val liveModusEnabled by viewModel.liveModusEnabled.collectAsState()
 
     // Mock searches matching screens
     val remoteItems = listOf(
@@ -50,7 +52,8 @@ fun SearchScreen(
             contract_number = "V-2023-9941-Z",
             interval = "Jährlich",
             system_type = "BMA",
-            status = "ready_to_download"
+            status = "ready_to_download",
+            is_live = true
         ),
         ProtocolItemDto(
             id = "2",
@@ -87,6 +90,9 @@ fun SearchScreen(
                     IconButton(onClick = { viewModel.processSyncQueue() }) {
                         Icon(Icons.Default.Sync, contentDescription = null, tint = IndustrialPrimary)
                     }
+                },
+                actions = {
+                    StatusHeaderBadge(viewModel)
                 }
             )
         },
@@ -141,6 +147,7 @@ fun SearchScreen(
                 items(filteredItems) { item ->
                     ProtocolCard(
                         item = item,
+                        isLiveEditing = (liveModusEnabled && item.is_live == true),
                         onDownload = { viewModel.downloadProtocol(item) },
                         onEdit = { onNavigateToInspection(item.id) }
                     )
@@ -159,6 +166,7 @@ fun SearchScreen(
 @Composable
 fun ProtocolCard(
     item: ProtocolItemDto,
+    isLiveEditing: Boolean = false,
     onDownload: () -> Unit,
     onEdit: () -> Unit
 ) {
@@ -188,6 +196,31 @@ fun ProtocolCard(
                         .padding(horizontal = 8.dp, vertical = 4.dp)
                 ) {
                     Text(text = item.system_type, color = IndustrialOnPrimaryContainer, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            if (isLiveEditing) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFFFEF2F2), RoundedCornerShape(4.dp))
+                        .border(1.dp, Color(0xFFFCA5A5), RoundedCornerShape(4.dp))
+                        .padding(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = Color(0xFFEF4444),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = "Dieses Protokoll wird gerade live von einem Kollegen bearbeitet!",
+                        color = Color(0xFFB91C1C),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
 

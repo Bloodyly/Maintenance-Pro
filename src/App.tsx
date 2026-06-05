@@ -35,6 +35,22 @@ import {
 import CentralWebUI from "./components/CentralWebUI";
 
 // Types for Simulator data structure
+interface SubSystem {
+  id: string;
+  name: string;
+  rows: Array<{
+    groupId: string;
+    groupName: string;
+    groupType?: string;
+    cells: Array<{
+      slotKey: string;
+      detectorType: string;
+      value: string;
+    }>;
+  }>;
+  hardwareRows?: Array<Record<string, string>>;
+}
+
 interface ProtocolItem {
   id: string;
   name: string;
@@ -49,6 +65,7 @@ interface ProtocolItem {
   detectorTypes: string[];
   lastEditedBy?: string;
   lastEditedAt?: string;
+  subSystems?: SubSystem[];
   rows: Array<{
     groupId: string;
     groupName: string;
@@ -76,6 +93,50 @@ const INITIAL_PROTOCOLS: ProtocolItem[] = [
     detectorTypes: ["ZD", "DB", "RAS", "TDIF"],
     lastEditedBy: "Thomas Prantl",
     lastEditedAt: "24.05.2026",
+    subSystems: [
+      {
+        id: "sys-1",
+        name: "Anlage 1: Haupthaus",
+        rows: [
+          {
+            groupId: "GRP 01",
+            groupName: "Meldergruppe Erdgeschoss",
+            groupType: "NAM",
+            cells: [
+              { slotKey: "1", detectorType: "RAS", value: "" },
+              { slotKey: "2", detectorType: "RAS", value: "" },
+              { slotKey: "3", detectorType: "ZD", value: "" },
+              { slotKey: "4", detectorType: "ZD", value: "" },
+              { slotKey: "5", detectorType: "ZD", value: "" },
+              { slotKey: "6", detectorType: "DB", value: "" },
+              { slotKey: "7", detectorType: "DB", value: "" },
+              { slotKey: "8", detectorType: "TDIF", value: "" }
+            ]
+          }
+        ]
+      },
+      {
+        id: "sys-2",
+        name: "Anlage 2: Rechenzentrum (EDV)",
+        rows: [
+          {
+            groupId: "GRP 02",
+            groupName: "Meldergruppe Serverraum",
+            groupType: "TECH",
+            cells: [
+              { slotKey: "1", detectorType: "ZD", value: "" },
+              { slotKey: "2", detectorType: "ZD", value: "CHECK" },
+              { slotKey: "3", detectorType: "DB", value: "" },
+              { slotKey: "4", detectorType: "DB", value: "" },
+              { slotKey: "5", detectorType: "RAS", value: "" },
+              { slotKey: "6", detectorType: "RAS", value: "" },
+              { slotKey: "7", detectorType: "TDIF", value: "" },
+              { slotKey: "8", detectorType: "TDIF", value: "Def." }
+            ]
+          }
+        ]
+      }
+    ],
     rows: [
       {
         groupId: "GRP 01",
@@ -243,6 +304,299 @@ const INITIAL_PROTOCOLS: ProtocolItem[] = [
         ]
       }
     ]
+  },
+  {
+    id: "6",
+    name: "Zentralstelle für Asylsuchende (ZAST) - Magdeburg",
+    address: "Halberstädter Str. 40, 39112 Magdeburg",
+    contractNumber: "V-ESSER-5524-K",
+    interval: "Halbjährlich",
+    systemType: "BMA",
+    status: "ready_to_download",
+    isArchived: false,
+    columns: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
+    applicableValues: ["CHECK", "Def."],
+    detectorTypes: ["AM", "DKM", "Wärme", "IO", "Koppler"],
+    lastEditedBy: "Thomas Prantl",
+    lastEditedAt: "03.06.2026",
+    subSystems: [
+      {
+        id: "zast-sys-1",
+        name: "Anlage 1: ZAST Küche",
+        rows: [
+          {
+            groupId: "MG 401",
+            groupName: "ATM Küche BMZ",
+            groupType: "AM",
+            cells: [
+              { slotKey: "1", detectorType: "AM", value: "" },
+              { slotKey: "2", detectorType: "-", value: "" },
+              { slotKey: "3", detectorType: "-", value: "" },
+              { slotKey: "4", detectorType: "-", value: "" },
+              { slotKey: "5", detectorType: "-", value: "" },
+              { slotKey: "6", detectorType: "-", value: "" },
+              { slotKey: "7", detectorType: "-", value: "" },
+              { slotKey: "8", detectorType: "-", value: "" },
+              { slotKey: "9", detectorType: "-", value: "" },
+              { slotKey: "10", detectorType: "-", value: "" }
+            ]
+          },
+          {
+            groupId: "MG 402",
+            groupName: "Dkm Küche R115",
+            groupType: "DKM",
+            cells: [
+              { slotKey: "1", detectorType: "DKM", value: "" },
+              { slotKey: "2", detectorType: "DKM", value: "" },
+              { slotKey: "3", detectorType: "-", value: "" },
+              { slotKey: "4", detectorType: "-", value: "" },
+              { slotKey: "5", detectorType: "-", value: "" },
+              { slotKey: "6", detectorType: "-", value: "" },
+              { slotKey: "7", detectorType: "-", value: "" },
+              { slotKey: "8", detectorType: "-", value: "" },
+              { slotKey: "9", detectorType: "-", value: "" },
+              { slotKey: "10", detectorType: "-", value: "" }
+            ]
+          },
+          {
+            groupId: "MG 406",
+            groupName: "Dkm Küche R119",
+            groupType: "DKM",
+            cells: [
+              { slotKey: "1", detectorType: "DKM", value: "" },
+              { slotKey: "2", detectorType: "DKM", value: "" },
+              { slotKey: "3", detectorType: "-", value: "" },
+              { slotKey: "4", detectorType: "-", value: "" },
+              { slotKey: "5", detectorType: "-", value: "" },
+              { slotKey: "6", detectorType: "-", value: "" },
+              { slotKey: "7", detectorType: "-", value: "" },
+              { slotKey: "8", detectorType: "-", value: "" },
+              { slotKey: "9", detectorType: "-", value: "" },
+              { slotKey: "10", detectorType: "-", value: "" }
+            ]
+          },
+          {
+            groupId: "MG 407",
+            groupName: "Atm Küche R121",
+            groupType: "Wärme",
+            cells: [
+              { slotKey: "1", detectorType: "Wärme", value: "" },
+              { slotKey: "2", detectorType: "-", value: "" },
+              { slotKey: "3", detectorType: "-", value: "" },
+              { slotKey: "4", detectorType: "-", value: "" },
+              { slotKey: "5", detectorType: "-", value: "" },
+              { slotKey: "6", detectorType: "-", value: "" },
+              { slotKey: "7", detectorType: "-", value: "" },
+              { slotKey: "8", detectorType: "-", value: "" },
+              { slotKey: "9", detectorType: "-", value: "" },
+              { slotKey: "10", detectorType: "-", value: "" }
+            ]
+          },
+          {
+            groupId: "MG 408",
+            groupName: "Atm Küche R116-118",
+            groupType: "Wärme",
+            cells: [
+              { slotKey: "1", detectorType: "Wärme", value: "" },
+              { slotKey: "2", detectorType: "AM", value: "" },
+              { slotKey: "3", detectorType: "-", value: "" },
+              { slotKey: "4", detectorType: "-", value: "" },
+              { slotKey: "5", detectorType: "-", value: "" },
+              { slotKey: "6", detectorType: "-", value: "" },
+              { slotKey: "7", detectorType: "-", value: "" },
+              { slotKey: "8", detectorType: "-", value: "" },
+              { slotKey: "9", detectorType: "-", value: "" },
+              { slotKey: "10", detectorType: "-", value: "" }
+            ]
+          }
+        ]
+      },
+      {
+        id: "zast-sys-2",
+        name: "Anlage 2: ZAST HBS-Wache",
+        rows: [
+          {
+            groupId: "MG 001",
+            groupName: "Atm Wache Flur ZD R35,43",
+            groupType: "AM",
+            cells: [
+              { slotKey: "1", detectorType: "AM", value: "CHECK" },
+              { slotKey: "2", detectorType: "AM", value: "CHECK" },
+              { slotKey: "3", detectorType: "AM", value: "" },
+              { slotKey: "4", detectorType: "-", value: "" },
+              { slotKey: "5", detectorType: "-", value: "" },
+              { slotKey: "6", detectorType: "-", value: "" },
+              { slotKey: "7", detectorType: "-", value: "" },
+              { slotKey: "8", detectorType: "-", value: "" },
+              { slotKey: "9", detectorType: "-", value: "" },
+              { slotKey: "10", detectorType: "-", value: "" }
+            ]
+          },
+          {
+            groupId: "MG 003",
+            groupName: "Sirenen Block B-EG",
+            groupType: "Wärme",
+            cells: [
+              { slotKey: "1", detectorType: "Wärme", value: "" },
+              { slotKey: "2", detectorType: "Wärme", value: "" },
+              { slotKey: "3", detectorType: "Wärme", value: "" },
+              { slotKey: "4", detectorType: "Wärme", value: "" },
+              { slotKey: "5", detectorType: "-", value: "" },
+              { slotKey: "6", detectorType: "-", value: "" },
+              { slotKey: "7", detectorType: "-", value: "" },
+              { slotKey: "8", detectorType: "-", value: "" },
+              { slotKey: "9", detectorType: "-", value: "" },
+              { slotKey: "10", detectorType: "-", value: "" }
+            ]
+          }
+        ]
+      },
+      {
+        id: "zast-sys-3",
+        name: "Anlage 3: ZAST Sporthalle",
+        rows: [
+          {
+            groupId: "MG 737",
+            groupName: "Winterbau W6",
+            groupType: "Wärme",
+            cells: [
+              { slotKey: "1", detectorType: "Wärme", value: "" },
+              { slotKey: "2", detectorType: "Wärme", value: "" },
+              { slotKey: "3", detectorType: "Wärme", value: "" },
+              { slotKey: "4", detectorType: "Wärme", value: "" },
+              { slotKey: "5", detectorType: "Wärme", value: "CHECK" },
+              { slotKey: "6", detectorType: "-", value: "" },
+              { slotKey: "7", detectorType: "-", value: "" },
+              { slotKey: "8", detectorType: "-", value: "" },
+              { slotKey: "9", detectorType: "-", value: "" },
+              { slotKey: "10", detectorType: "-", value: "" }
+            ]
+          },
+          {
+            groupId: "MG 738",
+            groupName: "Winterbau W4",
+            groupType: "Wärme",
+            cells: [
+              { slotKey: "1", detectorType: "Wärme", value: "" },
+              { slotKey: "2", detectorType: "Wärme", value: "" },
+              { slotKey: "3", detectorType: "Wärme", value: "" },
+              { slotKey: "4", detectorType: "Wärme", value: "" },
+              { slotKey: "5", detectorType: "Wärme", value: "" },
+              { slotKey: "6", detectorType: "Wärme", value: "" },
+              { slotKey: "7", detectorType: "Wärme", value: "" },
+              { slotKey: "8", detectorType: "Wärme", value: "" },
+              { slotKey: "9", detectorType: "Wärme", value: "" },
+              { slotKey: "10", detectorType: "AM", value: "" }
+            ]
+          }
+        ]
+      },
+      {
+        id: "zast-sys-4",
+        name: "Anlage 4: ZAST HBS Block B",
+        rows: [
+          {
+            groupId: "MG 203",
+            groupName: "DKM Block B-EG TH1",
+            groupType: "DKM",
+            cells: [
+              { slotKey: "1", detectorType: "DKM", value: "" },
+              { slotKey: "2", detectorType: "-", value: "" },
+              { slotKey: "3", detectorType: "-", value: "" },
+              { slotKey: "4", detectorType: "-", value: "" },
+              { slotKey: "5", detectorType: "-", value: "" },
+              { slotKey: "6", detectorType: "-", value: "" },
+              { slotKey: "7", detectorType: "-", value: "" },
+              { slotKey: "8", detectorType: "-", value: "" },
+              { slotKey: "9", detectorType: "-", value: "" },
+              { slotKey: "10", detectorType: "-", value: "" }
+            ]
+          }
+        ]
+      },
+      {
+        id: "zast-sys-5",
+        name: "Anlage 5: ZAST Block C",
+        rows: [
+          {
+            groupId: "MG 302",
+            groupName: "DKM Block C EG",
+            groupType: "DKM",
+            cells: [
+              { slotKey: "1", detectorType: "DKM", value: "" },
+              { slotKey: "2", detectorType: "-", value: "" },
+              { slotKey: "3", detectorType: "-", value: "" },
+              { slotKey: "4", detectorType: "-", value: "" },
+              { slotKey: "5", detectorType: "-", value: "" },
+              { slotKey: "6", detectorType: "-", value: "" },
+              { slotKey: "7", detectorType: "-", value: "" },
+              { slotKey: "8", detectorType: "-", value: "" },
+              { slotKey: "9", detectorType: "-", value: "" },
+              { slotKey: "10", detectorType: "-", value: "" }
+            ]
+          }
+        ]
+      },
+      {
+        id: "zast-sys-6",
+        name: "Anlage 6: ZAST HBS Block A + Container",
+        rows: [
+          {
+            groupId: "MG 101",
+            groupName: "ATM Block A-EG Flur ZD",
+            groupType: "AM",
+            cells: [
+              { slotKey: "1", detectorType: "AM", value: "" },
+              { slotKey: "2", detectorType: "AM", value: "" },
+              { slotKey: "3", detectorType: "AM", value: "" },
+              { slotKey: "4", detectorType: "AM", value: "" },
+              { slotKey: "5", detectorType: "-", value: "" },
+              { slotKey: "6", detectorType: "-", value: "" },
+              { slotKey: "7", detectorType: "-", value: "" },
+              { slotKey: "8", detectorType: "-", value: "" },
+              { slotKey: "9", detectorType: "-", value: "" },
+              { slotKey: "10", detectorType: "-", value: "" }
+            ]
+          }
+        ]
+      }
+    ],
+    rows: [
+      {
+        groupId: "MG 401",
+        groupName: "ATM Küche BMZ",
+        groupType: "AM",
+        cells: [
+          { slotKey: "1", detectorType: "AM", value: "" },
+          { slotKey: "2", detectorType: "-", value: "" },
+          { slotKey: "3", detectorType: "-", value: "" },
+          { slotKey: "4", detectorType: "-", value: "" },
+          { slotKey: "5", detectorType: "-", value: "" },
+          { slotKey: "6", detectorType: "-", value: "" },
+          { slotKey: "7", detectorType: "-", value: "" },
+          { slotKey: "8", detectorType: "-", value: "" },
+          { slotKey: "9", detectorType: "-", value: "" },
+          { slotKey: "10", detectorType: "-", value: "" }
+        ]
+      },
+      {
+        groupId: "MG 402",
+        groupName: "Dkm Küche R115",
+        groupType: "DKM",
+        cells: [
+          { slotKey: "1", detectorType: "DKM", value: "" },
+          { slotKey: "2", detectorType: "DKM", value: "" },
+          { slotKey: "3", detectorType: "-", value: "" },
+          { slotKey: "4", detectorType: "-", value: "" },
+          { slotKey: "5", detectorType: "-", value: "" },
+          { slotKey: "6", detectorType: "-", value: "" },
+          { slotKey: "7", detectorType: "-", value: "" },
+          { slotKey: "8", detectorType: "-", value: "" },
+          { slotKey: "9", detectorType: "-", value: "" },
+          { slotKey: "10", detectorType: "-", value: "" }
+        ]
+      }
+    ]
   }
 ];
 
@@ -266,6 +620,7 @@ export interface Tenant {
   protocols: ProtocolItem[];
   simulatedArchives: any[];
   users: UserItem[];
+  logoUrl?: string;
 }
 
 export default function App() {
@@ -443,16 +798,96 @@ export default function App() {
 
   const [currentScreen, setCurrentScreen] = useState<string>("settings"); // settings, search, downloaded, inspection, editor, archive
   const [deviceOffline, setDeviceOffline] = useState(false);
+  const [deviceLiveModus, setDeviceLiveModus] = useState(false);
   const [showConfigToast, setShowConfigToast] = useState(false);
 
   // Dynamic system type definitions mapping to available detector types
-  const [systemTypeSettings, setSystemTypeSettings] = useState<Record<string, string[]>>({
-    BMA: ["-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR"],
-    EMA: ["-", "Normal", "BWM", "ZK", "RSK", "Lichtschranke", "Glasbruch", "Körperschall"],
-    ELA: ["-", "Normal", "Innenlautsprecher", "Außenlautsprecher"],
-    LIRA: ["-", "Normal", "AT", "BT", "ZT", "EM", "PN", "Display"],
-    SLA: ["-", "Normal", "ZD", "DB", "RAS", "TDIF"] // Sprinkler SLA original fallback
+  const [systemTypeSettings, setSystemTypeSettings] = useState<Record<string, string[]>>(() => {
+    try {
+      const stored = localStorage.getItem("systemTypeSettings");
+      if (stored) return JSON.parse(stored);
+    } catch (_) {}
+    return {
+      BMA: ["-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR"],
+      EMA: ["-", "Normal", "BWM", "ZK", "RSK", "Lichtschranke", "Glasbruch", "Körperschall"],
+      ELA: ["-", "Normal", "Innenlautsprecher", "Außenlautsprecher"],
+      LIRA: ["-", "Normal", "AT", "BT", "ZT", "EM", "PN", "Display"],
+      SLA: ["-", "Normal", "ZD", "DB", "RAS", "TDIF"] // Sprinkler SLA original fallback
+    };
   });
+
+  const [systemTypeHardwareConfigs, setSystemTypeHardwareConfigs] = useState<Record<string, { hasHardware: boolean; headers: string[] }>>(() => {
+    try {
+      const stored = localStorage.getItem("systemTypeHardwareConfigs");
+      if (stored) return JSON.parse(stored);
+    } catch (_) {}
+    return {
+      BMA: {
+        hasHardware: true,
+        headers: ["Bauteil/Ring", "Typ", "Störung", "Unterbrechung", "Softwarestand", "Serie"]
+      },
+      EMA: {
+        hasHardware: false,
+        headers: ["Bauteil/Melderlinie", "Typ/Zustand", "Sabotage", "Verkabelung", "Serie"]
+      },
+      ELA: {
+        hasHardware: false,
+        headers: ["Verstärkerstufe", "Lautsprechergruppe", "Störungskompensiert", "Ersatzweg", "Serie"]
+      },
+      LIRA: {
+        hasHardware: false,
+        headers: ["Zimmerterminal", "Tastertyp", "Funktionsprüfung", "Quittungston", "Serie"]
+      },
+      SLA: {
+        hasHardware: false,
+        headers: ["Drucküberwachung", "Kompressoransteuerung", "Sperrventil", "Serie"]
+      }
+    };
+  });
+
+  const [systemTypeMetadata, setSystemTypeMetadata] = useState<Record<string, { name: string; color: string }>>(() => {
+    try {
+      const stored = localStorage.getItem("systemTypeMetadata");
+      if (stored) return JSON.parse(stored);
+    } catch (_) {}
+    return {
+      BMA: { name: "Brandmelde Anlage", color: "#003d9b" },
+      EMA: { name: "Einbruchmelde Anlage", color: "#e11d48" },
+      ELA: { name: "Elektroakustische Lautsprecheranlage", color: "#0d9488" },
+      LIRA: { name: "Lichtrufanlage", color: "#4f46e5" },
+      SLA: { name: "Sprinklerlöschanlage", color: "#ea580c" }
+    };
+  });
+
+  // Save to localStorage effects
+  useEffect(() => {
+    localStorage.setItem("systemTypeSettings", JSON.stringify(systemTypeSettings));
+  }, [systemTypeSettings]);
+
+  useEffect(() => {
+    localStorage.setItem("systemTypeHardwareConfigs", JSON.stringify(systemTypeHardwareConfigs));
+  }, [systemTypeHardwareConfigs]);
+
+  useEffect(() => {
+    localStorage.setItem("systemTypeMetadata", JSON.stringify(systemTypeMetadata));
+  }, [systemTypeMetadata]);
+
+  const renderSystemTypeBadge = (type: string) => {
+    const meta = systemTypeMetadata[type] || { name: type, color: "#64748b" };
+    return (
+      <span 
+        className="text-[10px] font-mono px-2 py-0.5 rounded font-bold border transition-all duration-200 uppercase tracking-wide"
+        style={{
+          backgroundColor: `${meta.color}15`,
+          color: meta.color,
+          borderColor: `${meta.color}40`
+        }}
+        title={meta.name}
+      >
+        {type}
+      </span>
+    );
+  };
 
   const [isFetchingDefinitions, setIsFetchingDefinitions] = useState(false);
   const [isSyncingAll, setIsSyncingAll] = useState(false);
@@ -499,6 +934,7 @@ export default function App() {
   const [activeSelectVal, setActiveSelectVal] = useState("Q1");
   const [isFabOpen, setIsFabOpen] = useState(false);
   const [selectedGroupsForBulk, setSelectedGroupsForBulk] = useState<string[]>([]);
+  const [selectedSubSystemId, setSelectedSubSystemId] = useState<string | null>(null);
   
   // Object Details modal
   const [activeModalProtocol, setActiveModalProtocol] = useState<ProtocolItem | null>(null);
@@ -521,6 +957,11 @@ export default function App() {
         setActiveSelectVal("Q1");
       } else {
         setActiveSelectVal("CHECK");
+      }
+      if (activeProt.subSystems && activeProt.subSystems.length > 0) {
+        setSelectedSubSystemId(activeProt.subSystems[0].id);
+      } else {
+        setSelectedSubSystemId(null);
       }
     }
   }, [selectedProtocolId, protocols]);
@@ -683,10 +1124,28 @@ export default function App() {
   const handleUpdateGroupId = (groupId: string, newId: string) => {
     setProtocols(prev => prev.map(p => {
       if (p.id === selectedProtocolId) {
+        let updatedSubSystems = p.subSystems;
+        let updatedRows = p.rows;
+
+        if (selectedSubSystemId && updatedSubSystems) {
+          updatedSubSystems = updatedSubSystems.map(sub => {
+            if (sub.id === selectedSubSystemId) {
+              return {
+                ...sub,
+                rows: sub.rows.map(r => r.groupId === groupId ? { ...r, groupId: newId } : r)
+              };
+            }
+            return sub;
+          });
+        } else {
+          updatedRows = p.rows.map(r => r.groupId === groupId ? { ...r, groupId: newId } : r);
+        }
+
         return {
           ...p,
           status: "upload_pending",
-          rows: p.rows.map(r => r.groupId === groupId ? { ...r, groupId: newId } : r)
+          rows: updatedRows,
+          subSystems: updatedSubSystems
         };
       }
       return p;
@@ -696,10 +1155,28 @@ export default function App() {
   const handleUpdateGroupName = (groupId: string, newName: string) => {
     setProtocols(prev => prev.map(p => {
       if (p.id === selectedProtocolId) {
+        let updatedSubSystems = p.subSystems;
+        let updatedRows = p.rows;
+
+        if (selectedSubSystemId && updatedSubSystems) {
+          updatedSubSystems = updatedSubSystems.map(sub => {
+            if (sub.id === selectedSubSystemId) {
+              return {
+                ...sub,
+                rows: sub.rows.map(r => r.groupId === groupId ? { ...r, groupName: newName } : r)
+              };
+            }
+            return sub;
+          });
+        } else {
+          updatedRows = p.rows.map(r => r.groupId === groupId ? { ...r, groupName: newName } : r);
+        }
+
         return {
           ...p,
           status: "upload_pending",
-          rows: p.rows.map(r => r.groupId === groupId ? { ...r, groupName: newName } : r)
+          rows: updatedRows,
+          subSystems: updatedSubSystems
         };
       }
       return p;
@@ -709,10 +1186,28 @@ export default function App() {
   const handleUpdateGroupType = (groupId: string, newType: string) => {
     setProtocols(prev => prev.map(p => {
       if (p.id === selectedProtocolId) {
+        let updatedSubSystems = p.subSystems;
+        let updatedRows = p.rows;
+
+        if (selectedSubSystemId && updatedSubSystems) {
+          updatedSubSystems = updatedSubSystems.map(sub => {
+            if (sub.id === selectedSubSystemId) {
+              return {
+                ...sub,
+                rows: sub.rows.map(r => r.groupId === groupId ? { ...r, groupType: newType } : r)
+              };
+            }
+            return sub;
+          });
+        } else {
+          updatedRows = p.rows.map(r => r.groupId === groupId ? { ...r, groupType: newType } : r);
+        }
+
         return {
           ...p,
           status: "upload_pending",
-          rows: p.rows.map(r => r.groupId === groupId ? { ...r, groupType: newType } : r)
+          rows: updatedRows,
+          subSystems: updatedSubSystems
         };
       }
       return p;
@@ -722,10 +1217,29 @@ export default function App() {
   const handleUpdateCellDetectorType = (groupId: string, slotKey: string, newDetectorType: string) => {
     setProtocols(prev => prev.map(p => {
       if (p.id === selectedProtocolId) {
-        return {
-          ...p,
-          status: "upload_pending",
-          rows: p.rows.map(r => {
+        let updatedSubSystems = p.subSystems;
+        let updatedRows = p.rows;
+
+        if (selectedSubSystemId && updatedSubSystems) {
+          updatedSubSystems = updatedSubSystems.map(sub => {
+            if (sub.id === selectedSubSystemId) {
+              return {
+                ...sub,
+                rows: sub.rows.map(r => {
+                  if (r.groupId === groupId) {
+                    return {
+                      ...r,
+                      cells: r.cells.map(c => c.slotKey === slotKey ? { ...c, detectorType: newDetectorType, value: newDetectorType === "-" ? "" : c.value } : c)
+                    };
+                  }
+                  return r;
+                })
+              };
+            }
+            return sub;
+          });
+        } else {
+          updatedRows = p.rows.map(r => {
             if (r.groupId === groupId) {
               return {
                 ...r,
@@ -733,7 +1247,14 @@ export default function App() {
               };
             }
             return r;
-          })
+          });
+        }
+
+        return {
+          ...p,
+          status: "upload_pending",
+          rows: updatedRows,
+          subSystems: updatedSubSystems
         };
       }
       return p;
@@ -743,10 +1264,28 @@ export default function App() {
   const handleDeleteRow = (groupId: string) => {
     setProtocols(prev => prev.map(p => {
       if (p.id === selectedProtocolId) {
+        let updatedSubSystems = p.subSystems;
+        let updatedRows = p.rows;
+
+        if (selectedSubSystemId && updatedSubSystems) {
+          updatedSubSystems = updatedSubSystems.map(sub => {
+            if (sub.id === selectedSubSystemId) {
+              return {
+                ...sub,
+                rows: sub.rows.filter(r => r.groupId !== groupId)
+              };
+            }
+            return sub;
+          });
+        } else {
+          updatedRows = p.rows.filter(r => r.groupId !== groupId);
+        }
+
         return {
           ...p,
           status: "upload_pending",
-          rows: p.rows.filter(r => r.groupId !== groupId)
+          rows: updatedRows,
+          subSystems: updatedSubSystems
         };
       }
       return p;
@@ -791,12 +1330,34 @@ export default function App() {
   const handleCellEdit = (prodId: string, groupIdx: string, slotKey: string, newValue: string) => {
     setProtocols(prev => prev.map(p => {
       if (p.id === prodId) {
-        return {
-          ...p,
-          status: "upload_pending", // mark dirty as pending sync
-          lastEditedBy: "Thomas Prantl",
-          lastEditedAt: new Date().toLocaleDateString("de-DE"),
-          rows: p.rows.map(r => {
+        let updatedSubSystems = p.subSystems;
+        let updatedRows = p.rows;
+
+        if (selectedSubSystemId && updatedSubSystems) {
+          updatedSubSystems = updatedSubSystems.map(sub => {
+            if (sub.id === selectedSubSystemId) {
+              return {
+                ...sub,
+                rows: sub.rows.map(r => {
+                  if (r.groupId === groupIdx) {
+                    return {
+                      ...r,
+                      cells: r.cells.map(c => {
+                        if (c.slotKey === slotKey) {
+                          return { ...c, value: c.value === newValue ? "" : newValue };
+                        }
+                        return c;
+                      })
+                    };
+                  }
+                  return r;
+                })
+              };
+            }
+            return sub;
+          });
+        } else {
+          updatedRows = p.rows.map(r => {
             if (r.groupId === groupIdx) {
               return {
                 ...r,
@@ -809,7 +1370,16 @@ export default function App() {
               };
             }
             return r;
-          })
+          });
+        }
+
+        return {
+          ...p,
+          status: "upload_pending", // mark dirty as pending sync
+          lastEditedBy: "Thomas Prantl",
+          lastEditedAt: new Date().toLocaleDateString("de-DE"),
+          rows: updatedRows,
+          subSystems: updatedSubSystems
         };
       }
       return p;
@@ -820,12 +1390,34 @@ export default function App() {
   const handleBulkApply = (val: string) => {
     setProtocols(prev => prev.map(p => {
       if (p.id === selectedProtocolId) {
-        return {
-          ...p,
-          status: "upload_pending",
-          lastEditedBy: "Thomas Prantl",
-          lastEditedAt: new Date().toLocaleDateString("de-DE"),
-          rows: p.rows.map(r => {
+        let updatedSubSystems = p.subSystems;
+        let updatedRows = p.rows;
+
+        if (selectedSubSystemId && updatedSubSystems) {
+          updatedSubSystems = updatedSubSystems.map(sub => {
+            if (sub.id === selectedSubSystemId) {
+              return {
+                ...sub,
+                rows: sub.rows.map(r => {
+                  if (selectedGroupsForBulk.includes(r.groupId)) {
+                    return {
+                      ...r,
+                      cells: r.cells.map(c => {
+                        if (c.detectorType !== "-") {
+                          return { ...c, value: val };
+                        }
+                        return c;
+                      })
+                    };
+                  }
+                  return r;
+                })
+              };
+            }
+            return sub;
+          });
+        } else {
+          updatedRows = p.rows.map(r => {
             if (selectedGroupsForBulk.includes(r.groupId)) {
               return {
                 ...r,
@@ -838,7 +1430,16 @@ export default function App() {
               };
             }
             return r;
-          })
+          });
+        }
+
+        return {
+          ...p,
+          status: "upload_pending",
+          lastEditedBy: "Thomas Prantl",
+          lastEditedAt: new Date().toLocaleDateString("de-DE"),
+          rows: updatedRows,
+          subSystems: updatedSubSystems
         };
       }
       return p;
@@ -849,12 +1450,31 @@ export default function App() {
   const handleBulkReset = () => {
     setProtocols(prev => prev.map(p => {
       if (p.id === selectedProtocolId) {
-        return {
-          ...p,
-          status: "upload_pending",
-          lastEditedBy: "Thomas Prantl",
-          lastEditedAt: new Date().toLocaleDateString("de-DE"),
-          rows: p.rows.map(r => {
+        let updatedSubSystems = p.subSystems;
+        let updatedRows = p.rows;
+
+        if (selectedSubSystemId && updatedSubSystems) {
+          updatedSubSystems = updatedSubSystems.map(sub => {
+            if (sub.id === selectedSubSystemId) {
+              return {
+                ...sub,
+                rows: sub.rows.map(r => {
+                  if (selectedGroupsForBulk.includes(r.groupId)) {
+                    return {
+                      ...r,
+                      cells: r.cells.map(c => {
+                        return { ...c, value: "" };
+                      })
+                    };
+                  }
+                  return r;
+                })
+              };
+            }
+            return sub;
+          });
+        } else {
+          updatedRows = p.rows.map(r => {
             if (selectedGroupsForBulk.includes(r.groupId)) {
               return {
                 ...r,
@@ -864,7 +1484,16 @@ export default function App() {
               };
             }
             return r;
-          })
+          });
+        }
+
+        return {
+          ...p,
+          status: "upload_pending",
+          lastEditedBy: "Thomas Prantl",
+          lastEditedAt: new Date().toLocaleDateString("de-DE"),
+          rows: updatedRows,
+          subSystems: updatedSubSystems
         };
       }
       return p;
@@ -876,13 +1505,38 @@ export default function App() {
   const handleAddGroupMatrix = () => {
     setProtocols(prev => prev.map(p => {
       if (p.id === selectedProtocolId) {
-        const nextId = p.rows.length + 1;
-        const groupNumStr = nextId.toString().padStart(2, "0");
-        // Pull the very first option as the default
+        let updatedSubSystems = p.subSystems;
+        let updatedRows = p.rows;
         const defaultDetectorType = systemTypeSettings[p.systemType]?.[0] || "-";
-        return {
-          ...p,
-          rows: [
+
+        if (selectedSubSystemId && updatedSubSystems) {
+          updatedSubSystems = updatedSubSystems.map(sub => {
+            if (sub.id === selectedSubSystemId) {
+              const nextId = sub.rows.length + 1;
+              const groupNumStr = nextId.toString().padStart(2, "0");
+              return {
+                ...sub,
+                rows: [
+                  ...sub.rows,
+                  {
+                    groupId: `GRP ${groupNumStr}`,
+                    groupName: "Hinzugefügtes Segment",
+                    groupType: "NAM",
+                    cells: p.columns.map(col => ({
+                      slotKey: col,
+                      detectorType: defaultDetectorType,
+                      value: ""
+                    }))
+                  }
+                ]
+              };
+            }
+            return sub;
+          });
+        } else {
+          const nextId = p.rows.length + 1;
+          const groupNumStr = nextId.toString().padStart(2, "0");
+          updatedRows = [
             ...p.rows,
             {
               groupId: `GRP ${groupNumStr}`,
@@ -894,7 +1548,13 @@ export default function App() {
                 value: ""
               }))
             }
-          ]
+          ];
+        }
+
+        return {
+          ...p,
+          rows: updatedRows,
+          subSystems: updatedSubSystems
         };
       }
       return p;
@@ -905,18 +1565,37 @@ export default function App() {
     setProtocols(prev => prev.map(p => {
       if (p.id === selectedProtocolId) {
         const nextCol = (p.columns.length + 1).toString();
-        // Pull the very first option as the default
         const defaultDetectorType = systemTypeSettings[p.systemType]?.[0] || "-";
+
+        let updatedSubSystems = p.subSystems;
+        let updatedRows = p.rows;
+
+        if (updatedSubSystems) {
+          updatedSubSystems = updatedSubSystems.map(sub => ({
+            ...sub,
+            rows: sub.rows.map(r => ({
+              ...r,
+              cells: [
+                ...r.cells,
+                { slotKey: nextCol, detectorType: defaultDetectorType, value: "" }
+              ]
+            }))
+          }));
+        }
+
+        updatedRows = p.rows.map(r => ({
+          ...r,
+          cells: [
+            ...r.cells,
+            { slotKey: nextCol, detectorType: defaultDetectorType, value: "" }
+          ]
+        }));
+
         return {
           ...p,
           columns: [...p.columns, nextCol],
-          rows: p.rows.map(r => ({
-            ...r,
-            cells: [
-              ...r.cells,
-              { slotKey: nextCol, detectorType: defaultDetectorType, value: "" }
-            ]
-          }))
+          rows: updatedRows,
+          subSystems: updatedSubSystems
         };
       }
       return p;
@@ -924,6 +1603,13 @@ export default function App() {
   };
 
   const activeProtocolObj = protocols.find(p => p.id === selectedProtocolId) || protocols[1];
+
+  const activeRows = useMemo(() => {
+    if (selectedSubSystemId && activeProtocolObj.subSystems) {
+      return activeProtocolObj.subSystems.find(s => s.id === selectedSubSystemId)?.rows || activeProtocolObj.rows;
+    }
+    return activeProtocolObj.rows;
+  }, [selectedSubSystemId, activeProtocolObj]);
 
   return (
     <div className="min-h-screen bg-[#faf8ff] text-[#191b23] font-sans flex flex-col">
@@ -1017,12 +1703,43 @@ export default function App() {
             <div className="flex-1 bg-[#faf8ff] flex flex-col overflow-hidden text-[#191b23] relative text-sm select-none">
               
               {/* TOP STATUS BAR SIMULATION */}
-              <div className="bg-white px-6 pt-6 pb-2 flex justify-between items-center text-xs font-mono text-[#434654] border-b border-[#ededf8] shrink-0">
+              <div className="bg-white px-5 pt-6 pb-2 flex justify-between items-center text-xs font-mono text-[#434654] border-b border-[#ededf8] shrink-0">
                 <span className="font-bold">14:28</span>
-                <div className="flex items-center gap-1.5">
-                  <span className={`w-2 h-2 rounded-full ${deviceOffline ? "bg-red-500" : "bg-[#22c55e]"}`}></span>
-                  <span>{deviceOffline ? "Offline" : "Online"}</span>
-                  <span>91%</span>
+                <div className="flex items-center gap-2">
+                  {/* Offline/Online simulation button */}
+                  <div 
+                    onClick={() => {
+                      const nextOffline = !deviceOffline;
+                      setDeviceOffline(nextOffline);
+                      if (nextOffline) {
+                        setDeviceLiveModus(false);
+                      }
+                    }}
+                    className={`flex items-center gap-1 cursor-pointer select-none px-2 py-0.5 rounded transition-all hover:opacity-80 active:scale-95 ${
+                      deviceOffline ? "bg-red-100 text-red-700 border border-red-200" : "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                    }`}
+                    title="Klicken, um Netzverbindung zu simulieren (Online / Offline)"
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full ${deviceOffline ? "bg-red-500" : "bg-[#22c55e]"}`}></span>
+                    <span className="font-bold text-[9px] tracking-wider">{deviceOffline ? "OFFLINE" : "ONLINE"}</span>
+                  </div>
+
+                  {/* Live-Modus simulation button */}
+                  {!deviceOffline && (
+                    <div 
+                      onClick={() => setDeviceLiveModus(!deviceLiveModus)}
+                      className={`flex items-center gap-1 cursor-pointer select-none px-2 py-0.5 rounded transition-all border hover:opacity-80 active:scale-95 ${
+                        deviceLiveModus 
+                          ? "bg-teal-100 text-teal-800 border-teal-300 animate-pulse" 
+                          : "bg-slate-100 text-slate-500 border-slate-200"
+                      }`}
+                      title="Klicken, um Live-Modus (Multiplayer) zu simulieren"
+                    >
+                      <span className={`w-1 h-1 rounded-full ${deviceLiveModus ? "bg-teal-500 animate-ping" : "bg-slate-400"}`}></span>
+                      <span className="font-bold text-[9px] tracking-wider">{deviceLiveModus ? "LIVE-MODUS: EIN" : "LIVE-MODUS: AUS"}</span>
+                    </div>
+                  )}
+                  <span className="opacity-60 text-[10px]">91%</span>
                 </div>
               </div>
 
@@ -1263,7 +1980,8 @@ export default function App() {
                             setIsFetchingDefinitions(true);
                             setTimeout(() => {
                               setIsFetchingDefinitions(false);
-                              triggerToast("Anlagendefinitionen erfolgreich bezogen (BMA, EMA, ELA, LIRA)!", "success");
+                              const typeKeys = Object.keys(systemTypeSettings).join(", ");
+                              triggerToast(`Anlagendefinitionen erfolgreich bezogen (${typeKeys})!`, "success");
                             }, 1200);
                           }}
                           className="h-10 bg-[#003d9b] text-white hover:bg-[#003d9b]/90 font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm rounded disabled:opacity-50"
@@ -1403,9 +2121,7 @@ export default function App() {
                                 <h3 className="font-bold text-base leading-tight text-[#191b23]">{p.name}</h3>
                                 <p className="text-xs font-mono text-[#737685] mt-0.5">{p.address}</p>
                               </div>
-                              <span className="bg-[#dae2ff] text-[#001848] text-[10px] font-mono px-2 py-0.5 rounded font-bold">
-                                {p.systemType}
-                              </span>
+                              {renderSystemTypeBadge(p.systemType)}
                             </div>
 
                             <div className="grid grid-cols-2 gap-2 py-2 border-y border-[#c3c6d6] border-dashed font-mono text-xs">
@@ -1418,6 +2134,14 @@ export default function App() {
                                 <p className="font-bold text-[#191b23]">{p.interval}</p>
                               </div>
                             </div>
+
+                            {/* Colleague live editing simulation notification */}
+                            {deviceLiveModus && p.id === "1" && (
+                              <div className="bg-red-50 border border-red-200 text-red-700 text-xs px-3 py-2.5 rounded flex items-center gap-2 font-medium">
+                                <AlertTriangle size={15} className="text-red-500 animate-pulse shrink-0" />
+                                <span>Dieses Protokoll wird gerade live von einem Kollegen bearbeitet!</span>
+                              </div>
+                            )}
 
                             <div className="flex items-center justify-between mt-1">
                               {p.status === "ready_to_download" ? (
@@ -1615,9 +2339,7 @@ export default function App() {
                                   <h3 className="font-bold text-slate-900 leading-tight">{p.name}</h3>
                                   <p className="text-xs font-mono text-slate-500 mt-0.5">{p.address}</p>
                                 </div>
-                                <span className="bg-[#ffdcc3] text-[#2f1500] text-[10px] font-mono px-2 py-0.5 rounded font-bold">
-                                  {p.systemType}
-                                </span>
+                                {renderSystemTypeBadge(p.systemType)}
                               </div>
 
                               <div className="flex justify-between items-center border-t border-[#ededf8] pt-3 mt-1">
@@ -1744,9 +2466,7 @@ export default function App() {
                                 <h3 className="font-bold text-slate-800 leading-tight">{p.name}</h3>
                                 <p className="text-xs font-mono text-slate-500 mt-0.5">{p.address}</p>
                               </div>
-                              <span className="bg-[#e1e2ec] text-[#191b23] text-[10px] font-mono px-2 py-0.5 rounded font-bold">
-                                {p.systemType}
-                              </span>
+                              {renderSystemTypeBadge(p.systemType)}
                             </div>
 
                             <div className="flex justify-between items-center border-t border-slate-200 pt-3 mt-1">
@@ -1830,6 +2550,47 @@ export default function App() {
                       </div>
                     </div>
 
+                    {/* SUB-SYSTEM TAB NAVIGATION (ANLAGENAUSWAHL) */}
+                    {activeProtocolObj.subSystems && activeProtocolObj.subSystems.length > 0 && (
+                      <div className="bg-[#ededf8] border-b border-[#c3c6d6] px-4 py-2 flex flex-col gap-1 shrink-0">
+                        <label className="text-[9px] font-black text-slate-500 uppercase tracking-wider font-mono block">
+                          Anlagen im Wartungsvertrag ({activeProtocolObj.subSystems.length})
+                        </label>
+                        <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-none">
+                          {activeProtocolObj.subSystems.map(sub => {
+                            const isActive = selectedSubSystemId === sub.id;
+                            // Check diagnostic counts for this sub-system
+                            const totalMelder = sub.rows.reduce((acc, r) => acc + r.cells.filter(c => c.detectorType !== "-").length, 0);
+                            const checkedMelder = sub.rows.reduce((acc, r) => acc + r.cells.filter(c => c.detectorType !== "-" && c.value !== "").length, 0);
+                            const hasSubDefect = sub.rows.some(r => r.cells.some(c => c.value === "Def."));
+
+                            return (
+                              <button
+                                key={sub.id}
+                                onClick={() => {
+                                  setSelectedSubSystemId(sub.id);
+                                  setSelectedGroupsForBulk([]); // clear bulk selection when swapping sub-systems
+                                }}
+                                className={`px-2.5 py-1.5 text-[11px] font-bold rounded flex items-center gap-1.5 shrink-0 transition-all cursor-pointer ${
+                                  isActive
+                                    ? "bg-[#003d9b] text-white shadow-xs"
+                                    : "bg-white text-slate-700 hover:bg-[#e1e2ec] border border-[#c3c6d6]"
+                                }`}
+                              >
+                                {hasSubDefect && <AlertTriangle size={11} className="text-red-500 animate-pulse" />}
+                                <span>{sub.name}</span>
+                                <span className={`text-[8.5px] font-mono px-1 rounded ${
+                                  isActive ? "bg-[#002f78] text-white" : "bg-slate-100 text-slate-500"
+                                }`}>
+                                  {checkedMelder}/{totalMelder}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
                     {/* BULK ACTION BAR OVERLAY */}
                     {selectedGroupsForBulk.length > 0 && (
                       <div className="absolute top-18 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-4 py-2 rounded-full shadow-2xl flex items-center gap-3 z-50 animate-bounce text-xs">
@@ -1875,7 +2636,7 @@ export default function App() {
 
                         {/* Table body */}
                         <tbody>
-                          {activeProtocolObj.rows.map(row => {
+                          {activeRows.map(row => {
                             const relevantCells = row.cells.filter(c => c.detectorType !== "-");
                             const hasDefect = row.cells.some(c => c.value === "Def.");
                             const hasAtLeastOneDetector = relevantCells.length > 0;
@@ -1929,24 +2690,32 @@ export default function App() {
                                         handleCellEdit(activeProtocolObj.id, row.groupId, cell.slotKey, activeSelectVal);
                                       }
                                     }}
-                                    className={`p-1 border-r border-[#c3c6d6] text-center cursor-pointer select-none transition-all ${
-                                      isDisabled ? "bg-[#f3f3fd] cursor-not-allowed text-[#737685]" : 
-                                      isDefect ? "bg-red-100 border border-red-500 font-bold" : 
-                                      cell.value ? "bg-[#dae2ff] border border-blue-500 font-bold" : "hover:bg-[#fcf8f0]"
+                                    className={`p-1 border-r border-b border-[#cbd5e1] text-center cursor-pointer select-none transition-all ${
+                                      isDisabled ? "cursor-not-allowed text-slate-500 font-bold" : 
+                                      isDefect ? "bg-red-100 font-bold" : 
+                                      cell.value ? "bg-[#dae2ff] font-bold" : "hover:bg-[#fcf8f0]"
                                     }`}
-                                    style={{ height: "54px", minWidth: "62px" }}
+                                    style={{
+                                      height: "54px",
+                                      minWidth: "62px",
+                                      ...(isDisabled ? {
+                                        backgroundImage: "repeating-linear-gradient(45deg, #f1f5f9, #f1f5f9 4px, #e2e8f0 4px, #e2e8f0 8px)"
+                                      } : {})
+                                    }}
                                   >
                                     {isDisabled ? (
-                                      <span>-</span>
+                                      <span className="text-slate-500 font-bold font-mono text-sm">-</span>
                                     ) : cell.value ? (
                                       <div className="flex flex-col items-center justify-center">
-                                        <span className={`text-[11px] ${isDefect ? "text-red-700" : "text-[#001848]"}`}>
-                                          {cell.value}
+                                        <span className={`text-[11px] ${isDefect ? "text-red-700" : "text-[#001848] font-black"}`}>
+                                          {cell.value === "CHECK" ? "✓" : cell.value}
                                         </span>
                                         <span className="text-[9px] text-[#737685] font-mono leading-none">{cell.detectorType}</span>
                                       </div>
                                     ) : (
-                                      <span className="text-[10px] text-[#737685] font-mono">{cell.detectorType}</span>
+                                      <div className="flex flex-col items-center justify-center">
+                                        <span className="text-[9px] text-slate-400 font-mono mt-2 tracking-tight leading-none">{cell.detectorType}</span>
+                                      </div>
                                     )}
                                   </td>
                                 );
@@ -2047,16 +2816,40 @@ export default function App() {
                         </button>
                       </div>
 
+                      {/* Editor Subsystem Tabs Selector */}
+                      {activeProtocolObj.subSystems && activeProtocolObj.subSystems.length > 0 && (
+                        <div className="bg-orange-100/60 p-2.5 rounded-lg border border-orange-200 flex flex-col gap-1.5 shrink-0">
+                          <label className="text-[9px] font-black text-amber-800 uppercase tracking-wider font-mono">
+                            Aktive Anlage für Tabellenbemaßung wählen:
+                          </label>
+                          <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-none">
+                            {activeProtocolObj.subSystems.map(sub => (
+                              <button
+                                key={sub.id}
+                                onClick={() => setSelectedSubSystemId(sub.id)}
+                                className={`px-2.5 py-1.5 text-[10.5px] font-bold rounded shrink-0 transition-all cursor-pointer ${
+                                  selectedSubSystemId === sub.id
+                                    ? "bg-[#fd8b00] text-white shadow-xs"
+                                    : "bg-white text-slate-700 hover:bg-orange-50 border border-orange-200"
+                                }`}
+                              >
+                                {sub.name}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                       {/* Current List configuration */}
                       <div className="flex justify-between items-center border-b border-orange-200 pb-1.5">
                         <h3 className="font-bold text-xs text-[#434654] font-mono tracking-wider uppercase">Anlagenzeilen & Segmente</h3>
                         <span className="font-mono text-[10px] bg-amber-200 text-[#4d2800] px-1.5 py-0.5 font-bold rounded">
-                          {activeProtocolObj.rows.length} Zeilen
+                          {activeRows.length} Zeilen
                         </span>
                       </div>
 
                       <div className="flex flex-col gap-3 pb-8">
-                        {activeProtocolObj.rows.map((row) => (
+                        {activeRows.map((row) => (
                           <div 
                             key={row.groupId} 
                             className="bg-white border border-[#c3c6d6] rounded-lg p-3 shadow-sm flex flex-col gap-3"
@@ -2360,6 +3153,11 @@ export default function App() {
           setSimulatedArchives={setSimulatedArchives}
           triggerToast={triggerToast}
           systemTypeSettings={systemTypeSettings}
+          setSystemTypeSettings={setSystemTypeSettings}
+          systemTypeHardwareConfigs={systemTypeHardwareConfigs}
+          setSystemTypeHardwareConfigs={setSystemTypeHardwareConfigs}
+          systemTypeMetadata={systemTypeMetadata}
+          setSystemTypeMetadata={setSystemTypeMetadata}
           activeTenantId={activeTenantId}
           tenants={tenants}
           setTenants={setTenants}
@@ -2390,7 +3188,12 @@ export default function App() {
                 </div>
                 <div>
                   <p className="text-[10px] uppercase font-bold text-[#737685]">Anlagentyp</p>
-                  <p>{activeModalProtocol.systemType} ({activeModalProtocol.systemType === "BMA" ? "Brandmelder" : activeModalProtocol.systemType === "SLA" ? "Sprinkler" : "ELA"})</p>
+                  <p className="flex items-center gap-1.5">
+                    {renderSystemTypeBadge(activeModalProtocol.systemType)}
+                    <span className="text-xs text-slate-500">
+                      ({systemTypeMetadata[activeModalProtocol.systemType]?.name || activeModalProtocol.systemType})
+                    </span>
+                  </p>
                 </div>
                 <div className="col-span-2">
                   <p className="text-[10px] uppercase font-bold text-[#737685]">Adresse</p>

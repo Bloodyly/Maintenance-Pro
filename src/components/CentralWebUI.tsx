@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { 
   Database, 
   Search, 
@@ -32,10 +32,46 @@ import {
   UserPlus,
   Wrench,
   Settings2,
-  AlertCircle
+  AlertCircle,
+  SlidersHorizontal,
+  Undo,
+  Redo
 } from "lucide-react";
+import * as XLSX from "xlsx";
 
 // Mirroring App types
+interface SubSystem {
+  id: string;
+  name: string;
+  rows: Array<{
+    groupId: string;
+    groupName: string;
+    groupType?: string;
+    cells: Array<{
+      slotKey: string;
+      detectorType: string;
+      value: string;
+    }>;
+  }>;
+  hardwareRows?: Array<Record<string, string>>;
+}
+
+interface EditorSubsystem {
+  id: string;
+  name: string;
+  rows: Array<{
+    groupId: string;
+    groupName: string;
+    groupType: string;
+    cells: Array<{
+      slotKey: string;
+      detectorType: string;
+      value: string;
+    }>;
+  }>;
+  hardwareRows?: Array<Record<string, string>>;
+}
+
 interface ProtocolItem {
   id: string;
   name: string;
@@ -50,6 +86,7 @@ interface ProtocolItem {
   detectorTypes: string[];
   lastEditedBy?: string;
   lastEditedAt?: string;
+  subSystems?: SubSystem[];
   rows: Array<{
     groupId: string;
     groupName: string;
@@ -81,6 +118,11 @@ interface CentralWebUIProps {
   setSimulatedArchives: React.Dispatch<React.SetStateAction<WebUIArchive[]>>;
   triggerToast: (msg: string, type?: "success" | "info" | "warning") => void;
   systemTypeSettings: Record<string, string[]>;
+  setSystemTypeSettings: React.Dispatch<React.SetStateAction<Record<string, string[]>>>;
+  systemTypeHardwareConfigs: Record<string, { hasHardware: boolean; headers: string[] }>;
+  setSystemTypeHardwareConfigs: React.Dispatch<React.SetStateAction<Record<string, { hasHardware: boolean; headers: string[] }>>>;
+  systemTypeMetadata: Record<string, { name: string; color: string }>;
+  setSystemTypeMetadata: React.Dispatch<React.SetStateAction<Record<string, { name: string; color: string }>>>;
   activeTenantId: string;
   tenants: any[];
   setTenants: React.Dispatch<React.SetStateAction<any[]>>;
@@ -105,6 +147,11 @@ export default function CentralWebUI({
   setSimulatedArchives,
   triggerToast,
   systemTypeSettings,
+  setSystemTypeSettings,
+  systemTypeHardwareConfigs,
+  setSystemTypeHardwareConfigs,
+  systemTypeMetadata,
+  setSystemTypeMetadata,
   activeTenantId,
   tenants,
   setTenants,
@@ -140,12 +187,62 @@ export default function CentralWebUI({
   
   // Selection / Modal state
   const [selectedWebId, setSelectedWebId] = useState<string | null>(null);
+  const [selectedInspectedSubId, setSelectedInspectedSubId] = useState<string | null>(null);
   const [pdfModalId, setPdfModalId] = useState<string | null>(null);
   const [selectedArchiveForPdf, setSelectedArchiveForPdf] = useState<WebUIArchive | null>(null);
+
+  // Sync selected inspected subsystem
+  useEffect(() => {
+    if (selectedWebId) {
+      const p = protocols.find(item => item.id === selectedWebId);
+      if (p && p.subSystems && p.subSystems.length > 0) {
+        setSelectedInspectedSubId(p.subSystems[0].id);
+      } else {
+        setSelectedInspectedSubId(null);
+      }
+    } else {
+      setSelectedInspectedSubId(null);
+    }
+  }, [selectedWebId, protocols]);
 
   // New features modal states
   const [isDefectModalOpen, setIsDefectModalOpen] = useState(false);
   const [isAddContractModalOpen, setIsAddContractModalOpen] = useState(false);
+
+  // Unified Draw-based Contract Editor states
+  const [isUnifiedEditorOpen, setIsUnifiedEditorOpen] = useState(false);
+  const [editorMode, setEditorMode] = useState<"create" | "edit">("create");
+  const [editorProtocolId, setEditorProtocolId] = useState<string | null>(null);
+  const [editorName, setEditorName] = useState("");
+  const [editorAddress, setEditorAddress] = useState("");
+  const [editorContractNumber, setEditorContractNumber] = useState("");
+  const [editorInterval, setEditorInterval] = useState<"Jährlich" | "Halbjährlich" | "Vierteljährlich">("Jährlich");
+  const [editorSystemType, setEditorSystemType] = useState("BMA");
+  const [editorStatus, setEditorStatus] = useState<"ready_to_download" | "downloaded" | "upload_pending" | "synchronized">("ready_to_download");
+  const [editorSubSystems, setEditorSubSystems] = useState<EditorSubsystem[]>([]);
+  const [activeSubsystemId, setActiveSubsystemId] = useState<string | null>(null);
+
+  // Import Assistant dialog states
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [editorImportFileType, setEditorImportFileType] = useState<"esser" | "notifier" | "hekatron" | "csv" | "xlsx">("esser");
+  const [isImporting, setIsImporting] = useState(false);
+
+  // Paintbrush drawing tools states
+  const [paintTool, setPaintTool] = useState<"type" | "trigger" | "text">("type");
+  const [paintValue, setPaintValue] = useState<string>("Normal"); // Default
+  const [textBrushValue, setTextBrushValue] = useState<string>("Büro");
+  const [dynamicDetectorTypes, setDynamicDetectorTypes] = useState<string[]>([]);
+  const [customTypeInput, setCustomTypeInput] = useState<string>("");
+  
+  // Undo/Redo history stack (snapshots of editorSubSystems)
+  const [editorHistory, setEditorHistory] = useState<EditorSubsystem[][]>([]);
+  const [editorHistoryIndex, setEditorHistoryIndex] = useState<number>(-1);
+
+  const activeSub = editorSubSystems.find(s => s.id === activeSubsystemId);
+
+  // Excel-like rectangular bounding-box drawing selection coordinates states
+  const [selectionStart, setSelectionStart] = useState<{ r: number; c: number } | null>(null);
+  const [selectionEnd, setSelectionEnd] = useState<{ r: number; c: number } | null>(null);
 
   // Add contract wizard form states
   const [newContractName, setNewContractName] = useState("");
@@ -157,6 +254,7 @@ export default function CentralWebUI({
   
   // Simulated CSV/Excel raw parsed data list
   const [importedFileName, setImportedFileName] = useState("");
+  const [importFileType, setImportFileType] = useState<"csv" | "etb">("csv");
   const [importedDetectors, setImportedDetectors] = useState<Array<{ group: string; slot: string; type: string }>>([]);
 
   // Manual configuration editor groups
@@ -178,7 +276,20 @@ export default function CentralWebUI({
   const [isRenameTenantModalOpen, setIsRenameTenantModalOpen] = useState(false);
   const [renameTenantId, setRenameTenantId] = useState<string | null>(null);
   const [renameTenantInput, setRenameTenantInput] = useState("");
+  const [renameTenantLogoUrl, setRenameTenantLogoUrl] = useState("");
   const [deleteConfirmTenantId, setDeleteConfirmTenantId] = useState<string | null>(null);
+
+  // Local state for editing detectors (transient text area/input)
+  const [editingDetectors, setEditingDetectors] = useState<Record<string, string>>({});
+
+  // Local state for Add System Type form/modal
+  const [isAddTypeModalOpen, setIsAddTypeModalOpen] = useState(false);
+  const [newTypeCode, setNewTypeCode] = useState("");
+  const [newTypeNameField, setNewTypeNameField] = useState("");
+  const [newTypeColor, setNewTypeColor] = useState("#3b82f6");
+  const [newTypeDetectors, setNewTypeDetectors] = useState("Normal, ZD, ZB, RAS");
+  const [newTypeHasHardware, setNewTypeHasHardware] = useState(false);
+  const [newTypeHardwareHeaders, setNewTypeHardwareHeaders] = useState("Bauteil/Ring;Typ;Störung;Unterbrechung;Softwarestand;Serie");
 
   // Turnus simulation quarter state
   const [currentQuarter, setCurrentQuarter] = useState<number>(1); // Q1, Q2, Q3, Q4
@@ -470,30 +581,679 @@ export default function CentralWebUI({
     triggerToast(`Wartung ${p.name} erfolgreich archiviert (${newArchive.filename}) & in die Datenbank-Warteschlange zurückgestellt.`, "success");
   };
 
-  // Helper to start adjusting a specific protocol
-  const startAdjustProtocol = (p: ProtocolItem) => {
-    setAdjustProtocolId(p.id);
-    setAdjustName(p.name);
-    setAdjustAddress(p.address || "");
-    setAdjustContractNumber(p.contractNumber);
-    setAdjustInterval(p.interval);
-    setAdjustStatus(p.status);
-    setAdjustSystemType(p.systemType);
+  const ensureTenCells = (existingCells: any[], sysType: string) => {
+    const list = [...existingCells];
+    const targetLength = Math.max(10, list.length);
+    while (list.length < targetLength) {
+      const nextKey = (list.length + 1).toString();
+      list.push({
+        slotKey: nextKey,
+        detectorType: "-",
+        value: ""
+      });
+    }
+    return list;
+  };
+
+  const startUnifiedEditorEdit = (p: ProtocolItem) => {
+    setEditorMode("edit");
+    setEditorProtocolId(p.id);
+    setEditorName(p.name);
+    setEditorAddress(p.address || "");
+    setEditorContractNumber(p.contractNumber);
+    setEditorInterval(p.interval);
+    setEditorStatus(p.status);
+    setEditorSystemType(p.systemType);
     
-    // Deep clone rows
-    const clonedRows = p.rows.map(r => ({
-      groupId: r.groupId,
-      groupName: r.groupName,
-      groupType: r.groupType || "",
-      cells: r.cells.map(c => ({
-        slotKey: c.slotKey,
-        detectorType: c.detectorType,
-        value: c.value
+    const savedSubSystems: EditorSubsystem[] = p.subSystems ? p.subSystems.map(sub => ({
+      id: sub.id,
+      name: sub.name,
+      rows: sub.rows.map(r => ({
+        groupId: r.groupId,
+        groupName: r.groupName,
+        groupType: r.groupType || "NAM",
+        cells: ensureTenCells(r.cells, p.systemType)
+      }))
+    })) : [
+      {
+        id: `sub-sys-1-${Date.now()}`,
+        name: "Anlage 1: Hauptstelle",
+        rows: p.rows.map(r => ({
+          groupId: r.groupId,
+          groupName: r.groupName,
+          groupType: r.groupType || "NAM",
+          cells: ensureTenCells(r.cells, p.systemType)
+        }))
+      }
+    ];
+
+    setEditorSubSystems(savedSubSystems);
+    setActiveSubsystemId(savedSubSystems[0]?.id || null);
+    
+    const defaultTypes = systemTypeSettings[p.systemType] || ["-", "Normal"];
+    setDynamicDetectorTypes(defaultTypes);
+
+    setPaintTool("type");
+    const defaultPaintVal = defaultTypes.filter(t => t !== "-")[0] || "Normal";
+    setPaintValue(defaultPaintVal);
+
+    setEditorHistory([JSON.parse(JSON.stringify(savedSubSystems))]);
+    setEditorHistoryIndex(0);
+
+    setIsUnifiedEditorOpen(true);
+  };
+
+  const startUnifiedEditorCreate = () => {
+    setEditorMode("create");
+    setEditorProtocolId(null);
+    setEditorName("");
+    setEditorAddress("");
+    const generatedNum = `VN-99${Math.floor(100 + Math.random() * 900)}`;
+    setEditorContractNumber(generatedNum);
+    setEditorInterval("Jährlich");
+    setEditorSystemType("BMA");
+    setEditorStatus("ready_to_download");
+
+    const defaultTypes = systemTypeSettings["BMA"] || ["-", "Normal"];
+    setDynamicDetectorTypes(defaultTypes);
+
+    const defaultRows = Array.from({ length: 5 }, (_, grpIdx) => {
+      const gId = `GRP-${String(grpIdx + 1).padStart(2, "0")}`;
+      const gNames = [
+        "Kellergeschoss (Heizungsraum)",
+        "Erdgeschoss (Empfangsbereich)",
+        "1. Obergeschoss (Flur West)",
+        "2. Obergeschoss (Serverraum)",
+        "Dachgeschoss (Lagerhalle)"
+      ];
+      const gName = gNames[grpIdx] || `Gruppe ${grpIdx + 1}`;
+      
+      const activeType = defaultTypes.filter(t => t !== "-")[0] || "Normal";
+      const cells = Array.from({ length: 10 }, (_, sIdx) => {
+        const key = (sIdx + 1).toString();
+        const type = sIdx < 5 ? activeType : "-";
+        return {
+          slotKey: key,
+          detectorType: type,
+          value: ""
+        };
+      });
+
+      return {
+        groupId: gId,
+        groupName: gName,
+        groupType: "NAM",
+        cells
+      };
+    });
+
+    const initSubsystem: EditorSubsystem = {
+      id: `sub-sys-1-${Date.now()}`,
+      name: "Anlage 1: Hauptbereich",
+      rows: defaultRows
+    };
+
+    setEditorSubSystems([initSubsystem]);
+    setActiveSubsystemId(initSubsystem.id);
+
+    setPaintTool("type");
+    setPaintValue("Normal");
+
+    setEditorHistory([JSON.parse(JSON.stringify([initSubsystem]))]);
+    setEditorHistoryIndex(0);
+
+    setIsUnifiedEditorOpen(true);
+  };
+
+  const updateSubsystemsAndHistory = (newSubsystems: EditorSubsystem[]) => {
+    setEditorSubSystems(newSubsystems);
+    const newHistory = editorHistory.slice(0, editorHistoryIndex + 1);
+    newHistory.push(JSON.parse(JSON.stringify(newSubsystems)));
+    setEditorHistory(newHistory);
+    setEditorHistoryIndex(newHistory.length - 1);
+  };
+
+  const pushHistoryState = (nextSubsystems: EditorSubsystem[]) => {
+    const cleanHistory = editorHistory.slice(0, editorHistoryIndex + 1);
+    cleanHistory.push(JSON.parse(JSON.stringify(nextSubsystems)));
+    setEditorHistory(cleanHistory);
+    setEditorHistoryIndex(cleanHistory.length - 1);
+  };
+
+  const handleUndo = () => {
+    if (editorHistoryIndex > 0) {
+      const nextIndex = editorHistoryIndex - 1;
+      setEditorHistoryIndex(nextIndex);
+      setEditorSubSystems(JSON.parse(JSON.stringify(editorHistory[nextIndex])));
+      triggerToast("Schritt zurückgesetzt", "info");
+    } else {
+      triggerToast("Kein Schritt mehr im Verlauf!", "warning");
+    }
+  };
+
+  const handleRedo = () => {
+    if (editorHistoryIndex < editorHistory.length - 1) {
+      const nextIndex = editorHistoryIndex + 1;
+      setEditorHistoryIndex(nextIndex);
+      setEditorSubSystems(JSON.parse(JSON.stringify(editorHistory[nextIndex])));
+      triggerToast("Aktion wiederholt", "info");
+    } else {
+      triggerToast("Keine Aktion mehr zum Wiederholen!", "warning");
+    }
+  };
+
+  const handleEditorAddGroup = () => {
+    const nextId = `GRP-${Date.now()}`;
+    const targetLength = editorSubSystems[0]?.rows[0]?.cells.length || 10;
+    const firstActiveType = dynamicDetectorTypes.filter(t => t !== "-")[0] || "Normal";
+    const newCells = Array.from({ length: targetLength }, (_, i) => ({
+      slotKey: (i + 1).toString(),
+      detectorType: i < 5 ? firstActiveType : "-",
+      value: ""
+    }));
+    
+    const nextSubsystemList = editorSubSystems.map(sub => {
+      if (sub.id === activeSubsystemId) {
+        return {
+          ...sub,
+          rows: [
+            ...sub.rows,
+            {
+              groupId: nextId,
+              groupName: `Gruppe ${sub.rows.length + 1}`,
+              groupType: "NAM",
+              cells: newCells
+            }
+          ]
+        };
+      }
+      return sub;
+    });
+    
+    updateSubsystemsAndHistory(nextSubsystemList);
+    triggerToast("Neue Gruppe angelegt!", "success");
+  };
+
+  const handleEditorDeleteGroup = (groupId: string) => {
+    const nextSubsystemList = editorSubSystems.map(sub => {
+      if (sub.id === activeSubsystemId) {
+        return {
+          ...sub,
+          rows: sub.rows.filter(r => r.groupId !== groupId)
+        };
+      }
+      return sub;
+    });
+    updateSubsystemsAndHistory(nextSubsystemList);
+    triggerToast("Gruppe entfernt", "info");
+  };
+
+  const handleAddHardwareRow = () => {
+    const activeSub = editorSubSystems.find(s => s.id === activeSubsystemId);
+    if (!activeSub) return;
+    const headers = systemTypeHardwareConfigs[editorSystemType]?.headers || [];
+    const newRow: Record<string, string> = { id: `hw-${Date.now()}-${Math.random()}` };
+    headers.forEach(h => {
+      newRow[h] = "";
+    });
+    
+    const nextList = editorSubSystems.map(sub => {
+      if (sub.id === activeSubsystemId) {
+        const currentRows = sub.hardwareRows || [];
+        return {
+          ...sub,
+          hardwareRows: [...currentRows, newRow]
+        };
+      }
+      return sub;
+    });
+    setEditorSubSystems(nextList);
+    pushHistoryState(nextList);
+    triggerToast("Zusätzliche Hardware-Komponente hinzugefügt", "success");
+  };
+
+  const handleHardwareValueChange = (rowId: string, header: string, value: string) => {
+    const nextList = editorSubSystems.map(sub => {
+      if (sub.id === activeSubsystemId) {
+        const currentRows = sub.hardwareRows || [];
+        return {
+          ...sub,
+          hardwareRows: currentRows.map(r => r.id === rowId ? { ...r, [header]: value } : r)
+        };
+      }
+      return sub;
+    });
+    setEditorSubSystems(nextList);
+  };
+
+  const handleDeleteHardwareRow = (rowId: string) => {
+    const nextList = editorSubSystems.map(sub => {
+      if (sub.id === activeSubsystemId) {
+        const currentRows = sub.hardwareRows || [];
+        return {
+          ...sub,
+          hardwareRows: currentRows.filter(r => r.id !== rowId)
+        };
+      }
+      return sub;
+    });
+    setEditorSubSystems(nextList);
+    pushHistoryState(nextList);
+    triggerToast("Hardware-Komponente entfernt", "info");
+  };
+
+  const applyBrushToSelection = (start: { r: number; c: number }, end: { r: number; c: number }) => {
+    const minR = Math.min(start.r, end.r);
+    const maxR = Math.max(start.r, end.r);
+    const minC = Math.min(start.c, end.c);
+    const maxC = Math.max(start.c, end.c);
+
+    const nextSubsystems = editorSubSystems.map(sub => {
+      if (sub.id === activeSubsystemId) {
+        return {
+          ...sub,
+          rows: sub.rows.map((row, rIdx) => {
+            if (rIdx >= minR && rIdx <= maxR) {
+              const nextCells = row.cells.map((cell, cIdx) => {
+                if (cIdx >= minC && cIdx <= maxC) {
+                  if (paintTool === "type") {
+                    if (paintValue === "Beschriftung") {
+                      return {
+                        ...cell,
+                        detectorType: "Beschriftung",
+                        value: textBrushValue || ""
+                      };
+                    } else if (paintValue === "Freitext") {
+                      return {
+                        ...cell,
+                        detectorType: "Freitext",
+                        value: ""
+                      };
+                    } else {
+                      return {
+                        ...cell,
+                        detectorType: paintValue,
+                        value: (cell.detectorType === "Beschriftung" || cell.detectorType === "Freitext") ? "" : cell.value
+                      };
+                    }
+                  } else if (paintTool === "trigger") {
+                    return {
+                      ...cell,
+                      value: cell.detectorType === "-" ? "" : paintValue
+                    };
+                  } else if (paintTool === "text") {
+                    return {
+                      ...cell,
+                      value: cell.detectorType === "-" ? "" : textBrushValue
+                    };
+                  }
+                }
+                return cell;
+              });
+              return { ...row, cells: nextCells };
+            }
+            return row;
+          })
+        };
+      }
+      return sub;
+    });
+
+    setEditorSubSystems(nextSubsystems);
+    pushHistoryState(nextSubsystems);
+  };
+
+  const handleCellMouseDown = (rowIdx: number, cellIdx: number, e: React.MouseEvent) => {
+    e.preventDefault();
+    setSelectionStart({ r: rowIdx, c: cellIdx });
+    setSelectionEnd({ r: rowIdx, c: cellIdx });
+  };
+
+  const handleCellMouseEnter = (rowIdx: number, cellIdx: number, e: React.MouseEvent) => {
+    if (!selectionStart) return;
+    e.preventDefault();
+    setSelectionEnd({ r: rowIdx, c: cellIdx });
+  };
+
+  const handleGlobalMouseUp = () => {
+    if (selectionStart && selectionEnd) {
+      applyBrushToSelection(selectionStart, selectionEnd);
+      setSelectionStart(null);
+      setSelectionEnd(null);
+    }
+  };
+
+  useEffect(() => {
+    if (isUnifiedEditorOpen) {
+      window.addEventListener("mouseup", handleGlobalMouseUp);
+      return () => {
+        window.removeEventListener("mouseup", handleGlobalMouseUp);
+      };
+    }
+  }, [isUnifiedEditorOpen, selectionStart, selectionEnd, editorSubSystems, paintTool, paintValue, textBrushValue, activeSubsystemId]);
+
+  const handleAddColumn = () => {
+    const currentLength = editorSubSystems[0]?.rows[0]?.cells.length || 10;
+    if (currentLength >= 50) {
+      triggerToast("Maximale Spaltenanzahl von 50 erreicht!", "warning");
+      return;
+    }
+    const nextLength = currentLength + 1;
+    const nextSubsystems = editorSubSystems.map(sub => ({
+      ...sub,
+      rows: sub.rows.map(row => {
+        const nextCells = [...row.cells];
+        nextCells.push({
+          slotKey: nextLength.toString(),
+          detectorType: "-",
+          value: ""
+        });
+        return { ...row, cells: nextCells };
+      })
+    }));
+    updateSubsystemsAndHistory(nextSubsystems);
+    triggerToast(`Spalte M${String(nextLength).padStart(2, "0")} hinzugefügt`, "success");
+  };
+
+  const handleRemoveColumn = () => {
+    const currentLength = editorSubSystems[0]?.rows[0]?.cells.length || 10;
+    if (currentLength <= 10) {
+      triggerToast("Minimal 10 Spalten erforderlich!", "warning");
+      return;
+    }
+    const nextSubsystems = editorSubSystems.map(sub => ({
+      ...sub,
+      rows: sub.rows.map(row => ({
+        ...row,
+        cells: row.cells.slice(0, currentLength - 1)
       }))
     }));
-    setAdjustRows(clonedRows);
-    setShowConfirmDeleteAdjust(false);
-    setIsAdjustProtocolModalOpen(true);
+    updateSubsystemsAndHistory(nextSubsystems);
+    triggerToast(`Spalte M${String(currentLength).padStart(2, "0")} entfernt`, "info");
+  };
+
+  const handleAddSubsystem = () => {
+    const nextId = `sub-sys-${Date.now()}`;
+    const nextColumnsCount = editorSubSystems[0]?.rows[0]?.cells.length || 10;
+    const defaultRows = Array.from({ length: 3 }, (_, grpIdx) => ({
+      groupId: `GRP-${String(grpIdx + 1).padStart(2, "0")}`,
+      groupName: `Neue Anlage Gruppe ${grpIdx + 1}`,
+      groupType: "NAM",
+      cells: Array.from({ length: nextColumnsCount }, (_, sIdx) => ({
+        slotKey: (sIdx + 1).toString(),
+        detectorType: sIdx < 5 ? "Normal" : "-",
+        value: ""
+      }))
+    }));
+
+    const newSub: EditorSubsystem = {
+      id: nextId,
+      name: `Anlage ${editorSubSystems.length + 1}: Zusatzbereich`,
+      rows: defaultRows
+    };
+
+    const nextList = [...editorSubSystems, newSub];
+    updateSubsystemsAndHistory(nextList);
+    setActiveSubsystemId(nextId);
+    triggerToast("Zusätzliche separate Anlage hinzugefügt!", "success");
+  };
+
+  const handleDeleteSubsystem = () => {
+    if (editorSubSystems.length <= 1) {
+      triggerToast("Mindestens eine separate Anlage muss vorhanden sein!", "warning");
+      return;
+    }
+    const nextList = editorSubSystems.filter(s => s.id !== activeSubsystemId);
+    updateSubsystemsAndHistory(nextList);
+    setActiveSubsystemId(nextList[0].id);
+    triggerToast("Ausgewählte separate Anlage entfernt", "info");
+  };
+
+  const handleRenameSubsystem = (newName: string) => {
+    const nextList = editorSubSystems.map(s => {
+      if (s.id === activeSubsystemId) {
+        return { ...s, name: newName };
+      }
+      return s;
+    });
+    setEditorSubSystems(nextList);
+  };
+
+  const handleRenameSubsystemBlur = () => {
+    pushHistoryState(editorSubSystems);
+  };
+
+  // Pre-select correct file type when opening modal based on systemType
+  useEffect(() => {
+    if (isImportModalOpen) {
+      if (editorSystemType === "BMA") {
+        setEditorImportFileType("esser");
+      } else {
+        setEditorImportFileType("csv");
+      }
+    }
+  }, [isImportModalOpen, editorSystemType]);
+
+  const handleDownloadTemplate = (format: "csv" | "xlsx") => {
+    const typeLabel = editorSystemType || "BMA";
+    let headers = "Gruppe;Name;Slot;Typ;Zustand\n";
+    let rows: string[][] = [];
+
+    if (typeLabel === "BMA") {
+      rows = [
+        ["M01", "EG Flurbereich West", "1", "Normal", "CHECK"],
+        ["M01", "EG Flurbereich West", "2", "Normal", ""],
+        ["M01", "EG Flurbereich West", "3", "Wärme", "Q1"],
+        ["M02", "1. OG Aufenthaltsraum", "1", "Normal", ""],
+        ["M02", "1. OG Aufenthaltsraum", "2", "Handmelder", "Def."]
+      ];
+    } else if (typeLabel === "ELA") {
+      rows = [
+        ["S01", "Hauptflur Musik", "1", "Decken-LS", "CHECK"],
+        ["S01", "Hauptflur Musik", "2", "Wand-LS", ""],
+        ["S02", "Cafeteria Küche", "1", "Druckkammer-LS", "Def."]
+      ];
+    } else if (typeLabel === "Lichtruf") {
+      rows = [
+        ["01", "Zimmer 101 Station A", "1", "Zimmertaster", "CHECK"],
+        ["01", "Zimmer 101 Station A", "2", "Birntaster", ""],
+        ["02", "Station Bad links", "1", "Zugmelder", "Def."]
+      ];
+    } else { // RWA, Sprinkler, etc.
+      rows = [
+        ["G01", "Haupthalle Süd", "1", "Antrieb", "CHECK"],
+        ["G01", "Haupthalle Süd", "2", "Taster", ""],
+        ["G02", "Heizungsraum", "1", "Melder", "Def."]
+      ];
+    }
+
+    if (format === "csv") {
+      // Build standard CSV
+      let csvContent = "\uFEFF"; // UTF-8 BOM so Excel opens it with correct encoding (umlauts!)
+      csvContent += headers;
+      rows.forEach(r => {
+        csvContent += r.join(";") + "\n";
+      });
+
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      link.setAttribute("download", `Wartungs_Template_${typeLabel}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      triggerToast("CSV Template heruntergeladen!", "success");
+    } else {
+      // Generate actual Microsoft Excel binary blob using 'xlsx' library on the client!
+      try {
+        const wsData = [
+          ["Gruppe", "Name", "Slot", "Typ", "Zustand"],
+          ...rows
+        ];
+        const ws = XLSX.utils.aoa_to_sheet(wsData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Vorlage");
+        const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+        const blob = new Blob([wbout], { type: "application/octet-stream" });
+        
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", `Wartungs_Template_${typeLabel}.xlsx`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        triggerToast("XLSX Template heruntergeladen!", "success");
+      } catch (err: any) {
+        console.error("XLSX template generation error:", err);
+        triggerToast("XLSX Erstellung fehlgeschlagen, lade CSV herunter...", "info");
+        // Fallback
+        let csvContent = "\uFEFF"; 
+        csvContent += headers;
+        rows.forEach(r => {
+          csvContent += r.join(";") + "\n";
+        });
+        const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", `Wartungs_Template_${typeLabel}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+    }
+  };
+
+  const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsImporting(true);
+
+    try {
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        const base64Content = event.target?.result as string;
+        
+        try {
+          const response = await fetch("/api/import", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              filename: file.name,
+              content: base64Content,
+              importType: editorImportFileType
+            })
+          });
+
+          if (!response.ok) {
+            const errData = await response.json().catch(() => ({ error: `Server antwortete mit Status ${response.status}` }));
+            throw new Error(errData.error || `Serverfehler (${response.status})`);
+          }
+
+          const data = await response.json();
+
+          if (data.success && data.subSystems && data.subSystems.length > 0) {
+            // Update editor state with imported results
+            setEditorSubSystems(data.subSystems);
+            setActiveSubsystemId(data.subSystems[0].id);
+            pushHistoryState(data.subSystems);
+            
+            triggerToast(data.message || "Import erfolgreich abgeschlossen!", "success");
+            setIsImportModalOpen(false);
+          } else {
+            throw new Error(data.error || "Fehler beim Verarbeiten der Import-Datei.");
+          }
+        } catch (postErr: any) {
+          triggerToast(`Netzwerkfehler beim Import: ${postErr.message}`, "warning");
+        } finally {
+          setIsImporting(false);
+          // reset input
+          e.target.value = "";
+        }
+      };
+
+      reader.onerror = () => {
+        triggerToast("Fehler beim Lesen der Datei.", "warning");
+        setIsImporting(false);
+      };
+
+      reader.readAsDataURL(file);
+    } catch (err: any) {
+      triggerToast(`Importfehler: ${err.message}`, "warning");
+      setIsImporting(false);
+    }
+  };
+
+  const handleSaveUnifiedEditor = () => {
+    if (!editorName.trim()) {
+      triggerToast("Bitte Name des Wartungsobjekts angeben!", "warning");
+      return;
+    }
+    if (!editorContractNumber.trim()) {
+      triggerToast("Bitte eine Vertragsnummer angeben!", "warning");
+      return;
+    }
+    if (editorSubSystems.length === 0) {
+      triggerToast("Fehler: Mindestens eine separate Anlage muss vorhanden sein!", "warning");
+      return;
+    }
+    
+    const legacyFirstSys = editorSubSystems[0];
+    const columnsMaxCount = legacyFirstSys?.rows[0]?.cells.length || 10;
+    const calculatedColumns = Array.from({ length: columnsMaxCount }, (_, i) => (i + 1).toString());
+
+    if (editorMode === "create") {
+      const newId = `prot-${Date.now()}`;
+      const newProtocolItem: ProtocolItem = {
+        id: newId,
+        name: editorName.trim(),
+        address: editorAddress.trim(),
+        contractNumber: editorContractNumber.trim(),
+        interval: editorInterval,
+        systemType: editorSystemType,
+        status: "ready_to_download",
+        columns: calculatedColumns, 
+        applicableValues: ["OK", "Def.", "N.A."],
+        detectorTypes: dynamicDetectorTypes,
+        rows: legacyFirstSys.rows,
+        subSystems: editorSubSystems
+      };
+
+      setProtocols(prev => [...prev, newProtocolItem]);
+      triggerToast(`Wartungsvertrag ${editorName} erfolgreich angelegt!`, "success");
+    } else {
+      setProtocols(prev => prev.map(p => {
+        if (p.id === editorProtocolId) {
+          return {
+            ...p,
+            name: editorName.trim(),
+            address: editorAddress.trim(),
+            contractNumber: editorContractNumber.trim(),
+            interval: editorInterval,
+            status: editorStatus,
+            systemType: editorSystemType,
+            columns: calculatedColumns,
+            detectorTypes: dynamicDetectorTypes,
+            rows: legacyFirstSys.rows,
+            subSystems: editorSubSystems
+          };
+        }
+        return p;
+      }));
+      triggerToast(`Wartungsvertrag ${editorName} erfolgreich angepasst!`, "success");
+    }
+
+    setIsUnifiedEditorOpen(false);
+  };
+
+  // Helper to start adjusting a specific protocol
+  const startAdjustProtocol = (p: ProtocolItem) => {
+    startUnifiedEditorEdit(p);
   };
 
   // Helper to save adjusted protocol changes
@@ -753,6 +1513,7 @@ export default function CentralWebUI({
     // Standortadresse is optional! Only name and contract number (vn-nummer) are required.
 
     let calculatedRows: any[] = [];
+    let calculatedSubSystems: SubSystem[] | undefined = undefined;
 
     if (newContractSetupMethod === "import") {
       // Import workflow
@@ -783,6 +1544,34 @@ export default function CentralWebUI({
           cells: groupsMap[grpName]
         };
       });
+
+      // Split into multiple subSystems if we imported an ETB file that includes multiple systems
+      if (importFileType === "etb") {
+        const sys1rows = calculatedRows.filter(r => r.groupName.startsWith("Anlage 1"));
+        const sys2rows = calculatedRows.filter(r => r.groupName.startsWith("Anlage 2"));
+
+        if (sys1rows.length > 0 || sys2rows.length > 0) {
+          calculatedSubSystems = [
+            {
+              id: `sub-sys-1-${Date.now()}`,
+              name: "Anlage 1: Hauptstelle",
+              rows: sys1rows.map(r => ({
+                ...r,
+                groupName: r.groupName.replace("Anlage 1 - ", "")
+              }))
+            },
+            {
+              id: `sub-sys-2-${Date.now()}`,
+              name: "Anlage 2: Labor-Erweiterung",
+              rows: sys2rows.map(r => ({
+                ...r,
+                groupName: r.groupName.replace("Anlage 2 - ", "")
+              }))
+            }
+          ];
+        }
+      }
+
     } else {
       // Manual editor workflow
       if (manualGroups.length === 0) {
@@ -817,36 +1606,59 @@ export default function CentralWebUI({
       columns: mockColumns,
       applicableValues: ["OK", "Def.", "N.A."],
       detectorTypes: systemTypeSettings[newContractSystemType] || ["-", "Normal"],
-      rows: calculatedRows
+      rows: calculatedRows,
+      subSystems: calculatedSubSystems
     };
 
     setProtocols(prev => [...prev, newProtocolItem]);
-    triggerToast(`Wartungsvertrag ${newContractName} (${newContractSystemType}) wurde erfolgreich eingepflegt!`, "success");
+    triggerToast(
+      calculatedSubSystems 
+        ? `Wartungsvertrag ${newContractName} mit ${calculatedSubSystems.length} separate Anlagen erfolgreich decodiert & eingepflegt!`
+        : `Wartungsvertrag ${newContractName} (${newContractSystemType}) wurde erfolgreich eingepflegt!`, 
+      "success"
+    );
     setIsAddContractModalOpen(false);
   };
 
   const handleSimulateFileImport = () => {
-    setImportedFileName(`kundendaten_${newContractSystemType.toLowerCase()}_export_2026.csv`);
-    
-    // Choose detector types matching current systemType config
-    const validTypes = systemTypeSettings[newContractSystemType] || ["Normal"];
-    const type1 = validTypes[1] || "Normal";
-    const type2 = validTypes[2] || "Normal";
-    const type3 = validTypes[3] || "Normal";
+    if (importFileType === "etb") {
+      setImportedFileName("esser_kundendaten_decoded_project_9912.etb");
+      
+      const simulatedList = [
+        // Subsystem 1: Alarmierungshauptstelle
+        { group: "Anlage 1 - Gruppe 01: Technikraum Erdgeschoss", slot: "1", type: "ZD" },
+        { group: "Anlage 1 - Gruppe 01: Technikraum Erdgeschoss", slot: "2", type: "DB" },
+        { group: "Anlage 1 - Gruppe 02: Korridor Westtrakt", slot: "1", type: "RAS" },
+        // Subsystem 2: Labor-Extension
+        { group: "Anlage 2 - Gruppe 01: Forschungsbereich Unit B", slot: "1", type: "ZD" },
+        { group: "Anlage 2 - Gruppe 01: Forschungsbereich Unit B", slot: "2", type: "TDIF" },
+        { group: "Anlage 2 - Gruppe 02: Gefahrenstofflager", slot: "1", type: "RAS" }
+      ];
+      setImportedDetectors(simulatedList);
+      triggerToast("Python ETB-Decoder erfolgreich ausgeführt! 6 Melderpunkte in 2 getrennten Anlagenstrukturen decodiert.", "success");
+    } else {
+      setImportedFileName(`kundendaten_${newContractSystemType.toLowerCase()}_export_2026.csv`);
+      
+      // Choose detector types matching current systemType config
+      const validTypes = systemTypeSettings[newContractSystemType] || ["Normal"];
+      const type1 = validTypes[1] || "Normal";
+      const type2 = validTypes[2] || "Normal";
+      const type3 = validTypes[3] || "Normal";
 
-    const simulatedList = [
-      { group: "Sektion 01: Foyer-Erdzulauf", slot: "1", type: type1 },
-      { group: "Sektion 01: Foyer-Erdzulauf", slot: "2", type: type1 },
-      { group: "Sektion 01: Foyer-Erdzulauf", slot: "3", type: type2 },
-      { group: "Sektion 01: Foyer-Erdzulauf", slot: "4", type: type3 },
-      { group: "Sektion 02: EDV Serverraum", slot: "1", type: type1 },
-      { group: "Sektion 02: EDV Serverraum", slot: "2", type: type2 },
-      { group: "Sektion 02: EDV Serverraum", slot: "3", type: "Normal" },
-      { group: "Sektion 02: EDV Serverraum", slot: "4", type: type3 }
-    ];
+      const simulatedList = [
+        { group: "Sektion 01: Foyer-Erdzulauf", slot: "1", type: type1 },
+        { group: "Sektion 01: Foyer-Erdzulauf", slot: "2", type: type1 },
+        { group: "Sektion 01: Foyer-Erdzulauf", slot: "3", type: type2 },
+        { group: "Sektion 01: Foyer-Erdzulauf", slot: "4", type: type3 },
+        { group: "Sektion 02: EDV Serverraum", slot: "1", type: type1 },
+        { group: "Sektion 02: EDV Serverraum", slot: "2", type: type2 },
+        { group: "Sektion 02: EDV Serverraum", slot: "3", type: "Normal" },
+        { group: "Sektion 02: EDV Serverraum", slot: "4", type: type3 }
+      ];
 
-    setImportedDetectors(simulatedList);
-    triggerToast("Parst Kundendaten-Import: 8 Melderpunkte aufgeteilt in 2 Gruppen erfolgreich strukturiert!", "success");
+      setImportedDetectors(simulatedList);
+      triggerToast("Parst Kundendaten-Import: 8 Melderpunkte aufgeteilt in 2 Gruppen erfolgreich strukturiert!", "success");
+    }
   };
 
   const handleManualAddGroup = () => {
@@ -1124,37 +1936,7 @@ export default function CentralWebUI({
 
               <button 
                 onClick={() => {
-                  setNewContractName("");
-                  setNewContractAddress("");
-                  setNewContractNumber(`V-2026-${Math.floor(1000 + Math.random() * 9000)}-Z`);
-                  setNewContractInterval("Jährlich");
-                  setNewContractSystemType("BMA");
-                  setNewContractSetupMethod("import");
-                  setImportedFileName("");
-                  setImportedDetectors([]);
-                  setManualGroups([
-                    {
-                      groupId: "GRP_01",
-                      groupName: "Gruppe 01 (EG Hauptbereich)",
-                      slots: [
-                        { slotKey: "1", detectorType: "Normal" },
-                        { slotKey: "2", detectorType: "Normal" },
-                        { slotKey: "3", detectorType: "ZD" },
-                        { slotKey: "4", detectorType: "DKM" }
-                      ]
-                    },
-                    {
-                      groupId: "GRP_02",
-                      groupName: "Gruppe 02 (1.OG Büro West)",
-                      slots: [
-                        { slotKey: "1", detectorType: "Normal" },
-                        { slotKey: "2", detectorType: "Normal" },
-                        { slotKey: "3", detectorType: "TDIFF" },
-                        { slotKey: "4", detectorType: "RAS" }
-                      ]
-                    }
-                  ]);
-                  setIsAddContractModalOpen(true);
+                  startUnifiedEditorCreate();
                 }}
                 className="px-3.5 h-9 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded text-xs inline-flex items-center gap-1 transition-all shadow-sm active:scale-95 cursor-pointer"
                 title="Wartungsvertrag oder neue Anlage direkt in der Web-Zentrale einpflegen"
@@ -1178,12 +1960,16 @@ export default function CentralWebUI({
                 <tbody className="divide-y divide-slate-100">
                   {filteredProtocols.length > 0 ? (
                     filteredProtocols.map(p => {
-                      // Calc rows filled details
+                      // Calc rows filled details across subsystems (if they exist) or root rows
                       let cellsTotal = 0;
                       let cellsFilled = 0;
                       let cellsDef = 0;
                       
-                      p.rows.forEach(r => {
+                      const rowsToCalculate = p.subSystems && p.subSystems.length > 0 
+                        ? p.subSystems.flatMap(sub => sub.rows)
+                        : p.rows;
+
+                      rowsToCalculate.forEach(r => {
                         r.cells.forEach(c => {
                           if (c.detectorType !== "-") {
                             cellsTotal++;
@@ -1209,7 +1995,7 @@ export default function CentralWebUI({
                           }`}
                         >
                           <td className="px-4 py-3.5">
-                            <div className="font-bold text-slate-800 flex flex-wrap items-center gap-1.5">
+                            <div className="font-bold text-slate-800 flex flex-wrap items-center gap-1.5 font-sans">
                               <span>{p.name}</span>
                               {p.isOverdue && (
                                 <span className="bg-red-600 hover:bg-red-700 text-white text-[9px] font-extrabold uppercase font-mono px-2 py-0.5 rounded shadow-sm flex items-center gap-0.5 animate-pulse shrink-0">
@@ -1222,12 +2008,38 @@ export default function CentralWebUI({
                                 </span>
                               )}
                             </div>
-                            <div className="text-[10px] font-mono text-slate-500 mt-0.5 max-w-[280px] truncate">
+                            <div className="text-[10px] font-mono text-slate-500 mt-0.5 max-w-[450px] truncate">
                               Vertrag: <strong className="text-indigo-950">{p.contractNumber}</strong> | {p.address}
                             </div>
+                            {p.subSystems && p.subSystems.length > 0 && (
+                              <div className="mt-1.5 flex flex-col gap-1 max-w-[550px]">
+                                <div className="inline-flex items-center gap-1 text-[9px] text-indigo-700 bg-indigo-50 border border-indigo-100 rounded px-1.5 py-0.5 font-extrabold w-fit uppercase tracking-tight font-mono">
+                                  <SlidersHorizontal size={9} />
+                                  <span>{p.subSystems.length} separate Anlagen</span>
+                                </div>
+                                <div className="text-[9.5px] text-slate-500 font-mono flex flex-wrap gap-x-2 gap-y-0.5 leading-snug">
+                                  {p.subSystems.map((sub, sIdx) => {
+                                    const subDetectorsCount = sub.rows.reduce((sum, r) => sum + r.cells.filter(c => c.detectorType !== "-").length, 0);
+                                    return (
+                                      <span key={sub.id || sIdx} className="bg-slate-100 px-1 py-0.5 rounded text-[8.5px] text-slate-600 inline-block font-mono border border-slate-205/40">
+                                        {sub.name.split(":")[0] || sub.name}: <strong className="text-indigo-955">{subDetectorsCount} Melder</strong>
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
                           </td>
                           <td className="px-3 py-3.5">
-                            <span className="bg-[#003d9b]/10 text-[#003d9b] font-mono font-bold px-1.5 py-0.5 rounded text-[10px]">
+                            <span 
+                              className="font-mono font-bold px-1.5 py-0.5 rounded text-[10px] border transition-all duration-200"
+                              style={{
+                                backgroundColor: `${systemTypeMetadata[p.systemType]?.color || "#003d9b"}15`,
+                                color: systemTypeMetadata[p.systemType]?.color || "#003d9b",
+                                borderColor: `${systemTypeMetadata[p.systemType]?.color || "#003d9b"}40`
+                              }}
+                              title={systemTypeMetadata[p.systemType]?.name || p.systemType}
+                            >
                               {p.systemType}
                             </span>
                           </td>
@@ -1713,6 +2525,353 @@ export default function CentralWebUI({
             </div>
           </div>
 
+          {/* Section: Globale Anlagentypen & Geräteparameter */}
+          <div className="bg-white border-2 border-slate-200 rounded-lg p-6 shadow-sm font-sans text-slate-800">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-2">
+              <h2 className="text-sm font-bold tracking-wider font-mono text-slate-800 uppercase flex items-center gap-2">
+                <SlidersHorizontal className="text-indigo-600" size={18} />
+                Globale Anlagentypen & Geräteparameter
+              </h2>
+              <button
+                type="button"
+                onClick={() => setIsAddTypeModalOpen(true)}
+                className="px-3.5 py-1.5 bg-[#003d9b] hover:bg-[#002f78] text-white font-bold text-xs rounded shadow flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Plus size={13} /> Neuen Anlagentyp hinzufügen
+              </button>
+            </div>
+            
+            <p className="text-xs text-slate-500 mb-4 leading-relaxed">
+              Konfigurieren Sie die verfügbaren Systemgattungen global. Legen Sie feste Kürzel (z.B. BMA), Typenbezeichnungen (Namen) und Signalfarben für Labels fest. Sie können auch verfügbare Meldertypen kommagetrennt verwalten (ein Indexwechsel wird automatisch in alle betroffenen Protokolle kaskadiert, während entfernte Meldertypen auf den 2. Meldertyp springen). Aktivieren Sie optional separate Hardware-Prüftabellen mit konfigurierbaren Semicolon-Spalten.
+            </p>
+
+            <div className="space-y-4">
+              {Object.keys(systemTypeSettings).map((typeName) => {
+                const detectors = systemTypeSettings[typeName] || [];
+                const detectorsString = editingDetectors[typeName] !== undefined 
+                  ? editingDetectors[typeName] 
+                  : detectors.join(", ");
+                const hwConfig = systemTypeHardwareConfigs[typeName] || { hasHardware: false, headers: [] };
+                const headersString = hwConfig.headers.join("; ");
+                const meta = systemTypeMetadata[typeName] || { name: typeName, color: "#003d9b" };
+
+                // Handlers inside map
+                const handleUpdateTypeName = (newName: string) => {
+                  const cleaned = newName.trim();
+                  if (!cleaned) return;
+                  const alreadyExists = Object.entries(systemTypeMetadata).some(
+                    ([k, v]) => k !== typeName && v.name.toLowerCase() === cleaned.toLowerCase()
+                  );
+                  if (alreadyExists) {
+                    triggerToast(`Typenbezeichnung '${cleaned}' wird bereits von einem anderen Anlagentyp verwendet!`, "warning");
+                    return;
+                  }
+                  setSystemTypeMetadata(prev => ({
+                    ...prev,
+                    [typeName]: { ...prev[typeName], name: cleaned }
+                  }));
+                };
+
+                const handleUpdateTypeCode = (rawNewCode: string) => {
+                  const newCode = rawNewCode.trim().toUpperCase();
+                  if (!newCode || typeName === newCode) return;
+
+                  // Prevent spaces or strange characters
+                  if (!/^[A-Z0-9_-]+$/.test(newCode)) {
+                    triggerToast(`Ungültiges Format: Label Code darf keine Leerzeichen enthalten!`, "warning");
+                    return;
+                  }
+
+                  // 1. Prevent duplicate labels (shortcode)
+                  if (systemTypeSettings[newCode]) {
+                    triggerToast(`Anlagentyp mit dem Label '${newCode}' existiert bereits!`, "warning");
+                    return;
+                  }
+
+                  // 2. Rename keys in settings
+                  setSystemTypeSettings(prev => {
+                    const copy = { ...prev };
+                    copy[newCode] = copy[typeName] || ["-", "Normal"];
+                    delete copy[typeName];
+                    return copy;
+                  });
+
+                  // Rename in hardware configs
+                  setSystemTypeHardwareConfigs(prev => {
+                    const copy = { ...prev };
+                    copy[newCode] = copy[typeName] || { hasHardware: false, headers: [] };
+                    delete copy[typeName];
+                    return copy;
+                  });
+
+                  // Rename in metadata
+                  setSystemTypeMetadata(prev => {
+                    const copy = { ...prev };
+                    copy[newCode] = copy[typeName] || { name: typeName, color: "#003d9b" };
+                    delete copy[typeName];
+                    return copy;
+                  });
+
+                  // 3. Rename in active protocols list
+                  setProtocols(prev => prev.map(p => {
+                    if (p.systemType === typeName) {
+                      return { ...p, systemType: newCode };
+                    }
+                    return p;
+                  }));
+
+                  triggerToast(`Anlagentyp '${typeName}' erfolgreich in '${newCode}' umbenannt!`, "success");
+                };
+
+                const handleUpdateTypeColor = (col: string) => {
+                  setSystemTypeMetadata(prev => ({
+                    ...prev,
+                    [typeName]: { ...prev[typeName], color: col }
+                  }));
+                };
+
+                const migrateProtocolDetectorTypes = (oldList: string[], newList: string[]) => {
+                  setProtocols(prevProtocols => prevProtocols.map(protocol => {
+                    if (protocol.systemType !== typeName) return protocol;
+
+                    const updatedProtocolDetectorTypes = newList.filter(t => t !== "-");
+                    const updatedSubSystems = protocol.subSystems?.map(sub => {
+                      const updatedRows = sub.rows.map(row => {
+                        const updatedCells = row.cells.map(cell => {
+                          const oldIndex = oldList.indexOf(cell.detectorType);
+                          if (oldIndex !== -1) {
+                            const newType = newList[oldIndex];
+                            if (newType !== undefined) {
+                              return { ...cell, detectorType: newType };
+                            } else {
+                              // Removed, jump to 2nd detector type in newList (index 1 is first valid, fallback to Normal)
+                              const fallbackType = newList[1] || "Normal";
+                              return { ...cell, detectorType: fallbackType };
+                            }
+                          }
+                          return cell;
+                        });
+                        return { ...row, cells: updatedCells };
+                      });
+                      return { ...sub, rows: updatedRows };
+                    });
+
+                    return {
+                      ...protocol,
+                      detectorTypes: updatedProtocolDetectorTypes,
+                      subSystems: updatedSubSystems
+                    };
+                  }));
+                };
+
+                const handleCommitDetectors = (val: string) => {
+                  const parts = val.split(",").map(s => s.trim()).filter(Boolean);
+                  const list = parts.includes("-") ? parts : ["-", ...parts];
+                  const oldList = systemTypeSettings[typeName] || ["-", "Normal"];
+
+                  // Update settings
+                  setSystemTypeSettings(prev => ({
+                    ...prev,
+                    [typeName]: list
+                  }));
+
+                  // Trigger migration
+                  migrateProtocolDetectorTypes(oldList, list);
+
+                  // Reset local editing transient buffer
+                  setEditingDetectors(prev => {
+                    const copy = { ...prev };
+                    delete copy[typeName];
+                    return copy;
+                  });
+
+                  triggerToast(`Meldertypen für '${typeName}' aktualisiert & betroffene Protokolle migriert!`, "success");
+                };
+
+                const handleDeleteType = () => {
+                  // Check if in use
+                  const inUse = protocols.some(p => p.systemType === typeName);
+                  if (inUse) {
+                    alert(`Fehler beim Löschen: Der Anlagentyp '${typeName}' (${meta.name}) kann nicht gelöscht werden, da er derzeit von mindestens einer Anlage/Protokoll in der Datenbank verwendet wird!`);
+                    triggerToast(`Löschen blockiert: Anlagentyp '${typeName}' ist in Verwendung.`, "warning");
+                    return;
+                  }
+
+                  if (confirm(`Möchten Sie den Anlagentyp '${typeName}' (${meta.name}) wirklich dauerhaft entfernen?`)) {
+                    setSystemTypeSettings(prev => {
+                      const copy = { ...prev };
+                      delete copy[typeName];
+                      return copy;
+                    });
+                    setSystemTypeHardwareConfigs(prev => {
+                      const copy = { ...prev };
+                      delete copy[typeName];
+                      return copy;
+                    });
+                    setSystemTypeMetadata(prev => {
+                      const copy = { ...prev };
+                      delete copy[typeName];
+                      return copy;
+                    });
+                    triggerToast(`Anlagentyp '${typeName}' gelöscht.`, "info");
+                  }
+                };
+
+                return (
+                  <div 
+                    key={typeName} 
+                    className="p-5 bg-slate-50 border border-slate-200 rounded-lg flex flex-col gap-4 font-sans text-slate-800"
+                  >
+                    {/* Upper row: Label settings */}
+                    <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+                      {/* Name Entry */}
+                      <div className="md:col-span-5 space-y-1">
+                        <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono">
+                          Typenbezeichnung
+                        </label>
+                        <input
+                          type="text"
+                          value={meta.name}
+                          onChange={(e) => handleUpdateTypeName(e.target.value)}
+                          className="w-full h-9 px-2.5 bg-white border border-slate-300 rounded text-xs text-slate-800 font-semibold focus:outline-none focus:border-[#003d9b]"
+                          placeholder="z.B. Brandmelde Anlage"
+                        />
+                      </div>
+
+                      {/* Label Code Prefix */}
+                      <div className="md:col-span-3 space-y-1">
+                        <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono">
+                          Label Code (Kürzel)
+                        </label>
+                        <input
+                          type="text"
+                          value={typeName}
+                          onChange={(e) => handleUpdateTypeCode(e.target.value)}
+                          className="w-full h-9 px-2.5 bg-white border border-slate-300 rounded text-xs text-[#003d9b] font-mono font-bold focus:outline-none focus:border-[#003d9b] uppercase"
+                          placeholder="z.B. BMA"
+                        />
+                      </div>
+
+                      {/* Custom Color mixer (colorpicker) */}
+                      <div className="md:col-span-3 space-y-1">
+                        <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono">
+                          Farbe des Labels (Color Mixer)
+                        </label>
+                        <div className="flex items-center gap-2 border border-slate-300 rounded p-1 bg-white h-9">
+                          <input 
+                            type="color" 
+                            value={meta.color}
+                            onChange={(e) => handleUpdateTypeColor(e.target.value)}
+                            className="w-7 h-7 rounded border border-slate-200 cursor-pointer p-0 bg-transparent block"
+                            title="Farbmischer öffnen"
+                          />
+                          <span className="text-[10px] font-mono text-slate-600 font-bold uppercase">{meta.color}</span>
+                        </div>
+                      </div>
+
+                      {/* Delete Action button */}
+                      <div className="md:col-span-1 flex justify-center pb-1">
+                        <button
+                          type="button"
+                          onClick={handleDeleteType}
+                          className="p-2 bg-red-50 hover:bg-red-100 text-red-600 hover:text-red-700 rounded transition-all flex items-center justify-center border border-red-200 shadow-sm shrink-0"
+                          title="Anlagentyp löschen"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Middle grid: detectors and checklist toggle */}
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                      {/* Detector list (transient editing) */}
+                      <div className="lg:col-span-7 space-y-1">
+                        <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono">
+                          Meldertypen / Fühlergeräte (kommagetrennt)
+                        </label>
+                        <input
+                          type="text"
+                          value={detectorsString}
+                          onChange={(e) => {
+                            setEditingDetectors(prev => ({
+                              ...prev,
+                              [typeName]: e.target.value
+                            }));
+                          }}
+                          onBlur={(e) => handleCommitDetectors(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleCommitDetectors((e.target as HTMLInputElement).value);
+                          }}
+                          className="w-full h-9 px-2.5 bg-white border border-slate-300 rounded text-xs text-slate-800 font-mono font-semibold focus:outline-none focus:border-[#003d9b]"
+                          placeholder="-, Normal, ZD, RAS..."
+                        />
+                        <span className="text-[9px] text-slate-400 font-mono block leading-normal">
+                          💡 Drücken Sie ENTER oder klicken Sie außerhalb des Feldes zum Speichern und Migrieren. Ein „-“ ist ein leeres Feld.
+                        </span>
+                      </div>
+
+                      {/* Integrated hardware configurations */}
+                      <div className="lg:col-span-5 space-y-2">
+                        <div className="flex items-center gap-2 pt-1">
+                          <input
+                            type="checkbox"
+                            id={`check-hw-${typeName}`}
+                            checked={hwConfig.hasHardware}
+                            onChange={(e) => {
+                              const val = e.target.checked;
+                              setSystemTypeHardwareConfigs(prev => ({
+                                ...prev,
+                                [typeName]: {
+                                  ...hwConfig,
+                                  hasHardware: val
+                                }
+                              }));
+                              triggerToast(`${typeName} Hardware-Tabelle ${val ? "aktiviert" : "deaktiviert"}`, "info");
+                            }}
+                            className="w-3.5 h-3.5 text-[#003d9b] border-slate-300 rounded focus:ring-indigo-500 focus:ring-1 cursor-pointer"
+                          />
+                          <label 
+                            htmlFor={`check-hw-${typeName}`}
+                            className="text-xs font-bold text-slate-700 cursor-pointer flex items-center gap-1 select-none"
+                          >
+                            Integrierte Hardware-Prüfliste einblenden
+                          </label>
+                        </div>
+
+                        {hwConfig.hasHardware && (
+                          <div className="space-y-1 animate-fadeIn">
+                            <label className="block text-[9.5px] font-bold uppercase tracking-wider text-slate-400 font-mono">
+                              Spalten der Hardware-Tabelle (Semicolon-separiert)
+                            </label>
+                            <input
+                              type="text"
+                              value={headersString}
+                              onChange={(e) => {
+                                const columns = e.target.value.split(";").map(s => s.trim()).filter(Boolean);
+                                setSystemTypeHardwareConfigs(prev => ({
+                                  ...prev,
+                                  [typeName]: {
+                                    ...hwConfig,
+                                    headers: columns
+                                  }
+                                }));
+                              }}
+                              className="w-full h-8 px-2 bg-white border border-slate-300 rounded text-[11px] font-mono text-indigo-900 focus:outline-none focus:border-[#003d9b] font-semibold"
+                              placeholder="Bauteil/Ring;Typ;Störung;Unterbrechung;Softwarestand;Serie"
+                            />
+                            <span className="text-[8.5px] text-indigo-600 block leading-tight">
+                              Schnittstelle BMA-Muster: <strong>Bauteil/Ring;Typ;Störung;Unterbrechung;Softwarestand;Serie</strong>
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Section: Docker Network Info */}
           <div className="bg-white border-2 border-slate-200 rounded-lg p-6 shadow-sm">
             <h2 className="text-sm font-bold tracking-wider font-mono text-slate-800 uppercase flex items-center gap-2 mb-2">
@@ -1770,16 +2929,17 @@ export default function CentralWebUI({
                       </div>
 
                       <div className="flex items-center gap-2 shrink-0">
-                        {/* Rename Action */}
+                        {/* Rename & Logo Action */}
                         <button
                           onClick={() => {
                             setRenameTenantId(t.id);
                             setRenameTenantInput(t.name);
+                            setRenameTenantLogoUrl(t.logoUrl || "");
                             setIsRenameTenantModalOpen(true);
                           }}
                           className="px-2.5 py-1.5 text-[10px] font-bold bg-white border border-slate-300 hover:bg-slate-50 rounded text-slate-700 cursor-pointer"
                         >
-                          Umbenennen
+                          Eigenschaften & Logo
                         </button>
 
                         {/* Swap active tenant */}
@@ -2166,21 +3326,27 @@ export default function CentralWebUI({
 
                 {/* Printable paper model */}
                 <div className="bg-white text-black p-8 shadow-2xl rounded max-w-3xl mx-auto w-full select-text font-serif leading-relaxed relative min-h-[800px]">
-                  
-                  {/* Stamp top corner draft logo */}
-                  <div className="absolute top-12 right-12 border-4 border-emerald-600/50 text-emerald-700 font-mono text-[9px] font-black tracking-widest px-2.5 py-1.5 rounded-md uppercase transform rotate-6 select-none bg-emerald-50">
-                    {item_p.status === "synchronized" ? "✓ SYNC OK" : "⚡ ENTWURF UNVOLLSTÄNDIG"}
-                  </div>
 
                   {/* Header */}
-                  <div className="border-b-2 border-slate-900 pb-4 flex justify-between items-start font-sans">
+                  <div className="border-b-2 border-slate-900 pb-4 flex justify-between items-center font-sans">
                     <div>
-                      <h2 className="text-xl font-black uppercase tracking-tight">Inspektionsprotokoll Baugruppe {item_p.systemType}</h2>
+                      <h2 className="text-xl font-black uppercase tracking-tight">Auslöseprotokoll {systemTypeMetadata[item_p.systemType]?.name || item_p.systemType}</h2>
                       <p className="text-xs text-slate-500 font-mono mt-0.5">ReportLab Automatic PDF Exporter Engine v2.4.0</p>
                       <p className="text-[10px] text-slate-400 font-mono mt-0.5">System ID: {item_p.contractNumber}</p>
                     </div>
-                    <div className="text-right">
-                      <p className="text-xs font-bold font-mono px-2 py-0.5 bg-slate-100 rounded text-slate-750">INT_NET_VLAN_10</p>
+                    <div className="text-right flex flex-col justify-between items-end">
+                      {currentTenant?.logoUrl ? (
+                        <img 
+                          src={currentTenant.logoUrl} 
+                          alt="Mandant Logo" 
+                          className="max-h-12 max-w-[160px] object-contain rounded border border-slate-150 p-0.5" 
+                          referrerPolicy="no-referrer" 
+                        />
+                      ) : (
+                        <div className="text-slate-400 border border-dashed border-slate-350 bg-slate-50/50 rounded px-2.5 py-1 text-[9px] font-sans">
+                          Kein Firmenlogo hinterlegt
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -2204,51 +3370,64 @@ export default function CentralWebUI({
                   {/* Tested nodes listings */}
                   <div className="space-y-4 font-sans text-xs">
                     <h3 className="font-bold text-slate-800 border-b border-slate-200 pb-1 flex justify-between">
-                      <span>VERIFIKATIONSMATRIX DER EINZELNEN DETEKTORSCHLEIFEN</span>
+                      <span>{item_p.name.toUpperCase()}</span>
                       <span className="font-mono text-[10px] text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded">Abschlussgrad: {verifiedPercent}%</span>
                     </h3>
 
-                    <div className="space-y-3">
-                      {item_p.rows.map((row, rIdx) => (
-                        <div key={rIdx} className="border border-slate-200 rounded">
-                          <div className="bg-slate-50 px-3 py-1.5 border-b border-slate-200 font-bold flex justify-between text-[11px] text-slate-700">
-                            <span>{row.groupName} ({row.groupId})</span>
-                            <span className="text-[10px] font-mono text-slate-400 font-normal">Soll-Spalten ({item_p.columns.length})</span>
-                          </div>
+                    <div className="mt-4">
+                      <table className="w-full text-center text-[10px] font-mono border-collapse border border-slate-300 rounded overflow-hidden">
+                        <thead>
+                          <tr className="border-b border-slate-350 bg-slate-100 text-slate-750 font-sans text-[11px]">
+                            <th className="py-2.5 px-3 border-r border-slate-300 text-left font-extrabold w-[240px]">Prüfgruppe / Schleife</th>
+                            {item_p.columns.map((col, idx) => (
+                              <th key={idx} className="py-2.5 px-1 border-l border-slate-300 font-extrabold">Slot {col}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {item_p.rows.map((row, rIdx) => (
+                            <tr key={rIdx} className="border-b border-slate-200 hover:bg-slate-50/50">
+                              <td className="py-2.5 px-3 text-left font-sans border-r border-slate-200">
+                                <div className="font-bold text-[#003d9b] text-[11px] leading-tight">{row.groupName}</div>
+                                <div className="text-[9px] text-slate-400 font-mono mt-0.5">{row.groupId}</div>
+                              </td>
+                              {row.cells.map((cell, idx) => {
+                                const isDisabled = cell.detectorType === "-";
+                                const isDefect = cell.value === "Def." || cell.value?.toLowerCase() === "def";
+                                const isChecked = cell.value === "CHECK" || cell.value === "✓";
+                                const hasValue = cell.value && cell.value !== "CHECK" && !isDefect;
 
-                          <div className="p-2 overflow-x-auto">
-                            <table className="w-full text-center text-[10px] font-mono border-collapse">
-                              <thead>
-                                <tr className="border-b border-slate-100 bg-slate-50/50 text-slate-500">
-                                  <th className="py-1 px-1">Wert</th>
-                                  {row.cells.map((cell, idx) => (
-                                    <th key={idx} className="py-1 px-1 border-l border-slate-100 font-bold">Slot {cell.slotKey}</th>
-                                  ))}
-                                </tr>
-                              </thead>
-                              <tbody>
-                                <tr className="border-b border-slate-100">
-                                  <td className="py-1.5 px-1 font-bold text-slate-600 text-left bg-slate-50/20">Typ</td>
-                                  {row.cells.map((cell, idx) => (
-                                    <td key={idx} className="py-1.5 px-1 border-l border-indigo-50/50 bg-slate-50/10 font-medium text-slate-700">{cell.detectorType || "-"}</td>
-                                  ))}
-                                </tr>
-                                <tr>
-                                  <td className="py-1.5 px-1 font-bold text-slate-600 text-left bg-slate-50/20">Prüfung</td>
-                                  {row.cells.map((cell, idx) => (
-                                    <td key={idx} className={`py-1.5 px-1 border-l border-slate-100 font-bold ${
-                                      cell.value === "Def." ? "text-red-600 bg-red-50/40" : 
-                                      cell.value !== "" ? "text-emerald-700 bg-emerald-50/20" : "text-slate-350"
-                                    }`}>
-                                      {cell.value || "•"}
-                                    </td>
-                                  ))}
-                                </tr>
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-                      ))}
+                                return (
+                                  <td 
+                                    key={idx} 
+                                    className="py-2 px-1 border-l border-slate-200 text-center font-bold relative"
+                                    style={isDisabled ? {
+                                      backgroundImage: "repeating-linear-gradient(45deg, #f8fafc, #f8fafc 4px, #f1f5f9 4px, #f1f5f9 8px)"
+                                    } : {}}
+                                  >
+                                    {isDisabled ? (
+                                      <span className="text-slate-300 font-mono font-normal">-</span>
+                                    ) : (
+                                      <div className="flex flex-col items-center justify-center space-y-0.5">
+                                        <span className="text-slate-600 text-[10px] font-bold">{cell.detectorType}</span>
+                                        {isDefect ? (
+                                          <span className="bg-red-100 text-red-700 text-[9px] px-1 py-0.5 rounded font-extrabold font-sans">DEF</span>
+                                        ) : isChecked ? (
+                                          <span className="bg-emerald-100 text-emerald-800 text-[9px] px-1 py-0.5 rounded font-extrabold font-sans">✓ OK</span>
+                                        ) : hasValue ? (
+                                          <span className="bg-indigo-50 text-indigo-700 text-[9px] px-1 py-0.5 rounded font-extrabold font-mono">{cell.value}</span>
+                                        ) : (
+                                          <span className="text-slate-350 text-[9px] font-normal font-sans">offen</span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
 
                     {/* Defect Log inside printable PDF */}
@@ -2317,68 +3496,176 @@ export default function CentralWebUI({
                 <X size={16} />
               </button>
             </div>
-
-            <div className="flex-1 overflow-auto p-6 space-y-4">
-              <div className="bg-slate-50 border border-slate-200 rounded p-4 text-xs grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="flex-1 overflow-auto p-5 space-y-4">
+              <div className="bg-slate-50 border border-slate-200 rounded p-4 text-xs grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div>
-                  <span className="text-slate-500 font-bold block">Vertrag / ID</span>
-                  <span className="font-semibold font-mono">{inspectedProtocol.contractNumber}</span>
+                  <span className="text-slate-400 font-bold block uppercase tracking-tight text-[9px] font-mono">Vertrag / ID</span>
+                  <span className="font-semibold font-mono text-slate-800">{inspectedProtocol.contractNumber}</span>
                 </div>
                 <div>
-                  <span className="text-slate-500 font-bold block">Anlagentyp</span>
-                  <span className="font-semibold bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded text-[10px] font-mono">{inspectedProtocol.systemType}</span>
+                  <span className="text-slate-400 font-bold block uppercase tracking-tight text-[9px] font-mono">Anlagentyp</span>
+                  <span 
+                    className="font-semibold px-1.5 py-0.5 rounded text-[10px] font-mono border transition-all duration-200 inline-block"
+                    style={{
+                      backgroundColor: `${systemTypeMetadata[inspectedProtocol.systemType]?.color || "#003d9b"}15`,
+                      color: systemTypeMetadata[inspectedProtocol.systemType]?.color || "#003d9b",
+                      borderColor: `${systemTypeMetadata[inspectedProtocol.systemType]?.color || "#003d9b"}40`
+                    }}
+                    title={systemTypeMetadata[inspectedProtocol.systemType]?.name || inspectedProtocol.systemType}
+                  >
+                    {inspectedProtocol.systemType}
+                  </span>
                 </div>
                 <div>
-                  <span className="text-slate-500 font-bold block">Wartungsturnus</span>
-                  <span className="font-semibold">{inspectedProtocol.interval}</span>
+                  <span className="text-slate-400 font-bold block uppercase tracking-tight text-[9px] font-mono">Wartungsturnus</span>
+                  <span className="font-semibold text-slate-800">{inspectedProtocol.interval}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 font-bold block uppercase tracking-tight text-[9px] font-mono">Gesamt-Status</span>
+                  <span className="font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded text-[10px] border border-emerald-200 inline-block font-mono">ONLINE DECODER READY</span>
                 </div>
               </div>
 
-              <div className="overflow-x-auto border border-slate-200 rounded">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="bg-slate-100 text-slate-700 font-mono border-b border-slate-250">
-                      <th className="p-2.5 font-bold border-r border-slate-200">GRP</th>
-                      <th className="p-2.5 font-bold border-r border-slate-200 text-slate-700 min-w-[120px]">Bereich / Name</th>
-                      {inspectedProtocol.columns.map(col => (
-                        <th key={col} className="p-2 border-r border-slate-200 text-center min-w-[50px]">Slot {col}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {inspectedProtocol.rows.map(row => (
-                      <tr key={row.groupId} className="hover:bg-slate-50 border-b border-slate-100">
-                        <td className="p-2.5 font-mono border-r border-slate-200 bg-slate-50 text-indigo-900 font-bold">{row.groupId}</td>
-                        <td className="p-2.5 border-r border-slate-200">
-                          <p className="font-bold">{row.groupName}</p>
-                          <p className="text-[9px] text-slate-400 font-mono italic">{row.groupType || "NAM"}</p>
-                        </td>
-                        {row.cells.map(cell => {
-                          const isDisabled = cell.detectorType === "-";
-                          const isDefect = cell.value === "Def.";
-                          return (
-                            <td 
-                              key={cell.slotKey} 
-                              className={`p-1 border-r border-slate-200 text-center text-[10px] ${
-                                isDisabled ? "bg-slate-105 text-slate-400" : 
-                                isDefect ? "bg-red-50 text-red-700 font-bold border border-red-200" : 
-                                cell.value ? "bg-blue-50 text-blue-700 font-bold border border-blue-200" : ""
-                              }`}
-                            >
-                              {isDisabled ? "-" : (
-                                <div className="flex flex-col items-center justify-center">
-                                  <span className="font-bold">{cell.value || "•"}</span>
-                                  <span className="text-[8px] text-slate-400 font-mono">{cell.detectorType}</span>
-                                </div>
-                              )}
+              {/* Multi-system plants Tab Selector */}
+              {inspectedProtocol.subSystems && inspectedProtocol.subSystems.length > 0 && (
+                <div className="flex flex-col gap-1.5 bg-slate-50 border border-slate-200 p-2.5 rounded-lg">
+                  <span className="text-[9px] uppercase font-bold text-slate-400 block font-mono">
+                    Anlage wählen (Tabellarische Ansicht):
+                  </span>
+                  <div className="flex flex-wrap gap-1">
+                    {inspectedProtocol.subSystems.map(sub => {
+                      const isActive = selectedInspectedSubId === sub.id;
+                      const subDetectorsCount = sub.rows.reduce((sum, r) => sum + r.cells.filter(c => c.detectorType !== "-").length, 0);
+                      return (
+                        <button
+                          key={sub.id}
+                          type="button"
+                          onClick={() => setSelectedInspectedSubId(sub.id)}
+                          className={`px-3 py-1.5 text-xs font-bold rounded transition-all duration-150 border flex items-center gap-1.5 ${
+                            isActive
+                              ? "bg-slate-800 text-white border-slate-800 shadow-sm"
+                              : "bg-white text-slate-700 hover:bg-slate-100 border-slate-200"
+                          }`}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                          <span>{sub.name}</span>
+                          <span className={`text-[9.5px] font-mono ml-0.5 px-1 rounded ${isActive ? "bg-slate-700 text-slate-200" : "bg-slate-100 text-slate-500"}`}>
+                            {subDetectorsCount} Melder
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Table rendering block */}
+              {(() => {
+                const activeSubObj = inspectedProtocol.subSystems && inspectedProtocol.subSystems.length > 0
+                  ? (inspectedProtocol.subSystems.find(s => s.id === selectedInspectedSubId) || inspectedProtocol.subSystems[0])
+                  : null;
+
+                const rowsToRender = activeSubObj ? activeSubObj.rows : inspectedProtocol.rows;
+
+                return (
+                  <div className="overflow-x-auto border-2 border-slate-300 rounded shadow-sm bg-white">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="bg-slate-800 text-slate-100 font-mono text-[9px] uppercase tracking-wider border-b-2 border-slate-700">
+                          <th className="p-1 px-2.5 font-bold border-r border-slate-700 text-center w-20">
+                            {inspectedProtocol.systemType === "ELA" ? "Verstärker" : inspectedProtocol.systemType === "Lichtruf" ? "Zimmer-Nr." : "Meldegruppe"}
+                          </th>
+                          <th className="p-1 px-2.5 font-bold border-r border-slate-700 min-w-[150px]">Name</th>
+                          <th className="p-1 px-2.5 font-bold border-r border-slate-700 text-center w-16">Melderanzahl</th>
+                          {inspectedProtocol.columns.map(col => {
+                            const colLabel = inspectedProtocol.systemType === "ELA" 
+                              ? `S${String(col).padStart(2, "0")}` 
+                              : inspectedProtocol.systemType === "Lichtruf" 
+                                ? "" 
+                                : `M${String(col).padStart(2, "0")}`;
+                            return (
+                              <th key={col} className="p-1 border-r border-slate-700 text-center font-bold min-w-[44px]">{colLabel}</th>
+                            );
+                          })}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-300">
+                        {rowsToRender.map((row, rIdx) => (
+                          <tr key={row.groupId || rIdx} className="hover:bg-amber-50/20 transition-colors border-b border-slate-300 text-[11px]">
+                            {/* 1. Group / Identifier column */}
+                            <td className="p-1 px-2 font-mono border-r border-slate-300 bg-slate-50 text-slate-900 font-bold text-center text-[10.5px]">
+                              {row.groupId}
                             </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                            {/* 2. Group Name column */}
+                            <td className="p-1 px-2 border-r border-slate-300 font-medium text-slate-705 bg-white">
+                              <div className="flex items-center gap-1.5">
+                                <span className="bg-slate-100 text-slate-600 px-1 py-0.2 rounded text-[8.5px] font-mono leading-none border border-slate-200">{row.groupType || "NAM"}</span>
+                                <span className="font-semibold text-slate-800">{row.groupName}</span>
+                              </div>
+                            </td>
+                            {/* 3. Melderanzahl column */}
+                            <td className="p-1 px-2 border-r border-slate-300 text-center font-mono font-bold text-xs text-indigo-900 bg-slate-50/40">
+                              {row.cells.filter(c => c.detectorType !== "-").length}
+                            </td>
+                            {/* Cells loop */}
+                            {row.cells.map((cell, cIdx) => {
+                              const isDisabled = cell.detectorType === "-";
+                              const isLabel = cell.detectorType === "Beschriftung";
+                              const isFreeText = cell.detectorType === "Freitext";
+                              const isDefect = cell.value === "Def." || cell.value?.toLowerCase() === "def";
+                              const isChecked = cell.value && !isDefect && !isLabel && !isFreeText;
+                              
+                              let customBg = "bg-white text-slate-900";
+                              let displayVal = cell.value ? (cell.value === "CHECK" ? "✓" : cell.value) : "";
+
+                              if (isDisabled) {
+                                customBg = "text-slate-500 font-extrabold";
+                                displayVal = "-";
+                              } else if (isLabel) {
+                                customBg = "bg-amber-50 border-amber-300 text-amber-850 font-semibold";
+                                displayVal = cell.value || "🏷️";
+                              } else if (isFreeText) {
+                                customBg = "bg-slate-100 text-slate-800 border-dashed border-slate-350 font-semibold";
+                                displayVal = "✍ Freitext" + (cell.value ? `: ${cell.value}` : "");
+                              } else if (isDefect) {
+                                customBg = "bg-red-50 text-red-705 font-extrabold";
+                              } else if (isChecked) {
+                                customBg = "bg-emerald-50 text-emerald-800 font-extrabold";
+                              }
+
+                              return (
+                                <td 
+                                  key={cell.slotKey || cIdx} 
+                                  className={`p-0.5 px-1 border-r border-slate-300 text-center text-[10px] ${customBg}`}
+                                  style={isDisabled ? {
+                                    backgroundImage: "repeating-linear-gradient(45deg, #f1f5f9, #f1f5f9 4px, #e2e8f0 4px, #e2e8f0 8px)"
+                                  } : {}}
+                                  title={isDisabled ? "Inaktiv" : `Typ: ${cell.detectorType}`}
+                                >
+                                  {isDisabled ? (
+                                    <span className="text-slate-500 font-mono font-bold text-[11px]">-</span>
+                                  ) : (
+                                    <div className="flex flex-col items-center justify-center leading-none py-0.5">
+                                      <span className="font-bold tracking-tight text-[10.5px] max-w-[80px] truncate">
+                                        {displayVal}
+                                      </span>
+                                      {!isDisabled && !isLabel && !isFreeText && (
+                                        <span className="text-[7.2px] opacity-70 font-semibold font-sans mt-0.5 tracking-tight text-slate-550">
+                                          {cell.detectorType}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end">
@@ -2495,19 +3782,72 @@ export default function CentralWebUI({
                 </div>
 
                 {newContractSetupMethod === "import" ? (
-                  <div className="bg-slate-50 border border-dashed border-slate-300 rounded p-4 text-center">
-                    <p className="text-xs text-slate-500 mb-2">Simulieren Sie den Dateiimport aus einer Export-Datei des Kunden für diesen Anlagentyp.</p>
-                    <button 
-                      type="button"
-                      onClick={handleSimulateFileImport}
-                      className="bg-slate-800 text-white font-bold text-xs px-3.5 py-2 hover:bg-slate-700 transition"
-                    >
-                      Letzten Export simulativ parsen
-                    </button>
+                  <div className="bg-slate-50 border border-slate-300 rounded p-4 flex flex-col gap-3">
+                    <div className="flex flex-col gap-1.5 align-left text-left">
+                      <label className="text-xs font-bold text-slate-500 uppercase tracking-tight font-mono">Dateiformat / Importtyp wählen:</label>
+                      <div className="flex gap-4 border-b border-slate-200 pb-2">
+                        <label className="flex items-center gap-1.5 cursor-pointer text-xs font-bold text-slate-700">
+                          <input
+                            type="radio"
+                            name="importFileType"
+                            checked={importFileType === "csv"}
+                            onChange={() => {
+                              setImportFileType("csv");
+                              setImportedFileName("");
+                              setImportedDetectors([]);
+                            }}
+                            className="accent-slate-800"
+                          />
+                          Standard-Export (.CSV / .XLSX)
+                        </label>
+                        <label className="flex items-center gap-1.5 cursor-pointer text-xs font-bold text-slate-700">
+                          <input
+                            type="radio"
+                            name="importFileType"
+                            checked={importFileType === "etb"}
+                            onChange={() => {
+                              setImportFileType("etb");
+                              setImportedFileName("");
+                              setImportedDetectors([]);
+                            }}
+                            className="accent-slate-800"
+                          />
+                          Esser-Kundendaten (.ETB) – Python-Decoder
+                        </label>
+                      </div>
+                    </div>
+
+                    <p className="text-xs text-slate-500 mb-1 text-center">
+                      {importFileType === "etb" 
+                        ? "Der Python ETB-Decoder parst rohe Esser Kundendaten binaer und extrahiert strukturierte JSON-Formate fuer getrennte Anlagen."
+                        : "Simulieren Sie den Dateiimport aus einer Export-Datei des Kunden für diesen Anlagentyp."}
+                    </p>
+                    <div className="text-center">
+                      <button 
+                        type="button"
+                        onClick={handleSimulateFileImport}
+                        className="bg-slate-800 text-white font-bold text-xs px-3.5 py-2 hover:bg-slate-700 transition"
+                      >
+                        {importFileType === "etb" ? "Esser ETB-Datei ueber Python-Decoder decodieren" : "Letzten Export simulativ parsen"}
+                      </button>
+                    </div>
                     {importedFileName && (
-                      <div className="mt-3 text-[11px] font-mono text-emerald-700 bg-emerald-50 border border-emerald-200 p-2 rounded">
+                      <div className="mt-3 text-[11px] font-mono text-emerald-700 bg-emerald-50 border border-emerald-200 p-2 rounded text-left">
                         <p><strong>Eingelesene Datei:</strong> {importedFileName}</p>
-                        <p className="mt-1">Gefundene Testpunkte: {importedDetectors.length} (Aufgeteilt auf {Array.from(new Set(importedDetectors.map(d => d.group))).length} Sektionen)</p>
+                        <p className="mt-1">
+                          {importFileType === "etb"
+                            ? "Status: Decodiert über Python-Script (JSON-Output erhalten)."
+                            : `Gefundene Testpunkte: ${importedDetectors.length} (Aufgeteilt auf ${Array.from(new Set(importedDetectors.map(d => d.group))).length} Sektionen)`}
+                        </p>
+                        {importFileType === "etb" && (
+                          <div className="mt-2 bg-slate-950 text-emerald-400 p-1.5 rounded text-[10px] max-h-24 overflow-y-auto border border-emerald-800 leading-tight">
+                            <span className="text-slate-400 font-bold block mb-1 font-mono">Decodiertes JSON (Auszug):</span>
+                            <pre className="font-mono text-[9px]">
+                              {JSON.stringify(importedDetectors.slice(0, 3), null, 2)}
+                            </pre>
+                            <p className="text-slate-500 text-[9px] mt-1 italic">... {importedDetectors.length - 3} weitere Melderobjekte decodiert</p>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -2978,14 +4318,194 @@ export default function CentralWebUI({
         </div>
       )}
 
-      {/* Tenant Rename Modal (iframe-safe React state popup overlay) */}
+      {/* Dynamic Modal Dialog for adding a system type */}
+      {isAddTypeModalOpen && (
+        <div className="fixed inset-0 z-[250] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm shadow-2xl" onClick={() => setIsAddTypeModalOpen(false)}></div>
+          <div className="relative bg-white w-full max-w-sm rounded-lg shadow-2xl border border-slate-300 overflow-hidden flex flex-col text-xs text-[#191b23] animate-scaleIn font-sans">
+            
+            <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <h3 className="text-xs font-bold uppercase tracking-wide font-mono text-indigo-950 flex items-center gap-1.5">
+                <SlidersHorizontal size={14} className="text-indigo-600" />
+                Neuen Anlagentyp einrichten
+              </h3>
+              <button className="p-1 hover:bg-slate-200 rounded text-slate-500 transition-colors" onClick={() => setIsAddTypeModalOpen(false)}>
+                <X size={15} />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {/* Type Code label in BMA form */}
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono mb-1">
+                  Label-Kürzel (z.B. COA, SAA) *
+                </label>
+                <input
+                  type="text"
+                  value={newTypeCode}
+                  onChange={(e) => setNewTypeCode(e.target.value.trim().toUpperCase())}
+                  className="w-full h-9 px-3 bg-white border border-slate-300 rounded text-xs focus:outline-none focus:border-[#003d9b] font-mono font-bold uppercase"
+                  placeholder="z.B. COA"
+                />
+              </div>
+
+              {/* Description name */}
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono mb-1">
+                  Typenbezeichnung (Anlagenname) *
+                </label>
+                <input
+                  type="text"
+                  value={newTypeNameField}
+                  onChange={(e) => setNewTypeNameField(e.target.value)}
+                  className="w-full h-9 px-3 bg-white border border-slate-300 rounded text-xs focus:outline-none focus:border-[#003d9b] font-semibold"
+                  placeholder="z.B. Kohlenmonoxid-Warnanlage"
+                />
+              </div>
+
+              {/* Label Signalfarbe mixer */}
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono mb-1">
+                  Farbe für Benutzeroberflächen
+                </label>
+                <div className="flex items-center gap-2 border border-slate-300 rounded p-1 bg-white h-9">
+                  <input
+                    type="color"
+                    value={newTypeColor}
+                    onChange={(e) => setNewTypeColor(e.target.value)}
+                    className="w-7 h-7 rounded border border-slate-200 cursor-pointer p-0 bg-transparent block"
+                  />
+                  <span className="text-[10px] font-mono text-slate-600 uppercase font-bold">{newTypeColor}</span>
+                </div>
+              </div>
+
+              {/* Comma detector list */}
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono mb-1">
+                  Standard Meldertypen (kommagetrennt)
+                </label>
+                <input
+                  type="text"
+                  value={newTypeDetectors}
+                  onChange={(e) => setNewTypeDetectors(e.target.value)}
+                  className="w-full h-9 px-3 bg-white border border-slate-300 rounded text-xs focus:outline-none focus:border-[#003d9b] font-mono text-indigo-950 font-semibold"
+                  placeholder="-, Normal, ZD, ZB..."
+                />
+              </div>
+
+              {/* Hardware List options toggle */}
+              <div className="flex items-center gap-2 pt-1 border-t border-slate-100 mt-2">
+                <input
+                  type="checkbox"
+                  id="add-type-hw-toggle"
+                  checked={newTypeHasHardware}
+                  onChange={(e) => setNewTypeHasHardware(e.target.checked)}
+                  className="w-3.5 h-3.5 text-indigo-600 border-slate-300 rounded cursor-pointer"
+                />
+                <label htmlFor="add-type-hw-toggle" className="text-xs font-bold text-slate-700 cursor-pointer select-none">
+                  Hardware-Prüftabelle standardmäßig aktivieren
+                </label>
+              </div>
+
+              {newTypeHasHardware && (
+                <div className="space-y-1 pl-5 animate-fadeIn">
+                  <label className="block text-[9px] font-bold uppercase tracking-wider text-slate-400 font-mono">
+                    Hardware Spalten (Semicolon-separiert)
+                  </label>
+                  <input
+                    type="text"
+                    value={newTypeHardwareHeaders}
+                    onChange={(e) => setNewTypeHardwareHeaders(e.target.value)}
+                    className="w-full h-8 px-2 bg-white border border-slate-300 rounded text-[10.5px] font-mono font-semibold focus:outline-none focus:border-[#003d9b]"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-2 shrink-0">
+              <button 
+                onClick={() => setIsAddTypeModalOpen(false)}
+                className="px-4 h-9 border border-slate-300 rounded text-slate-700 hover:bg-slate-100 font-semibold"
+              >
+                Abbrechen
+              </button>
+              <button 
+                onClick={() => {
+                  const label = newTypeCode.trim().toUpperCase();
+                  const name = newTypeNameField.trim();
+                  if (!label) {
+                    triggerToast("Bitte ein Kürzel eintragen!", "warning");
+                    return;
+                  }
+                  if (!name) {
+                    triggerToast("Bitte eine Typenbezeichnung eintragen!", "warning");
+                    return;
+                  }
+
+                  // 1. Validate Code duplicates
+                  if (systemTypeSettings[label]) {
+                    triggerToast(`Der Label-Code '${label}' existiert bereits!`, "warning");
+                    return;
+                  }
+
+                  // 2. Validate Name duplicates
+                  const nameExists = Object.values(systemTypeMetadata).some(
+                    v => v.name.toLowerCase() === name.toLowerCase()
+                  );
+                  if (nameExists) {
+                    triggerToast(`Die Typenbezeichnung '${name}' existiert bereits!`, "warning");
+                    return;
+                  }
+
+                  // 3. Save states!
+                  const parts = newTypeDetectors.split(",").map(s => s.trim()).filter(Boolean);
+                  const list = parts.includes("-") ? parts : ["-", ...parts];
+
+                  setSystemTypeSettings(prev => ({
+                    ...prev,
+                    [label]: list
+                  }));
+
+                  setSystemTypeHardwareConfigs(prev => ({
+                    ...prev,
+                    [label]: {
+                      hasHardware: newTypeHasHardware,
+                      headers: newTypeHardwareHeaders.split(";").map(s => s.trim()).filter(Boolean)
+                    }
+                  }));
+
+                  setSystemTypeMetadata(prev => ({
+                    ...prev,
+                    [label]: { name, color: newTypeColor }
+                  }));
+
+                  // Reset
+                  setNewTypeCode("");
+                  setNewTypeNameField("");
+                  setNewTypeColor("#3b82f6");
+                  setNewTypeDetectors("Normal, ZD, ZB, RAS");
+                  setNewTypeHasHardware(false);
+                  setIsAddTypeModalOpen(false);
+
+                  triggerToast(`Anlagentyp '${label}' (${name}) erfolgreich angelegt!`, "success");
+                }}
+                className="px-5 h-9 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded shadow"
+              >
+                Erstellen
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tenant Rename & Logo Modal (iframe-safe React state popup overlay) */}
       {isRenameTenantModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white border border-slate-200 rounded-lg shadow-xl w-full max-w-md overflow-hidden font-sans">
             <div className="p-4 bg-slate-50 border-b border-rose-100 flex justify-between items-center">
               <h3 className="text-sm font-bold text-slate-800 uppercase tracking-tight flex items-center gap-1.5">
                 <Settings2 className="text-[#003d9b]" size={16} />
-                Mandant umbenennen
+                Mandanten-Eigenschaften & Design
               </h3>
               <button 
                 onClick={() => setIsRenameTenantModalOpen(false)}
@@ -3006,8 +4526,56 @@ export default function CentralWebUI({
                   placeholder="z.B. Schmidt Brandschutz..."
                 />
               </div>
+
+              {/* Logo Area */}
+              <div className="space-y-1.5">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase font-mono tracking-wider">Mandanten-Firmenlogo (für PDF-Header)</label>
+                
+                {renameTenantLogoUrl ? (
+                  <div className="border border-slate-205 rounded p-3 bg-slate-50 flex items-center justify-between gap-4">
+                    <img 
+                      src={renameTenantLogoUrl} 
+                      alt="Logo Vorschau" 
+                      className="max-h-12 max-w-[150px] object-contain rounded border border-slate-200 bg-white p-1" 
+                      referrerPolicy="no-referrer" 
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setRenameTenantLogoUrl("")}
+                      className="text-xs text-red-600 hover:text-red-700 bg-white border border-slate-200 px-2.5 py-1.5 rounded font-semibold active:scale-95 transition-all shadow-sm"
+                    >
+                      Logo entfernen
+                    </button>
+                  </div>
+                ) : (
+                  <div className="border-2 border-dashed border-slate-300 rounded-lg p-5 bg-slate-50 text-center hover:bg-slate-100/50 transition-colors relative cursor-pointer">
+                    <input 
+                      type="file" 
+                      accept="image/*"
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                      title="Bilddatei für Logo hochladen"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          const reader = new FileReader();
+                          reader.onload = (loadEvent) => {
+                            if (loadEvent.target?.result) {
+                              setRenameTenantLogoUrl(loadEvent.target.result as string);
+                            }
+                          };
+                          reader.readAsDataURL(file);
+                        }
+                      }}
+                    />
+                    <div className="text-slate-500 space-y-1">
+                      <p className="text-[11px] font-bold">Datei auswählen oder hierher ziehen</p>
+                      <p className="text-[9px] text-slate-400 font-medium">PNG, JPG, SVG (Empfohlen: Transparenter Hintergrund)</p>
+                    </div>
+                  </div>
+                )}
+              </div>
               <p className="text-[10px] text-slate-400 leading-normal">
-                Der geänderte Name wird sofort systemweit für diesen Mandanten angewendet.
+                Der geänderte Name und das Firmenlogo werden sofort auf alle generierten und synchronisierten Protokolle dieses Mandanten angewendet.
               </p>
             </div>
 
@@ -3026,11 +4594,15 @@ export default function CentralWebUI({
                   }
                   setTenants(prev => prev.map(t => {
                     if (t.id === renameTenantId) {
-                      return { ...t, name: renameTenantInput.trim() };
+                      return { 
+                        ...t, 
+                        name: renameTenantInput.trim(),
+                        logoUrl: renameTenantLogoUrl
+                      };
                     }
                     return t;
                   }));
-                  triggerToast("Mandant erfolgreich umbenannt!", "success");
+                  triggerToast("Mandanteneinstellungen erfolgreich gespeichert!", "success");
                   setIsRenameTenantModalOpen(false);
                 }}
                 className="px-4 py-1.5 text-xs bg-[#003d9b] hover:bg-[#002f78] text-white font-bold rounded shadow transition-all cursor-pointer"
@@ -3042,343 +4614,993 @@ export default function CentralWebUI({
         </div>
       )}
 
-      {/* Adjust Protocol / Contract Dialog (iframe-safe React state editor overlay) */}
-      {isAdjustProtocolModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white border border-slate-200 rounded-lg shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden font-sans">
+      {/* 2. Unified Grid-Drawing & Multi-System Editor Modal */}
+      {isUnifiedEditorOpen && (
+        <div className="fixed inset-0 z-[200] bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 overflow-auto">
+          <div className="relative bg-white text-slate-100 w-full max-w-[95vw] h-[92vh] rounded-xl shadow-2xl border border-slate-350 overflow-hidden flex flex-col font-sans min-w-[820px]">
             
             {/* Header */}
-            <div className="p-4 bg-slate-50 border-b border-indigo-50 flex justify-between items-center shrink-0">
-              <div>
-                <h3 className="text-sm font-black text-slate-800 uppercase tracking-tight flex items-center gap-1.5">
-                  <Wrench className="text-amber-500" size={16} />
-                  Wartungsvertrag anpassen
-                </h3>
-                <p className="text-[10px] text-slate-500 font-mono mt-0.5">
-                  ID: {adjustProtocolId} • Typ: {adjustSystemType}
-                </p>
+            <div className="p-4 bg-slate-900 text-white flex justify-between items-center shrink-0 animate-fadeIn">
+              <div className="flex items-center gap-2">
+                <Wrench size={18} className="text-amber-400" />
+                <div>
+                  <h3 className="font-bold text-sm leading-tight text-white">
+                    {editorMode === "create" ? "Wartungsvertrag neu einpflegen" : "Wartungsvertrag anpassen & koordinieren"}
+                  </h3>
+                  <p className="text-[10px] text-slate-400 font-mono">
+                    Typ: {editorSystemType} • {editorSubSystems.length} separate Anlage(n) verwaltet
+                  </p>
+                </div>
               </div>
               <button 
-                onClick={() => setIsAdjustProtocolModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-200 p-1 cursor-pointer transition-all"
+                onClick={() => setIsUnifiedEditorOpen(false)} 
+                className="p-1.5 hover:bg-slate-800 rounded text-slate-400 hover:text-white cursor-pointer"
+                title="Schließen"
               >
-                <X size={18} />
+                <X size={16} />
               </button>
             </div>
 
-            {/* Scrollable Body */}
-            <div className="p-6 overflow-y-auto flex-1 space-y-6">
+            {/* Editor Workspace Column */}
+            <div className="flex-1 overflow-auto p-5 space-y-4 flex flex-col text-slate-800">
               
-              {/* Grid 1: Base settings */}
-              <div>
-                <h4 className="text-[10px] font-bold text-[#003d9b] uppercase tracking-wider mb-2 font-mono">1. Allgemeine Vertragsdaten</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50 border border-slate-200 rounded-lg p-4">
-                  
-                  <div className="space-y-1">
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase font-mono tracking-wider">Objektbezeichnung (Name) *</label>
-                    <input 
-                      type="text"
-                      className="w-full text-xs px-3 py-2 border border-slate-300 rounded font-bold text-slate-800 bg-white"
-                      value={adjustName}
-                      onChange={(e) => setAdjustName(e.target.value)}
-                    />
-                  </div>
+              {/* Row 1: General Parameters */}
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-3 bg-slate-50 border border-slate-200 p-3.5 rounded-lg shrink-0">
+                <div className="flex flex-col gap-1">
+                  <span className="text-[9px] font-black uppercase tracking-tight text-slate-500 font-mono">1. Objektname *</span>
+                  <input 
+                    type="text" 
+                    placeholder="z.B. Seniorenheim Sonne"
+                    className="h-8 border border-slate-300 rounded px-2 text-xs focus:outline-none focus:border-[#003d9b] bg-white text-slate-800 font-semibold"
+                    value={editorName}
+                    onChange={(e) => setEditorName(e.target.value)}
+                  />
+                </div>
 
-                  <div className="space-y-1">
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase font-mono tracking-wider">Vertragsnummer / VN Nummer *</label>
-                    <input 
-                      type="text"
-                      className="w-full text-xs px-3 py-2 border border-slate-300 rounded font-bold text-slate-800 bg-white font-mono"
-                      value={adjustContractNumber}
-                      onChange={(e) => setAdjustContractNumber(e.target.value)}
-                    />
-                  </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] font-bold text-slate-505 uppercase tracking-tight font-mono">VN Nummer / ID (Vertrag)</span>
+                  <input 
+                    type="text" 
+                    className="h-8 border border-slate-300 rounded px-2 text-xs font-mono font-bold bg-white text-indigo-700"
+                    value={editorContractNumber}
+                    onChange={(e) => setEditorContractNumber(e.target.value)}
+                  />
+                </div>
 
-                  <div className="space-y-1">
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase font-mono tracking-wider">Standortadresse (Optional)</label>
-                    <input 
-                      type="text"
-                      className="w-full text-xs px-3 py-2 border border-slate-300 rounded font-medium text-slate-800 bg-white"
-                      value={adjustAddress}
-                      onChange={(e) => setAdjustAddress(e.target.value)}
-                      placeholder="Keine Adresse hinterlegt"
-                    />
-                  </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[9px] font-black uppercase tracking-tight text-slate-500 font-mono">3. Standortadresse</span>
+                  <input 
+                    type="text" 
+                    placeholder="Straße, PLZ, Ort"
+                    className="h-8 border border-slate-300 rounded px-2 text-xs focus:outline-none focus:border-[#003d9b] bg-white text-slate-800"
+                    value={editorAddress}
+                    onChange={(e) => setEditorAddress(e.target.value)}
+                  />
+                </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="space-y-1">
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase font-mono tracking-wider">Wartungs-Intervall</label>
-                      <select 
-                        className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded font-semibold text-slate-800 bg-white"
-                        value={adjustInterval}
-                        onChange={(e: any) => setAdjustInterval(e.target.value)}
-                      >
-                        <option value="Jährlich">Jährlich</option>
-                        <option value="Halbjährlich">Halbjährlich</option>
-                        <option value="Vierteljährlich">Vierteljährlich</option>
-                      </select>
-                    </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[9px] font-black uppercase tracking-tight text-slate-500 font-mono">4. Intervall</span>
+                  <select 
+                    className="h-8 border border-slate-300 rounded px-1.5 text-xs font-semibold focus:outline-none focus:border-[#003d9b] bg-white text-slate-800"
+                    value={editorInterval}
+                    onChange={(e) => setEditorInterval(e.target.value as any)}
+                  >
+                    <option value="Jährlich">Jährlich</option>
+                    <option value="Halbjährlich">Halbjährlich</option>
+                    <option value="Vierteljährlich">Vierteljährlich</option>
+                  </select>
+                </div>
 
-                    <div className="space-y-1">
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase font-mono tracking-wider">Feld-Status (Manuell)</label>
-                      <select 
-                        className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded font-bold text-slate-800 bg-white"
-                        value={adjustStatus}
-                        onChange={(e: any) => setAdjustStatus(e.target.value)}
-                      >
-                        <option value="ready_to_download">⏱ Ausstehend (bereit)</option>
-                        <option value="downloaded">⚙ Beim Techniker (geladen)</option>
-                        <option value="upload_pending">⬆ Messdaten erfasst (Sync-bereit)</option>
-                        <option value="synchronized">✔️ Drunter synchronisiert</option>
-                      </select>
-                    </div>
-                  </div>
-
+                <div className="flex flex-col gap-1">
+                  <span className="text-[9px] font-black uppercase tracking-tight text-slate-500 font-mono">5. Anlagentyp</span>
+                  <select 
+                    className="h-8 border border-slate-300 rounded px-1.5 text-xs font-bold focus:outline-none focus:border-[#003d9b] bg-white text-slate-800"
+                    disabled={editorMode === "edit"} // Don't allow changing core type of existing protocol for file safety
+                    value={editorSystemType}
+                    onChange={(e) => {
+                      const newType = e.target.value;
+                      setEditorSystemType(newType);
+                      const typesList = systemTypeSettings[newType] || ["-", "Normal"];
+                      setDynamicDetectorTypes(typesList);
+                      setPaintValue(typesList.filter(t => t !== "-")[0] || "Normal");
+                    }}
+                  >
+                    <option value="BMA">BMA (Brandmelder)</option>
+                    <option value="EMA">EMA (Einbruchmelder)</option>
+                    <option value="ELA">ELA (Akustiksysteme)</option>
+                    <option value="LIRA">LIRA (Lichtsysteme)</option>
+                    <option value="SLA">SLA (Sprinkleranlagen)</option>
+                  </select>
                 </div>
               </div>
 
-              {/* Grid 2: Groups & Detectors Adjustment */}
-              <div>
-                <div className="flex justify-between items-center mb-2">
-                  <h4 className="text-[10px] font-bold text-[#003d9b] uppercase tracking-wider font-mono">
-                    2. Gruppen & Melder anpassen (Kein Einfluss auf Auslösungswerte)
-                  </h4>
+              {/* Row 2: Multi-System capabilities Manager */}
+              <div className="bg-slate-50 border border-slate-200 p-3 rounded-lg shrink-0 flex flex-wrap items-center justify-between gap-3 font-sans">
+                <div className="flex items-center gap-2">
+                  <span className="text-[9px] font-black uppercase tracking-tight text-slate-500 font-mono">
+                    Zugeordnete separate Anlagen:
+                  </span>
+                  <div className="flex flex-wrap gap-1">
+                    {editorSubSystems.map(sub => {
+                      const isActive = activeSubsystemId === sub.id;
+                      return (
+                        <button
+                          key={sub.id}
+                          type="button"
+                          onClick={() => {
+                            setActiveSubsystemId(sub.id);
+                          }}
+                          className={`px-3 py-1 font-mono text-[10.5px] font-bold rounded border transition-all cursor-pointer ${
+                            isActive 
+                              ? "bg-[#003d9b] border-[#003d9b] text-white shadow" 
+                              : "bg-white border-slate-300 text-slate-705 hover:bg-slate-100"
+                          }`}
+                        >
+                          {sub.name}
+                        </button>
+                      );
+                    })}
+                  </div>
                   <button
-                    onClick={() => {
-                      const nextId = `GRP-${Date.now()}`;
-                      setAdjustRows(prev => [
-                        ...prev,
-                        {
-                          groupId: nextId,
-                          groupName: `Gruppe ${prev.length + 1}`,
-                          groupType: "NAM",
-                          cells: [
-                            { slotKey: "1", detectorType: "Normal", value: "" },
-                            { slotKey: "2", detectorType: "Normal", value: "" }
-                          ]
-                        }
-                      ]);
-                      triggerToast("Neue Gruppe angelegt!", "info");
-                    }}
-                    className="px-2.5 py-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 font-bold text-[10px] rounded inline-flex items-center gap-1 cursor-pointer transition-colors"
+                    type="button"
+                    onClick={handleAddSubsystem}
+                    className="px-2 py-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-250 font-bold text-[10px] rounded inline-flex items-center gap-0.5 cursor-pointer"
+                    title="Eine zusätzliche separate Anlage für diesen Vertrag hinzufügen (Mehr-Anlagen-Fähigkeit)"
                   >
-                    <Plus size={11} /> Gruppe hinzufügen
+                    <Plus size={11} /> + Anlage Hinzufügen
                   </button>
                 </div>
 
-                <div className="space-y-4">
-                  {adjustRows.length > 0 ? (
-                    adjustRows.map((r, rIdx) => (
-                      <div key={r.groupId} className="border border-slate-200 rounded-lg overflow-hidden bg-white shadow-xs">
-                        {/* Group Header */}
-                        <div className="p-3 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row gap-2 justify-between items-start sm:items-center">
-                          <div className="flex items-center gap-2 w-full max-w-md">
-                            <span className="font-mono text-[10px] font-bold text-slate-400">#{rIdx + 1}</span>
-                            <input 
-                              type="text"
-                              value={r.groupName}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setAdjustRows(prev => prev.map((item, idx) => {
-                                  if (idx === rIdx) {
-                                    return { ...item, groupName: val };
-                                  }
-                                  return item;
-                                }));
-                              }}
-                              className="px-2 py-1 border border-slate-250 rounded font-bold text-xs text-slate-800 bg-white max-w-xs focus:outline-none focus:border-[#003d9b]"
-                              placeholder="z.B. Kellergeschoss..."
-                            />
-                            <span className="text-[9px] text-slate-400 font-mono">({r.groupId})</span>
-                          </div>
+                {/* Edit active subsystem details */}
+                {activeSubsystemId && (
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex items-center gap-2 bg-white border border-slate-200 px-3 py-1 rounded">
+                      <span className="text-[10px] text-slate-400 font-bold uppercase font-mono">Aktive Anlage umbenennen:</span>
+                      <input 
+                        type="text"
+                        className="h-6 border border-slate-250 rounded px-1.5 text-xs focus:outline-none focus:border-[#003d9b] w-45 font-bold text-slate-850"
+                        value={editorSubSystems.find(s => s.id === activeSubsystemId)?.name || ""}
+                        onChange={(e) => handleRenameSubsystem(e.target.value)}
+                        onBlur={handleRenameSubsystemBlur}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleDeleteSubsystem}
+                        disabled={editorSubSystems.length <= 1}
+                        className="p-1 hover:bg-red-50 text-red-655 rounded disabled:opacity-30 disabled:hover:bg-transparent cursor-pointer"
+                        title="Diese Anlage löschen (Mind. 1 Anlage erforderlich)"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
 
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => {
-                                setAdjustRows(prev => prev.map((item, idx) => {
-                                  if (idx === rIdx) {
-                                    const nextKey = (item.cells.length + 1).toString();
-                                    const defaultType = systemTypeSettings[adjustSystemType]?.[0] || "-";
-                                    return {
-                                      ...item,
-                                      cells: [...item.cells, { slotKey: nextKey, detectorType: defaultType === "-" ? "Normal" : defaultType, value: "" }]
-                                    };
-                                  }
-                                  return item;
-                                }));
-                                triggerToast("Melderplatz hinzugefügt", "info");
-                              }}
-                              className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-[9px] rounded inline-flex items-center gap-0.5"
-                            >
-                              <Plus size={10} /> +1 Melder
-                            </button>
-                            
-                            <button
-                              onClick={() => {
-                                setAdjustRows(prev => prev.filter((_, idx) => idx !== rIdx));
-                                triggerToast("Gruppe gelöscht", "warning");
-                              }}
-                              className="p-1 text-red-650 hover:bg-red-50 rounded"
-                              title="Diese Gruppe inklusive Melder löschen"
-                            >
-                              <Trash2 size={13} />
-                            </button>
-                          </div>
-                        </div>
+                    {/* Columns size adjuster (+ / - buttons) */}
+                    <div className="flex items-center gap-1.5 bg-white border border-slate-200 px-2.5 py-1 rounded shadow-sm">
+                      <span className="text-[10px] text-slate-500 font-bold uppercase font-mono">Spalten (10-50):</span>
+                      <button
+                        type="button"
+                        onClick={handleRemoveColumn}
+                        className="w-5.5 h-5.5 rounded bg-slate-100 text-slate-700 hover:bg-slate-200 flex items-center justify-center font-bold font-mono text-xs cursor-pointer select-none"
+                        title="Spalte am Ende entfernen (Min. 10)"
+                      >
+                        -
+                      </button>
+                      <span className="text-xs font-bold font-mono px-2 text-indigo-950">
+                        {editorSubSystems[0]?.rows[0]?.cells.length || 10}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleAddColumn}
+                        className="w-5.5 h-5.5 rounded bg-slate-100 text-[#003d9b] hover:bg-indigo-105 flex items-center justify-center font-bold font-mono text-xs cursor-pointer select-none"
+                        title="Spalte hinten anhängen (Max. 50)"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
 
-                        {/* List of Detectors in Group */}
-                        <div className="p-4 bg-slate-50/40">
-                          {r.cells.length > 0 ? (
-                            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2">
-                              {r.cells.map((c: any, cIdx: number) => {
-                                const currentOpts = systemTypeSettings[adjustSystemType] || ["-", "Normal"];
+              {/* Row 3: Office Ribbon Menüband Layout */}
+              <div className="bg-slate-150 border-y-2 border-slate-300 p-2.5 rounded shadow-inner shrink-0 leading-none">
+                <span className="text-[9px] font-extrabold uppercase tracking-widest text-[#003d9b] block mb-2 font-mono">
+                  MENÜBAND (DIREKT-ZEICHNEN PLATTE)
+                </span>
+                
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-stretch divide-x-0 md:divide-x divide-slate-300 text-slate-850">
+                  
+                  {/* Sub-section 1: Verlauf */}
+                  <div className="col-span-1 md:col-span-2 flex flex-col justify-between pr-2.5 font-sans">
+                    <span className="text-[9px] font-bold text-slate-505 uppercase font-mono block mb-1">Verlauf</span>
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={handleUndo}
+                        disabled={editorHistoryIndex <= 0}
+                        className="flex-1 py-1.5 bg-white hover:bg-slate-5 border border-slate-305 rounded font-semibold text-[10px] text-slate-705 disabled:opacity-30 flex items-center justify-center gap-1 cursor-pointer"
+                        title="Einen Schritt zurück (Undo)"
+                      >
+                        <Undo size={11} />
+                        Schritt Zurück
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleRedo}
+                        disabled={editorHistoryIndex >= editorHistory.length - 1}
+                        className="flex-1 py-1.5 bg-white hover:bg-slate-5 border border-slate-350 rounded font-semibold text-[10px] text-slate-705 disabled:opacity-30 flex items-center justify-center gap-1 cursor-pointer"
+                        title="Aktion wiederholen (Redo)"
+                      >
+                        <Redo size={11} />
+                        Wiederholen
+                      </button>
+                    </div>
+                  </div>
+                               {/* Sub-section 2: Meldertyp */}
+                  <div className="col-span-1 md:col-span-4 px-2.5 flex flex-col justify-between font-sans">
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="text-[9px] font-bold text-slate-505 uppercase font-mono">Meldertyp zeichnen</span>
+                      <span className="text-[8px] bg-amber-100 text-amber-900 border border-amber-300 rounded px-1 font-semibold font-mono">Pinselaktiv</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1 leading-normal max-h-16 overflow-y-auto pr-1">
+                      {dynamicDetectorTypes.map(t => {
+                        const isSelected = paintTool === "type" && paintValue === t;
+                        return (
+                          <button
+                            key={t}
+                            type="button"
+                            onClick={() => {
+                              setPaintTool("type");
+                              setPaintValue(t);
+                            }}
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-all cursor-pointer ${
+                              isSelected 
+                                ? "bg-indigo-700 border-indigo-700 text-white font-bold" 
+                                : "bg-white border-slate-300 text-slate-755 hover:bg-[#ebf0f5] hover:border-slate-450"
+                            }`}
+                          >
+                            {t === "-" ? "Ø Inaktiv" : t}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Sub-section 3: Melderauslösung */}
+                  <div className="col-span-1 md:col-span-3 px-2.5 flex flex-col justify-between font-sans">
+                    <span className="text-[9px] font-bold text-slate-505 uppercase font-mono block mb-1">Melderauslösung zeichnen</span>
+                    <div className="flex flex-wrap gap-1 leading-normal">
+                      {(() => {
+                        const triggerOptions = editorInterval === "Vierteljährlich"
+                          ? [
+                              { val: "Q1", label: "Q1" },
+                              { val: "Q2", label: "Q2" },
+                              { val: "Q3", label: "Q3" },
+                              { val: "Q4", label: "Q4" },
+                            ]
+                          : editorInterval === "Halbjährlich"
+                            ? [
+                                { val: "H1", label: "H1" },
+                                { val: "H2", label: "H2" },
+                              ]
+                            : [
+                                { val: "Jahr", label: "Jahr" },
+                              ];
+                        
+                        const fullOptions = [
+                          ...triggerOptions,
+                          { val: "CHECK", label: "✓ OK" },
+                          { val: "Def.", label: "✘ Defekt" },
+                          { val: "", label: "Radierer (Leer)" }
+                        ];
+
+                        return fullOptions.map(item => {
+                          const isSelected = paintTool === "trigger" && paintValue === item.val;
+                          return (
+                            <button
+                              key={item.val}
+                              type="button"
+                              onClick={() => {
+                                setPaintTool("trigger");
+                                setPaintValue(item.val);
+                              }}
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-all cursor-pointer ${
+                                isSelected 
+                                  ? "bg-amber-600 border-amber-600 text-white font-bold" 
+                                  : "bg-white border-slate-300 text-slate-750 hover:bg-slate-50"
+                              }`}
+                            >
+                              {item.label}
+                            </button>
+                          );
+                        });
+                      })()}
+                    </div>
+                    <span className="text-[8px] text-slate-400 font-mono mt-0.5">Ausgelöste Werte überschreiben Slots</span>
+                  </div>
+
+                  {/* Sub-section 4: Spezial-Felder (Beschriftung/Freitext) */}
+                  <div className="col-span-1 md:col-span-3 pl-2.5 flex flex-col justify-between font-sans">
+                    <span className="text-[9px] font-bold text-slate-550 uppercase font-mono block mb-1">
+                      Spezial-Felder (Beschriftung/Freitext)
+                    </span>
+                    <div className="flex flex-col gap-1.5 mt-0.5">
+                      <div className="flex gap-1 items-center">
+                        <span className="text-[8px] text-slate-400 font-mono uppercase shrink-0">Vorgabewert:</span>
+                        <input 
+                          type="text" 
+                          placeholder="Z.B. Flur West..."
+                          value={textBrushValue}
+                          onChange={(e) => setTextBrushValue(e.target.value)}
+                          className="h-6 border border-slate-300 rounded px-1.5 text-[11px] flex-1 bg-white focus:outline-none text-slate-800"
+                        />
+                      </div>
+                      
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPaintTool("type");
+                            setPaintValue("Beschriftung");
+                          }}
+                          className={`flex-1 py-1 text-[9.5px] font-bold rounded border transition-all cursor-pointer ${
+                            paintTool === "type" && paintValue === "Beschriftung"
+                              ? "bg-amber-600 border-amber-600 text-white" 
+                              : "bg-white border-slate-300 text-slate-700 hover:bg-slate-50"
+                          }`}
+                          title="Feld mit fest vordefiniertem Text zeichnen"
+                        >
+                          🏷️ Beschriftung
+                        </button>
+                        
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPaintTool("type");
+                            setPaintValue("Freitext");
+                          }}
+                          className={`flex-1 py-1 text-[9.5px] font-bold rounded border transition-all cursor-pointer ${
+                            paintTool === "type" && paintValue === "Freitext"
+                              ? "bg-slate-700 border-slate-700 text-white" 
+                              : "bg-white border-slate-300 text-slate-700 hover:bg-slate-50"
+                          }`}
+                          title="Feld zeichnen in dem der Monteur freien Text eintragen kann"
+                        >
+                          ✍ Freitext
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+
+              </div>
+
+              {/* Row 4: Spreadsheet Body (Tabellarisch, visible borders, horizontally scrollable) */}
+              <div className="flex-1 bg-white border border-slate-350 rounded-lg overflow-hidden flex flex-col min-h-0">
+                
+                {/* Scroll Container */}
+                <div className="flex-1 overflow-auto">
+                  
+                  {activeSubsystemId && editorSubSystems.find(s => s.id === activeSubsystemId) ? (
+                    <table className="w-full text-left text-xs text-slate-800 border-collapse table-fixed select-none">
+                      <thead>
+                        {/* Slots numbers header */}
+                        <tr className="bg-slate-100 uppercase text-[9px] font-bold font-mono tracking-wider border-b border-slate-300">
+                          <th className="px-3 py-2 border-r border-slate-300 w-20 shrink-0 text-slate-500">Actions</th>
+                          <th className="px-3 py-2 border-r border-slate-300 w-28 shrink-0 text-slate-500 text-xs">Meldegruppe</th>
+                          <th className="px-3 py-2 border-r border-slate-300 w-48 shrink-0 text-slate-505 text-xs">Name</th>
+                          <th className="px-3 py-2 border-r border-slate-300 w-24 shrink-0 text-slate-505 text-xs text-center">Melderanzahl</th>
+                          {(editorSubSystems.find(s => s.id === activeSubsystemId)?.rows[0]?.cells || []).map((_, i) => {
+                            const numStr = String(i + 1).padStart(2, "0");
+                            const colPrefix = editorSystemType === "ELA" 
+                              ? "S" 
+                              : editorSystemType === "Lichtruf" 
+                                ? "" 
+                                : "M";
+                            return (
+                              <th key={i} className="py-2 border-r border-slate-300 text-center font-mono text-[9px] text-[#003d9b] w-12" style={{ minWidth: "46px" }}>
+                                {colPrefix ? `${colPrefix}${numStr}` : `${numStr}`}
+                              </th>
+                            );
+                          })}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {editorSubSystems.find(s => s.id === activeSubsystemId)!.rows.map((row, rIdx) => {
+                          const nonInactiveCount = row.cells.filter(c => c.detectorType !== "-").length;
+                          return (
+                            <tr key={row.groupId} className="hover:bg-slate-50/50 border-b border-slate-300 h-11">
+                              
+                              {/* Row metadata controls */}
+                              <td className="px-2 border-r border-slate-300 text-center text-[10px] font-mono shrink-0">
+                                <div className="flex items-center justify-center gap-1.5">
+                                  <span className="font-bold text-slate-400">#{rIdx + 1}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleEditorDeleteGroup(row.groupId)}
+                                    className="p-1 hover:bg-red-50 text-red-500 rounded hover:text-red-700 cursor-pointer"
+                                    title="Diese Gruppe vollständig löschen"
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                </div>
+                              </td>
+
+                              {/* 1. Meldegruppe Editable Input */}
+                              <td className="px-1.5 border-r border-slate-300 shrink-0">
+                                <input 
+                                  type="text"
+                                  className="w-full text-xs font-mono font-bold border border-slate-300 rounded px-1.5 py-0.5 bg-slate-50 hover:bg-white focus:bg-white focus:outline-none focus:border-[#003d9b] text-slate-905 text-center"
+                                  value={row.groupId}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    const nextList = editorSubSystems.map(sub => {
+                                      if (sub.id === activeSubsystemId) {
+                                        return {
+                                          ...sub,
+                                          rows: sub.rows.map(r => r.groupId === row.groupId ? { ...r, groupId: val } : r)
+                                        };
+                                      }
+                                      return sub;
+                                    });
+                                    setEditorSubSystems(nextList);
+                                  }}
+                                  onBlur={() => pushHistoryState(editorSubSystems)}
+                                />
+                              </td>
+
+                              {/* 2. Group Area Name input editing */}
+                              <td className="px-1.5 border-r border-slate-300 shrink-0">
+                                <input 
+                                  type="text"
+                                  className="w-full text-xs font-bold border border-slate-250 rounded px-2 py-0.5 bg-slate-50 hover:bg-white focus:bg-white focus:outline-none focus:border-[#003d9b] text-slate-800"
+                                  value={row.groupName}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    const nextList = editorSubSystems.map(sub => {
+                                      if (sub.id === activeSubsystemId) {
+                                        return {
+                                          ...sub,
+                                          rows: sub.rows.map(r => r.groupId === row.groupId ? { ...r, groupName: val } : r)
+                                        };
+                                      }
+                                      return sub;
+                                    });
+                                    setEditorSubSystems(nextList);
+                                  }}
+                                  onBlur={() => pushHistoryState(editorSubSystems)}
+                                />
+                              </td>
+
+                              {/* 3. Melderanzahl display (Calculated, read-only) */}
+                              <td className="px-2 border-r border-slate-300 text-center font-mono text-xs font-extrabold text-indigo-950 shrink-0 bg-slate-50">
+                                {nonInactiveCount}
+                              </td>
+
+                              {/* Cells Grid with Excel-like rectangular drag preview */}
+                              {row.cells.map((cell, cIdx) => {
+                                const isInactive = cell.detectorType === "-";
+                                const isLabel = cell.detectorType === "Beschriftung";
+                                const isFreeText = cell.detectorType === "Freitext";
+                                const isTriggered = cell.value !== "" && !isLabel;
+
+                                // Bounding-box selection calculations for visual highlight
+                                const isSelectedInRect = (() => {
+                                  if (!selectionStart || !selectionEnd) return false;
+                                  const minR = Math.min(selectionStart.r, selectionEnd.r);
+                                  const maxR = Math.max(selectionStart.r, selectionEnd.r);
+                                  const minC = Math.min(selectionStart.c, selectionEnd.c);
+                                  const maxC = Math.max(selectionStart.c, selectionEnd.c);
+                                  return rIdx >= minR && rIdx <= maxR && cIdx >= minC && cIdx <= maxC;
+                                })();
+                                
+                                // Determine beautiful cell bg & styling
+                                let cellStyle: React.CSSProperties = {
+                                  minWidth: "46px",
+                                  maxWidth: "46px",
+                                  height: "44px"
+                                };
+                                let bgClass = "bg-white hover:bg-indigo-50/40 text-slate-805";
+                                let innerText = "";
+                                
+                                if (isInactive) {
+                                  bgClass = "text-slate-400 font-bold";
+                                  cellStyle.backgroundImage = "repeating-linear-gradient(45deg, #f8fafc, #f8fafc 4px, #e2e8f0 4px, #e2e8f0 8px)";
+                                  innerText = "-";
+                                } else if (isLabel) {
+                                  bgClass = "bg-amber-50 text-amber-900 border-amber-300 font-semibold border-b-2";
+                                  innerText = cell.value || "🏷️";
+                                } else if (isFreeText) {
+                                  bgClass = "bg-slate-100 text-slate-800 border-dashed border-slate-350 font-semibold text-[9.5px]";
+                                  innerText = cell.value ? `✍ ${cell.value}` : "✍ Freitext";
+                                } else if (isTriggered) {
+                                  if (cell.value === "Def." || cell.value === "Def") {
+                                    bgClass = "bg-red-50 text-red-700 font-bold border-red-300";
+                                    innerText = "Def.";
+                                  } else if (cell.value === "CHECK" || cell.value === "✓") {
+                                    bgClass = "bg-emerald-50 text-emerald-800 font-bold border-emerald-300";
+                                    innerText = "✓";
+                                  } else if (cell.value === "Quartal" || cell.value === "Q1" || cell.value === "Q2" || cell.value === "Q3" || cell.value === "Q4") {
+                                    bgClass = "bg-sky-50 text-sky-850 font-semibold border-sky-305";
+                                    innerText = cell.value;
+                                  } else if (cell.value === "Halbjahr" || cell.value === "H1" || cell.value === "H2") {
+                                    bgClass = "bg-purple-50 text-purple-855 font-semibold border-purple-305";
+                                    innerText = cell.value;
+                                  } else if (cell.value === "Jahr") {
+                                    bgClass = "bg-amber-50 text-amber-850 font-semibold border-amber-305";
+                                    innerText = "Jahr";
+                                  } else {
+                                    bgClass = "bg-indigo-50 text-indigo-855 font-medium border-indigo-200";
+                                    innerText = cell.value.substring(0, 4);
+                                  }
+                                }
+
+                                if (isSelectedInRect) {
+                                  cellStyle.outline = "2.5px solid #4f46e5";
+                                  cellStyle.outlineOffset = "-2.5px";
+                                }
+
                                 return (
-                                  <div key={cIdx} className="bg-white border border-slate-200 rounded p-2 text-center relative flex flex-col justify-between">
-                                    <div className="flex justify-between items-center mb-1">
-                                      <span className="text-[9px] font-mono font-bold text-slate-400">M {c.slotKey}</span>
-                                      <button 
-                                        onClick={() => {
-                                          setAdjustRows(prev => prev.map((item, idx) => {
-                                            if (idx === rIdx) {
-                                              return {
-                                                ...item,
-                                                cells: item.cells.filter((_: any, cellIdx: number) => cellIdx !== cIdx).map((cell: any, i: number) => ({
-                                                  ...cell,
-                                                  slotKey: (i + 1).toString()
-                                                }))
-                                              };
-                                            }
-                                            return item;
-                                          }));
-                                        }}
-                                        className="text-slate-300 hover:text-red-600 font-bold pointer"
-                                        title="Entfernen"
-                                      >
-                                        <X size={10} />
-                                      </button>
-                                    </div>
-
-                                    {/* Detector Type Select Dropdown */}
-                                    <select
-                                      value={c.detectorType}
-                                      onChange={(e) => {
-                                        const val = e.target.value;
-                                        setAdjustRows(prev => prev.map((item, idx) => {
-                                          if (idx === rIdx) {
-                                            return {
-                                              ...item,
-                                              cells: item.cells.map((cell: any, cellIdx: number) => {
-                                                if (cellIdx === cIdx) {
-                                                  return { ...cell, detectorType: val };
-                                                }
-                                                return cell;
-                                              })
-                                            };
-                                          }
-                                          return item;
-                                        }));
-                                      }}
-                                      className="w-full text-[10px] bg-slate-50 hover:bg-slate-100 border border-slate-250 py-0.5 px-1 rounded font-serif-semibold text-slate-700"
-                                    >
-                                      {currentOpts.map(t => (
-                                        <option key={t} value={t}>{t}</option>
-                                      ))}
-                                    </select>
-
-                                    {/* Measurement indicator */}
-                                    <div className="mt-1.5 flex items-center justify-center">
-                                      {c.value ? (
-                                        <span className={`text-[8px] font-mono px-1 rounded font-bold ${
-                                          c.value === "Def." || c.value?.toLowerCase() === "def"
-                                            ? "bg-red-100 text-red-700"
-                                            : "bg-emerald-100 text-emerald-800"
-                                        }`}>
-                                          Wert: {c.value}
-                                        </span>
-                                      ) : (
-                                        <span className="text-[8px] font-mono text-slate-300">
-                                          ungeprüft
+                                  <td
+                                    key={cIdx}
+                                    style={cellStyle}
+                                    onMouseDown={(e) => handleCellMouseDown(rIdx, cIdx, e)}
+                                    onMouseEnter={(e) => handleCellMouseEnter(rIdx, cIdx, e)}
+                                    className={`border-r border-slate-300 text-center text-[10px] cursor-crosshair select-none relative transition-colors duration-100 ${bgClass}`}
+                                    title={`Slot Pt ${cIdx + 1} • Typ: ${cell.detectorType} • Auslösung: ${cell.value || "keine"}`}
+                                  >
+                                    <div className="flex flex-col items-center justify-center h-full leading-normal text-slate-900 font-sans">
+                                      {/* Main visual marker */}
+                                      <span className="text-[10.5px] font-mono leading-none font-bold break-all truncate max-w-[40px] block">{innerText}</span>
+                                      
+                                      {/* Sub label of detector type if active and un-triggered */}
+                                      {!isInactive && !isTriggered && !isLabel && !isFreeText && (
+                                        <span className="text-[7.2px] font-sans text-slate-450 block tracking-tighter uppercase scale-90 leading-none mt-0.5">
+                                          {cell.detectorType}
                                         </span>
                                       )}
                                     </div>
-                                  </div>
+                                    {/* Small position indicator on mouse-hover */}
+                                    <span className="absolute bottom-0 right-0 font-mono text-[6.5px] text-slate-350 scale-75 opacity-0 hover:opacity-100 leading-none">
+                                      {cIdx + 1}
+                                    </span>
+                                  </td>
                                 );
                               })}
-                            </div>
-                          ) : (
-                            <p className="text-[10px] text-slate-400 text-center py-2 font-mono">Keine Melderplätze in dieser Gruppe. Nutzen Sie "+1 Melder" oben.</p>
-                          )}
-                        </div>
 
-                      </div>
-                    ))
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   ) : (
-                    <div className="text-center py-8 border-2 border-dashed border-slate-200 text-slate-400 text-xs rounded-lg">
-                      Keine Gruppen/Sektionen definiert. Nutzen Sie "Gruppe hinzufügen" oben, um Sektionen anzulegen!
+                    <div className="text-center py-8 text-slate-400 font-mono text-xs">
+                      Lade die Tabellen-Matrix...
                     </div>
                   )}
+
+                  {/* Dynamic Hardware Checklist Section */}
+                  {activeSubsystemId && systemTypeHardwareConfigs[editorSystemType]?.hasHardware && (
+                    <div className="mt-6 p-4 border-t border-slate-200 bg-slate-50 border-x-0 border-b-0 rounded-b-lg">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+                        <div>
+                          <h4 className="text-xs font-bold font-mono tracking-wider text-[#003d9b] uppercase flex items-center gap-1.5">
+                            <SlidersHorizontal size={14} className="text-[#003d9b]" />
+                            Zusatz-Hardware & Systembaugruppen (Modul/Ring-Prüfung)
+                          </h4>
+                          <p className="text-[10px] text-slate-500 mt-0.5">
+                            Erfassen und verwalten Sie gerätespezifische Komponenten und Baugruppen für diesen Anlageteil (<strong>{activeSub?.name}</strong>).
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleAddHardwareRow}
+                          className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded shadow-sm text-[10px] flex items-center gap-1.5 transition-all cursor-pointer"
+                        >
+                          <Plus size={12} /> Baugruppe / Ring hinzufügen
+                        </button>
+                      </div>
+
+                      {activeSub?.hardwareRows && activeSub.hardwareRows.length > 0 ? (
+                        <div className="border border-slate-200 rounded-lg overflow-hidden bg-white shadow-sm">
+                          <table className="w-full text-left text-xs text-slate-800 border-collapse">
+                            <thead>
+                              <tr className="bg-slate-100 border-b border-slate-200 text-[9.5px] uppercase font-bold text-slate-500 font-mono">
+                                {systemTypeHardwareConfigs[editorSystemType].headers.map((hdr) => (
+                                  <th key={hdr} className="px-3 py-2 border-r border-slate-200 last:border-r-0">
+                                    {hdr}
+                                  </th>
+                                ))}
+                                <th className="px-3 py-2 w-12 text-center text-slate-500">Aktion</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {activeSub.hardwareRows.map((row) => (
+                                <tr key={row.id} className="border-b border-slate-150 last:border-b-0 hover:bg-slate-50 h-10">
+                                  {systemTypeHardwareConfigs[editorSystemType].headers.map((hdr) => {
+                                    const val = row[hdr] || "";
+                                    const lowerHdr = hdr.toLowerCase();
+                                    const isFaultOrInterruption = lowerHdr.includes("stör") || lowerHdr.includes("unterbrech");
+                                    
+                                    return (
+                                      <td key={hdr} className="p-1 px-3 border-r border-slate-200 last:border-r-0">
+                                        <div className="flex items-center gap-1">
+                                          <input
+                                            type="text"
+                                            value={val}
+                                            onChange={(e) => handleHardwareValueChange(row.id, hdr, e.target.value)}
+                                            onBlur={() => pushHistoryState(editorSubSystems)}
+                                            placeholder={`${hdr}...`}
+                                            className="w-full text-xs border border-slate-250 rounded px-2 py-1 bg-white focus:outline-none focus:border-[#003d9b] font-mono text-slate-800 font-semibold"
+                                          />
+                                          {isFaultOrInterruption && (
+                                            <div className="flex gap-0.5 shrink-0">
+                                              <button
+                                                type="button"
+                                                onClick={() => {
+                                                  handleHardwareValueChange(row.id, hdr, "Ja");
+                                                  pushHistoryState(editorSubSystems);
+                                                }}
+                                                className={`px-1 py-0.5 text-[8px] font-bold rounded border ${val === "Ja" ? "bg-red-100 border-red-350 text-red-700" : "bg-slate-50 border-slate-200 hover:bg-slate-150 text-slate-600"}`}
+                                                title="Als 'Ja' setzen"
+                                              >
+                                                Ja
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() => {
+                                                  handleHardwareValueChange(row.id, hdr, "Nein");
+                                                  pushHistoryState(editorSubSystems);
+                                                }}
+                                                className={`px-1 py-0.5 text-[8px] font-bold rounded border ${val === "Nein" ? "bg-emerald-100 border-emerald-350 text-emerald-800" : "bg-slate-50 border-slate-200 hover:bg-slate-150 text-slate-600"}`}
+                                                title="Als 'Nein' setzen"
+                                              >
+                                                Nein
+                                              </button>
+                                            </div>
+                                          )}
+                                        </div>
+                                      </td>
+                                    );
+                                  })}
+                                  <td className="px-2 py-1 text-center">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteHardwareRow(row.id)}
+                                      className="p-1 hover:bg-red-50 text-red-500 rounded hover:text-red-700 cursor-pointer inline-flex items-center justify-center transition-colors"
+                                      title="Komponente löschen"
+                                    >
+                                      <Trash2 size={13} />
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div 
+                          onClick={handleAddHardwareRow}
+                          className="border-2 border-dashed border-slate-250 hover:border-indigo-400 rounded-lg p-5 text-center cursor-pointer bg-white hover:bg-slate-50 transition-all group flex flex-col items-center justify-center"
+                        >
+                          <span className="text-slate-400 group-hover:text-slate-600 text-[11px] block font-mono">
+                            Keine Zusatz-Hardware für diesen Anlagenteil hinterlegt.
+                          </span>
+                          <span className="text-xs font-bold text-indigo-700 mt-1 inline-flex items-center gap-1 group-hover:underline">
+                            <Plus size={12} /> Hardware-Prüfliste anlegen
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                 </div>
+
+                {/* Grid controls footer inside tabular editor */}
+                <div className="p-3 bg-slate-50 border-t border-slate-201 flex justify-between items-center shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleEditorAddGroup}
+                    className="px-3.5 py-1.5 bg-[#003d9b] hover:bg-[#002f78] text-white font-bold text-xs rounded shadow flex items-center gap-1 transition-colors cursor-pointer"
+                  >
+                    <Plus size={13} /> Neue Meldergruppe hinzufügen (Neue Zeile)
+                  </button>
+                  <span className="text-[10px] text-slate-400 font-mono">
+                    * Ziehen Sie den Cursor bei gedrückter Maustaste über die Slots (Spalten 1 - 30), um sie Excel-artig zu zeichnen!
+                  </span>
+                </div>
+
               </div>
 
-              {/* Danger Zone: deletion */}
-              <div className="border border-red-200 rounded-lg p-5 bg-red-50/50 space-y-3">
-                <h5 className="text-[10px] font-black text-red-850 uppercase tracking-tight font-mono flex items-center gap-1">
-                  <AlertOctagon size={13} className="text-red-650" />
-                  Gefahrenbereich: Datensatz löschen
-                </h5>
-                <p className="text-[10.5px] text-red-800 leading-normal">
-                  Durch das Löschen wird dieser Wartungsvertrag mitsamt allen historischen Auslöse- und Messwerten vollständig aus der SQLite-Datenbank dieses Mandanten entfernt.
-                </p>
+            </div>
 
-                {showConfirmDeleteAdjust ? (
-                  <div className="bg-white border-2 border-red-200 rounded-lg p-4 space-y-3 animate-fadeIn">
-                    <p className="text-xs font-bold text-red-900 font-mono">
-                      ⚠️ SIND SIE SICH ABSOLUT SICHER? Diese Aktion ist unwiderruflich!
-                    </p>
-                    <div className="flex items-center gap-2">
+            {/* Footer Form Controls */}
+            <div className="p-4 bg-slate-100 border-t border-slate-300 flex justify-between shrink-0 font-sans text-slate-800">
+              
+              {/* Reset/Delete Zone */}
+              <div>
+                {editorMode === "edit" ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm("Möchten Sie diesen Wartungsvertrag wirklich endgültig aus dem System löschen? Dies kann nicht rückgängig gemacht werden!")) {
+                        setProtocols(prev => prev.filter(p => p.id !== editorContractNumber));
+                        triggerToast("Wartungsvertrag vollständig gelöscht.", "success");
+                        setIsUnifiedEditorOpen(false);
+                      }
+                    }}
+                    className="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded font-bold text-xs transition-colors cursor-pointer"
+                  >
+                    Wartungsvertrag löschen
+                  </button>
+                ) : (
+                  <span className="text-slate-400 text-xs font-mono">Neue Anlage vorbereiten</span>
+                )}
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Pre-select BMA or default types if we want and open modal
+                    setIsImportModalOpen(true);
+                  }}
+                  className="px-5 py-2 border border-indigo-300 hover:bg-indigo-50 text-indigo-700 bg-white rounded font-bold text-xs transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
+                  title="Anlage-Datei importieren (ESSER, NOTIFIER, HEKATRON)"
+                >
+                  <Upload size={14} /> Importieren...
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsUnifiedEditorOpen(false)}
+                  className="px-5 py-2 border border-slate-400 hover:bg-slate-200 text-slate-705 bg-white rounded font-bold text-xs transition-all cursor-pointer"
+                >
+                  Abbrechen
+                </button>
+                
+                <button
+                  type="button"
+                  onClick={handleSaveUnifiedEditor}
+                  className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded shadow-md flex items-center gap-1.5 transition-all outline-none cursor-pointer"
+                >
+                  <CheckCircle size={14} /> {editorMode === "create" ? "Wartungs-Anlage anlegen" : "Änderungen anwenden & sichern"}
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* 3. Small Import Overlay Modal (Wartungsvertrag Import Assistant) */}
+      {isImportModalOpen && (
+        <div className="fixed inset-0 z-[250] bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-300 w-full max-w-md overflow-hidden flex flex-col font-sans animate-fadeIn text-slate-800">
+            {/* Header */}
+            <div className="p-4 bg-slate-900 text-white flex justify-between items-center shrink-0">
+              <div className="flex items-center gap-2">
+                <Upload size={16} className="text-indigo-400" />
+                <h4 className="font-bold text-xs uppercase font-mono tracking-wider">Datei-Import Assistent</h4>
+              </div>
+              <button 
+                onClick={() => setIsImportModalOpen(false)} 
+                className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white cursor-pointer"
+                title="Abbrechen"
+                disabled={isImporting}
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-5 flex flex-col gap-4">
+              <p className="text-xs text-slate-500">
+                Wählen Sie den Dateityp und laden Sie Ihre Konfigurationsdatei hoch, um die Melderliste im Editor automatisch zu befüllen (Anlagentyp: <strong>{editorSystemType}</strong>).
+              </p>
+
+              {/* Selector */}
+              <div className="flex flex-col gap-2">
+                <span className="text-[10px] text-slate-400 font-bold uppercase font-mono">1. Import-Format wählen</span>
+                {editorSystemType === "BMA" ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditorImportFileType("esser")}
+                      className={`p-2 rounded-lg border text-center transition-all cursor-pointer flex flex-col items-center justify-center gap-1 ${
+                        editorImportFileType === "esser"
+                          ? "bg-indigo-50 border-indigo-500 text-indigo-950 font-bold shadow-sm"
+                          : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
+                      }`}
+                      disabled={isImporting}
+                    >
+                      <span className="text-xs font-mono leading-none">ESSER</span>
+                      <span className="text-[9px] text-slate-400 leading-none">Proprietäre .etb Datei</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setEditorImportFileType("notifier")}
+                      className={`p-2 rounded-lg border text-center transition-all cursor-pointer flex flex-col items-center justify-center gap-1 ${
+                        editorImportFileType === "notifier"
+                          ? "bg-indigo-50 border-indigo-500 text-indigo-950 font-bold shadow-sm"
+                          : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
+                      }`}
+                      disabled={isImporting}
+                    >
+                      <span className="text-xs font-mono leading-none">NOTIFIER</span>
+                      <span className="text-[9px] text-slate-400 leading-none">xml/usw. Schnittstelle</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setEditorImportFileType("hekatron")}
+                      className={`p-2 rounded-lg border text-center transition-all cursor-pointer flex flex-col items-center justify-center gap-1 ${
+                        editorImportFileType === "hekatron"
+                          ? "bg-indigo-50 border-indigo-500 text-indigo-950 font-bold shadow-sm"
+                          : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
+                      }`}
+                      disabled={isImporting}
+                    >
+                      <span className="text-xs font-mono leading-none">HEKATRON</span>
+                      <span className="text-[9px] text-slate-400 leading-none">json/usw. Schnittstelle</span>
+                    </button>
+
+                    <div className="grid grid-cols-2 gap-1.5">
                       <button
-                        onClick={() => handleDeleteProtocol(adjustProtocolId!)}
-                        className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-extrabold text-xs rounded transition-colors"
+                        type="button"
+                        onClick={() => setEditorImportFileType("csv")}
+                        className={`p-1.5 rounded-lg border text-center transition-all cursor-pointer flex flex-col items-center justify-center ${
+                          editorImportFileType === "csv"
+                            ? "bg-indigo-50 border-indigo-500 text-indigo-950 font-bold shadow-sm"
+                            : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
+                        }`}
+                        disabled={isImporting}
                       >
-                        Ja, diesen Vertrag unwiderruflich löschen
+                        <span className="text-[11px] font-bold leading-none">CSV</span>
+                        <span className="text-[8px] text-slate-400">Sonstiges</span>
                       </button>
                       <button
-                        onClick={() => setShowConfirmDeleteAdjust(false)}
-                        className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded transition-colors"
+                        type="button"
+                        onClick={() => setEditorImportFileType("xlsx")}
+                        className={`p-1.5 rounded-lg border text-center transition-all cursor-pointer flex flex-col items-center justify-center ${
+                          editorImportFileType === "xlsx"
+                            ? "bg-indigo-50 border-indigo-500 text-indigo-950 font-bold shadow-sm"
+                            : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
+                        }`}
+                        disabled={isImporting}
                       >
-                        Abbrechen
+                        <span className="text-[11px] font-bold leading-none">Excel</span>
+                        <span className="text-[8px] text-slate-400">Sonstiges</span>
                       </button>
                     </div>
                   </div>
                 ) : (
-                  <button
-                    onClick={() => setShowConfirmDeleteAdjust(true)}
-                    className="px-4 py-2 bg-red-50 border border-red-200 hover:bg-red-150 text-red-700 hover:text-red-800 font-extrabold text-xs rounded transition-all inline-flex items-center gap-1"
-                  >
-                    <Trash2 size={13} /> Wartungsvertrag vollständig löschen
-                  </button>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditorImportFileType("csv")}
+                      className={`p-3 rounded-lg border text-center transition-all cursor-pointer flex flex-col items-center justify-center gap-1.5 ${
+                        editorImportFileType === "csv"
+                          ? "bg-indigo-50 border-indigo-500 text-indigo-950 font-bold shadow-sm"
+                          : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
+                      }`}
+                      disabled={isImporting}
+                    >
+                      <span className="text-sm font-bold leading-none">CSV-Datei</span>
+                      <span className="text-[9px] text-slate-400 leading-none">Tabellarischer Import (.csv)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setEditorImportFileType("xlsx")}
+                      className={`p-3 rounded-lg border text-center transition-all cursor-pointer flex flex-col items-center justify-center gap-1.5 ${
+                        editorImportFileType === "xlsx"
+                          ? "bg-indigo-50 border-indigo-500 text-indigo-950 font-bold shadow-sm"
+                          : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
+                      }`}
+                      disabled={isImporting}
+                    >
+                      <span className="text-sm font-bold leading-none">Excel-Datei</span>
+                      <span className="text-[9px] text-slate-400 leading-none">Microsoft Excel Format (.xlsx)</span>
+                    </button>
+                  </div>
                 )}
               </div>
 
+              {/* Dynamic Design Template Download Area */}
+              {(editorImportFileType === "csv" || editorImportFileType === "xlsx") && (
+                <div className="p-3 bg-indigo-50/50 border border-indigo-100 rounded-xl flex flex-col gap-1.5 shrink-0">
+                  <div className="flex items-center gap-1.5">
+                    <FileSpreadsheet size={14} className="text-indigo-600" />
+                    <span className="text-[10px] text-indigo-950 font-bold uppercase font-mono">Download-Bereich</span>
+                  </div>
+                  <p className="text-[10.5px] leading-relaxed text-slate-600">
+                    Laden Sie die passende Struktur-Vorlage für <strong>{editorSystemType}</strong> herunter. Füllen Sie diese aus und laden Sie sie anschließend hoch.
+                  </p>
+                  <div className="flex gap-2 mt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadTemplate("csv")}
+                      className="flex-1 py-1.5 px-3 bg-white border border-indigo-200 hover:bg-indigo-50 hover:border-indigo-400 text-indigo-800 rounded font-bold text-[10px] text-center transition-all cursor-pointer flex items-center justify-center gap-1 shadow-sm"
+                    >
+                      <span>CSV Vorlage (.csv)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadTemplate("xlsx")}
+                      className="flex-1 py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold text-[10px] text-center transition-all cursor-pointer flex items-center justify-center gap-1 shadow-sm"
+                    >
+                      <span>Excel Vorlage (.xlsx)</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Upload Zone */}
+              <div className="flex flex-col gap-1.5 mt-1">
+                <span className="text-[10px] text-slate-400 font-bold uppercase font-mono">2. Datei hochladen</span>
+                
+                {isImporting ? (
+                  <div className="h-32 border border-dashed border-indigo-300 rounded-xl bg-indigo-50/50 flex flex-col items-center justify-center gap-2 p-4 text-center">
+                    <div className="w-8 h-8 rounded-full border-4 border-t-indigo-600 border-indigo-200 animate-spin" />
+                    <span className="text-xs font-bold text-indigo-950">Importiere Daten...</span>
+                    <span className="text-[9px] text-slate-500 font-mono">Führe Python-Parser im Container aus</span>
+                  </div>
+                ) : (
+                  <label className="h-32 border-2 border-dashed border-slate-250 hover:border-indigo-500 rounded-xl bg-slate-50 hover:bg-indigo-50/5 flex flex-col items-center justify-center gap-1.5 p-4 text-center cursor-pointer transition-colors group">
+                    <Upload size={22} className="text-slate-400 group-hover:text-indigo-600 transition-colors" />
+                    <div>
+                      <span className="text-xs font-bold text-slate-700 block text-center">Klicken zum Durchsuchen</span>
+                      <span className="text-[10px] text-slate-400 text-center block">oder Datei hierhin ziehen</span>
+                    </div>
+                    {editorImportFileType === "esser" ? (
+                      <span className="text-[8.5px] font-mono bg-amber-50 text-amber-700 px-2 py-0.5 rounded border border-amber-200">
+                        ESSER .etb (triggert Python-Script)
+                      </span>
+                    ) : editorImportFileType === "csv" ? (
+                      <span className="text-[8.5px] font-mono bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded border border-indigo-200">
+                        Standard CSV-Datei (.csv)
+                      </span>
+                    ) : editorImportFileType === "xlsx" ? (
+                      <span className="text-[8.5px] font-mono bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded border border-emerald-200">
+                        Excel-Datei (.xlsx)
+                      </span>
+                    ) : (
+                      <span className="text-[8.5px] font-mono bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded border border-indigo-200">
+                        {editorImportFileType.toUpperCase()}-Schnittstelle
+                      </span>
+                    )}
+                    <input 
+                      type="file" 
+                      className="hidden" 
+                      accept={
+                        editorImportFileType === "esser" 
+                          ? ".etb" 
+                          : editorImportFileType === "csv" 
+                          ? ".csv" 
+                          : editorImportFileType === "xlsx" 
+                          ? ".xlsx" 
+                          : undefined
+                      }
+                      onChange={handleFileImport}
+                    />
+                  </label>
+                )}
+              </div>
             </div>
 
             {/* Footer */}
-            <div className="p-4 bg-slate-50 border-t border-slate-150 flex justify-end gap-2 shrink-0">
+            <div className="bg-slate-50 px-5 py-3 border-t border-slate-200 flex justify-end gap-2 text-xs">
               <button
-                onClick={() => setIsAdjustProtocolModalOpen(false)}
-                className="px-4 py-2 border border-slate-350 hover:bg-slate-100 text-slate-650 rounded font-bold text-xs transition-colors cursor-pointer"
+                type="button"
+                onClick={() => setIsImportModalOpen(false)}
+                className="px-4 py-1.5 border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 rounded font-bold cursor-pointer transition-colors"
+                disabled={isImporting}
               >
-                Schließen ohne Speichern
-              </button>
-              
-              <button
-                onClick={handleSaveAdjustedProtocol}
-                className="px-5 py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded shadow inline-flex items-center gap-1 cursor-pointer transition-colors"
-              >
-                Änderungen speichern
+                Schließen
               </button>
             </div>
-
           </div>
         </div>
       )}

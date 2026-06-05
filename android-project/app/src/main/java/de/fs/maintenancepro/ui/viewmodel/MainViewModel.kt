@@ -42,13 +42,68 @@ class MainViewModel @Inject constructor(
     private val _isOffline = MutableStateFlow(false)
     val isOffline: StateFlow<Boolean> = _isOffline
 
+    private val _liveModusEnabled = MutableStateFlow(false)
+    val liveModusEnabled: StateFlow<Boolean> = _liveModusEnabled
+
+    private val _activeProtocolId = MutableStateFlow<String?>(null)
+    val activeProtocolId: StateFlow<String?> = _activeProtocolId
+
     private val _activeProtocolPayload = MutableStateFlow<String?>(null)
     val activeProtocolPayload: StateFlow<String?> = _activeProtocolPayload
+
+    fun setLiveModusEnabled(enabled: Boolean) {
+        _liveModusEnabled.value = enabled
+    }
+
+    fun setActiveProtocolId(id: String?) {
+        _activeProtocolId.value = id
+    }
 
     init {
         // Run initial background tasks
         processSyncQueue()
+        startLiveSyncLoop()
     }
+
+    private fun startLiveSyncLoop() {
+        viewModelScope.launch(Dispatchers.IO) {
+            combine(_activeProtocolId, _liveModusEnabled, _isOffline) { id, live, offline ->
+                Triple(id, live, offline)
+            }.collectLatest { (id, live, offline) ->
+                if (id != null && live && !offline) {
+                    while (true) {
+                        try {
+                            val protocol = protocolDao.getProtocolById(id)
+                            if (protocol != null) {
+                                val request = de.fs.maintenancepro.data.remote.LiveSyncRequestDto(
+                                    protocol_id = id,
+                                    payload_json = protocol.decryptedPayloadJson
+                                )
+                                val response = apiService.liveSyncProtocol(id, request)
+                                if (response.isSuccessful && response.body() != null) {
+                                    val serverResp = response.body()!!
+                                    val mergedJson = serverResp.payload_json
+                                    if (mergedJson != protocol.decryptedPayloadJson) {
+                                        val updated = protocol.copy(
+                                            decryptedPayloadJson = mergedJson,
+                                            lastEditedAt = System.currentTimeMillis()
+                                        )
+                                        protocolDao.insertOrUpdate(updated)
+                                        // Update active payload in memory if client is currently editing
+                                        _activeProtocolPayload.value = mergedJson
+                                    }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            // ignore, retry on next tick
+                        }
+                        kotlinx.coroutines.delay(1500)
+                    }
+                }
+            }
+        }
+    }
+
 
     fun updateSearchQuery(query: String) {
         _searchQuery.value = query
@@ -119,6 +174,8 @@ class MainViewModel @Inject constructor(
             val rootJson = JSONObject(protocol.decryptedPayloadJson)
             val rowsArray = rootJson.getJSONArray("rows")
             
+            val now = System.currentTimeMillis()
+            
             for (i in 0 until rowsArray.length()) {
                 val rowObj = rowsArray.getJSONObject(i)
                 if (rowObj.getString("group_id") == groupId) {
@@ -127,6 +184,7 @@ class MainViewModel @Inject constructor(
                         val cellObj = cellsArray.getJSONObject(j)
                         if (cellObj.getString("slot_key") == slotKey) {
                             cellObj.put("value", writeValue)
+                            cellObj.put("updated_at", now)
                             break
                         }
                     }
@@ -153,6 +211,7 @@ class MainViewModel @Inject constructor(
             val rootJson = JSONObject(protocol.decryptedPayloadJson)
             val rowsArray = rootJson.getJSONArray("rows")
 
+            val now = System.currentTimeMillis()
             val newRowObj = JSONObject().apply {
                 put("group_id", newGroupId)
                 put("group_name", groupName)
@@ -163,6 +222,7 @@ class MainViewModel @Inject constructor(
                         put("slot_key", colKey)
                         put("detector_type", "ZD")
                         put("value", "")
+                        put("updated_at", now)
                     })
                 }
                 put("cells", cellsArray)
@@ -196,6 +256,7 @@ class MainViewModel @Inject constructor(
             })
 
             // Add slots to all existing matrix groups
+            val now = System.currentTimeMillis()
             val rowsArray = rootJson.getJSONArray("rows")
             for (i in 0 until rowsArray.length()) {
                 val rowObj = rowsArray.getJSONObject(i)
@@ -204,6 +265,7 @@ class MainViewModel @Inject constructor(
                     put("slot_key", newColumnKey)
                     put("detector_type", "ZD")
                     put("value", "")
+                    put("updated_at", now)
                 })
             }
 
@@ -420,6 +482,7 @@ class MainViewModel @Inject constructor(
                                     put("slot_key", c.toString())
                                     put("detector_type", listOf("RAS", "ZD", "DB", "TDIF", "-")[c - 1])
                                     put("value", "")
+                                    put("updated_at", 0L)
                                 })
                             }
                         }

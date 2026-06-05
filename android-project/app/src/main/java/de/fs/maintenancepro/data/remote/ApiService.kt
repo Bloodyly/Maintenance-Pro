@@ -24,10 +24,26 @@ interface ApiService {
 
     @POST("protocols/list-pending")
     suspend fun listPending(): Response<List<ProtocolItemDto>>
+
+    @POST("protocols/live-sync/{id}")
+    suspend fun liveSyncProtocol(
+        @Path("id") protocolId: String,
+        @Body request: LiveSyncRequestDto
+    ): Response<LiveSyncResponseDto>
 }
 
 // Data Transfer Objects (DTOs)
 data class SearchRequestDto(val query: String)
+
+data class LiveSyncRequestDto(
+    val protocol_id: String,
+    val payload_json: String
+)
+
+data class LiveSyncResponseDto(
+    val protocol_id: String,
+    val payload_json: String
+)
 
 data class AuthResponseDto(
     val status: String,
@@ -42,7 +58,8 @@ data class ProtocolItemDto(
     val contract_number: String,
     val interval: String,
     val system_type: String,
-    val status: String
+    val status: String,
+    val is_live: Boolean? = false
 )
 
 data class UploadResponseDto(
@@ -81,5 +98,6 @@ data class ProtocolGroupDto(
 data class ProtocolCellDto(
     val slot_key: String,
     val detector_type: String,
-    val value: String
+    val value: String,
+    val updated_at: Long? = 0L
 )

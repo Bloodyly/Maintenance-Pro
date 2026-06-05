@@ -17,6 +17,18 @@ PORT = int(os.environ.get("PORT", 3000))
 DB_PATH = os.environ.get("DB_PATH", "/shared_db/protocols.db")
 SERVER_CODEWORD = os.environ.get("SERVER_CODEWORD", "77-XJ-900-PLX-22")
 
+# --- LIVE SESSION TRACKING ---
+active_live_sessions = {}
+
+def is_protocol_live(protocol_id) -> bool:
+    if protocol_id not in active_live_sessions:
+        return False
+    last_act = active_live_sessions[protocol_id]
+    # Keep active status live if checked within 30 seconds
+    if (datetime.utcnow() - last_act).total_seconds() < 30:
+        return True
+    return False
+
 # --- DATABASE LOGIC ---
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -76,10 +88,16 @@ def init_db():
         slot_key VARCHAR(50) NOT NULL,
         detector_type VARCHAR(100) NOT NULL,
         value VARCHAR(50) NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (protocol_id, group_id) REFERENCES protocol_groups(protocol_id, group_id) ON DELETE CASCADE,
         UNIQUE(protocol_id, group_id, slot_key)
     );
     """)
+    try:
+        cursor.execute("ALTER TABLE group_cells ADD COLUMN updated_at INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
     
     # Populate initial values if empty
     cursor.execute("SELECT COUNT(*) as cnt FROM technicians")
@@ -227,7 +245,8 @@ def protocols_search():
             "contract_number": r["contract_number"],
             "interval": r["interval"],
             "system_type": r["system_type"],
-            "status": r["status"]
+            "status": r["status"],
+            "is_live": is_protocol_live(r["id"])
         })
         
     encrypted_resp = encrypt_payload(json.dumps(results), SERVER_CODEWORD)
@@ -259,7 +278,8 @@ def list_pending():
             "contract_number": r["contract_number"],
             "interval": r["interval"],
             "system_type": r["system_type"],
-            "status": r["status"]
+            "status": r["status"],
+            "is_live": is_protocol_live(r["id"])
         })
         
     encrypted_resp = encrypt_payload(json.dumps(results), SERVER_CODEWORD)
@@ -409,6 +429,146 @@ def protocol_upload(id):
         "status": "conflict_resolved_or_synced",
         "version": 2,
         "message": f"Wartung '{id}' erfolgreich auf den Python Server synchronisiert und archiviert."
+    }
+    
+    encrypted_resp = encrypt_payload(json.dumps(response_payload), SERVER_CODEWORD)
+    return encrypted_resp, 200
+
+@app.route("/protocols/live-sync/<id>", methods=["POST"])
+def protocols_live_sync(id):
+    success, auth_details = authenticate_request()
+    if not success:
+        return jsonify(auth_details), 401
+    
+    try:
+        encrypted_body = request.data.decode("utf-8").strip()
+        decrypted_body = decrypt_payload(encrypted_body, SERVER_CODEWORD)
+        uploaded_data = json.loads(decrypted_body)
+    except Exception as e:
+        return jsonify({"error": "DECRYPTION_FAILED", "message": f"Live Sync konnte nicht entschlüsselt werden. {str(e)}"}), 400
+        
+    # Mark/Renew active live session session
+    active_live_sessions[id] = datetime.utcnow()
+    
+    payload_json_str = uploaded_data.get("payload_json", "{}")
+    client_payload = json.loads(payload_json_str)
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Verify protocol exists in DBMS
+    cursor.execute("SELECT id, columns, applicable_values, detector_types FROM protocols WHERE id = ?", (id,))
+    p_row = cursor.fetchone()
+    if not p_row:
+        conn.close()
+        return jsonify({"error": "PROTOCOL_NOT_FOUND", "message": "Protokoll existiert nicht beim Live-Sync."}), 404
+        
+    # 1. Merge columns definitions if the client sent the newest structure definitions
+    client_def = client_payload.get("definition", {})
+    client_cols = client_def.get("columns", [])
+    if client_cols:
+        client_keys = [c.get("key") for c in client_cols if c.get("key")]
+        existing_cols = json.loads(p_row["columns"])
+        merged_cols = existing_cols[:]
+        for ck in client_keys:
+            if ck not in merged_cols:
+                merged_cols.append(ck)
+        cursor.execute("UPDATE protocols SET columns = ? WHERE id = ?", (json.dumps(merged_cols), id))
+        
+    # 2. Merge cells and rows on-the-fly
+    rows = client_payload.get("rows", [])
+    for row in rows:
+        g_id = row.get("group_id")
+        g_name = row.get("group_name", "")
+        g_type = row.get("group_type", "NAM")
+        
+        cursor.execute("""
+            INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(protocol_id, group_id) DO UPDATE SET group_name = EXCLUDED.group_name, group_type = EXCLUDED.group_type
+        """, (id, g_id, g_name, g_type))
+        
+        for cell in row.get("cells", []):
+            slot_key = cell.get("slot_key")
+            det_type = cell.get("detector_type", "-")
+            val = cell.get("value", "")
+            up_at = cell.get("updated_at", 0)
+            
+            # Fetch existing cell db values
+            cursor.execute("""
+                SELECT value, updated_at FROM group_cells 
+                WHERE protocol_id = ? AND group_id = ? AND slot_key = ?
+            """, (id, g_id, slot_key))
+            existing_c = cursor.fetchone()
+            
+            should_update = False
+            if not existing_c:
+                should_update = True
+            else:
+                db_up_at = existing_c["updated_at"] or 0
+                db_val = existing_c["value"] or ""
+                # Update if incoming updated_at is greater
+                if up_at > db_up_at:
+                    should_update = True
+                # If timestamps are identical but values differ, let the non-empty win
+                elif up_at == db_up_at and val != db_val:
+                    should_update = True
+                    
+            if should_update:
+                cursor.execute("""
+                    INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(protocol_id, group_id, slot_key) 
+                    DO UPDATE SET detector_type = EXCLUDED.detector_type, value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+                """, (id, g_id, slot_key, det_type, val, up_at))
+                
+    conn.commit()
+    
+    # 3. Pull newest fresh state out of DBMS
+    cursor.execute("SELECT * FROM protocols WHERE id = ?", (id,))
+    p = cursor.fetchone()
+    
+    cursor.execute("SELECT * FROM protocol_groups WHERE protocol_id = ?", (id,))
+    groups = cursor.fetchall()
+    
+    rows_data = []
+    for g in groups:
+        cursor.execute("SELECT * FROM group_cells WHERE protocol_id = ? AND group_id = ?", (id, g["group_id"]))
+        cells = cursor.fetchall()
+        cells_list = []
+        for c in cells:
+            cells_list.append({
+                "slot_key": c["slot_key"],
+                "detector_type": c["detector_type"],
+                "value": c["value"],
+                "updated_at": c["updated_at"]
+            })
+        rows_data.append({
+            "group_id": g["group_id"],
+            "group_name": g["group_name"],
+            "group_type": g["group_type"],
+            "cells": cells_list
+        })
+        
+    conn.close()
+    
+    response_json = {
+        "protocol_id": p["id"],
+        "client_name": p["name"],
+        "contract_number": p["contract_number"],
+        "interval": p["interval"],
+        "system_type": p["system_type"],
+        "definition": {
+            "columns": [{"key": c, "label": f"Slot {c}"} for c in json.loads(p["columns"])],
+            "applicable_values": [{"value": v, "label": v, "is_defect": v == "Def."} for v in json.loads(p["applicable_values"])],
+            "detector_types": json.loads(p["detector_types"])
+        },
+        "rows": rows_data
+    }
+    
+    response_payload = {
+        "protocol_id": id,
+        "payload_json": json.dumps(response_json)
     }
     
     encrypted_resp = encrypt_payload(json.dumps(response_payload), SERVER_CODEWORD)

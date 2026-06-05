@@ -37,6 +37,16 @@ fun MatrixEditScreen(
     val allProtocols by viewModel.protocols.collectAsState(initial = emptyList())
     val protocolEntity = allProtocols.find { it.id == protocolId }
 
+    LaunchedEffect(protocolId) {
+        viewModel.setActiveProtocolId(protocolId)
+    }
+
+    DisposableEffect(protocolId) {
+        onDispose {
+            viewModel.setActiveProtocolId(null)
+        }
+    }
+
     if (protocolEntity == null) return
 
     val rootJson = remember(protocolEntity.decryptedPayloadJson) {

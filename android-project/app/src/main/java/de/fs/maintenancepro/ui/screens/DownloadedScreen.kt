@@ -12,6 +12,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import de.fs.maintenancepro.R
+import de.fs.maintenancepro.ui.components.StatusHeaderBadge
 import de.fs.maintenancepro.ui.theme.*
 import de.fs.maintenancepro.ui.viewmodel.MainViewModel
 
@@ -28,7 +29,10 @@ fun DownloadedScreen(
         topBar = {
             TopAppBar(
                 title = { Text(stringResource(R.string.title_inspections), color = IndustrialPrimary, fontWeight = FontWeight.Bold) },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White)
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White),
+                actions = {
+                    StatusHeaderBadge(viewModel)
+                }
             )
         },
         containerColor = IndustrialBackground
