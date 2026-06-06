@@ -42,43 +42,18 @@ fun SearchScreen(
     val searchQuery by viewModel.searchQuery.collectAsState()
     val isOffline by viewModel.isOffline.collectAsState()
     val liveModusEnabled by viewModel.liveModusEnabled.collectAsState()
+    val searchResults by viewModel.searchResults.collectAsState()
+    val localProtocols by viewModel.protocols.collectAsState(initial = emptyList())
 
-    // Mock searches matching screens
-    val remoteItems = listOf(
-        ProtocolItemDto(
-            id = "1",
-            name = "Siemens AG - Campus Nord",
-            address = "Gürtelstraße 14-16, 1210 Wien",
-            contract_number = "V-2023-9941-Z",
-            interval = "Jährlich",
-            system_type = "BMA",
-            status = "ready_to_download",
-            is_live = true
-        ),
-        ProtocolItemDto(
-            id = "2",
-            name = "Logistikzentrum West - Bau B",
-            address = "Industriestraße 1, 5020 Salzburg",
-            contract_number = "V-2022-1025-X",
-            interval = "Jährlich",
-            system_type = "SLA",
-            status = "downloaded"
-        ),
-        ProtocolItemDto(
-            id = "3",
-            name = "Wohnpark Am Graben",
-            address = "Am Graben 42, 8010 Graz",
-            contract_number = "V-2024-0012-A",
-            interval = "Halbjährlich",
-            system_type = "ELA",
-            status = "synchronized"
-        )
-    )
-
-    val filteredItems = remoteItems.filter {
-        it.name.contains(searchQuery, ignoreCase = true) ||
-        it.address.contains(searchQuery, ignoreCase = true) ||
-        it.contract_number.contains(searchQuery, ignoreCase = true)
+    val filteredItems = remember(searchResults, localProtocols) {
+        searchResults.map { item ->
+            val localItem = localProtocols.find { it.id == item.id }
+            if (localItem != null) {
+                item.copy(status = localItem.localStatus)
+            } else {
+                item
+            }
+        }
     }
 
     Scaffold(
@@ -272,13 +247,17 @@ fun ProtocolCard(
                             Text(stringResource(R.string.btn_download), fontWeight = FontWeight.Bold)
                         }
                     }
-                    "downloaded" -> {
+                    "downloaded", "upload_pending" -> {
                         Box(
                             modifier = Modifier
                                 .background(Color(0xFFDCFCE7), RoundedCornerShape(4.dp))
                                 .padding(horizontal = 12.dp, vertical = 8.dp)
                         ) {
-                            Text(text = stringResource(R.string.status_downloaded), color = IndustrialGreen, fontWeight = FontWeight.Bold)
+                            Text(
+                                text = if (item.status == "upload_pending") "Ausstehend" else stringResource(R.string.status_downloaded),
+                                color = IndustrialGreen,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
 
                         Button(

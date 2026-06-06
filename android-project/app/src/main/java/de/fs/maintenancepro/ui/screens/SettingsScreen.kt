@@ -47,6 +47,9 @@ fun SettingsScreen(
     var codeword by remember { mutableStateOf("77-XJ-900-PLX-22") }
     
     var showPassword by remember { privateStateOf(false) }
+    
+    var showQrInputDialog by remember { mutableStateOf(false) }
+    var qrInputText by remember { mutableStateOf("") }
 
     // Update form when database state is loaded
     LaunchedEffect(configState) {
@@ -64,7 +67,7 @@ fun SettingsScreen(
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White),
                 actions = {
                     IconButton(onClick = {
-                        Toast.makeText(context, "QR Scanner wird geöffnet...", Toast.LENGTH_SHORT).show()
+                        showQrInputDialog = true
                     }) {
                         Icon(Icons.Default.QrCodeScanner, contentDescription = stringResource(R.string.btn_qr_scan), tint = IndustrialPrimary)
                     }
@@ -267,6 +270,8 @@ fun SettingsScreen(
 
                 Button(
                     onClick = {
+                        val p = port.toIntOrNull() ?: 3000
+                        viewModel.saveConfig(serverAddress, p, username, password, codeword)
                         Toast.makeText(context, "Konfiguration erfolgreich gespeichert!", Toast.LENGTH_LONG).show()
                         onNavigateBack()
                     },
@@ -277,6 +282,51 @@ fun SettingsScreen(
                     Spacer(Modifier.width(8.dp))
                     Text(stringResource(R.string.btn_save), fontWeight = FontWeight.Bold)
                 }
+            }
+
+            if (showQrInputDialog) {
+                AlertDialog(
+                    onDismissRequest = { showQrInputDialog = false },
+                    title = { Text("Verbindungsprofil laden (QR Simulation)", fontWeight = FontWeight.Bold, color = IndustrialPrimary) },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                text = "Fügen Sie den QR Code Inhalt (z.B. SECURE_MANDANT;...) ein, um die automatische Konfiguration im Emulator auszuführen.",
+                                fontSize = 13.sp,
+                                color = Color.Gray
+                            )
+                            OutlinedTextField(
+                                value = qrInputText,
+                                onValueChange = { qrInputText = it },
+                                placeholder = { Text("SECURE_MANDANT;...") },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                if (qrInputText.isNotBlank()) {
+                                    val success = viewModel.applyQrSetup(qrInputText)
+                                    if (success) {
+                                        Toast.makeText(context, "Konfiguration erfolgreich geladen!", Toast.LENGTH_SHORT).show()
+                                        showQrInputDialog = false
+                                    } else {
+                                        Toast.makeText(context, "Ungültiges QR-Format!", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = IndustrialPrimary)
+                        ) {
+                            Text("Profil anwenden")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showQrInputDialog = false }) {
+                            Text("Abbrechen", color = Color.Gray)
+                        }
+                    }
+                )
             }
         }
     }

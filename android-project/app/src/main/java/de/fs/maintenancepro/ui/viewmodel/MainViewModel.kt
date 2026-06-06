@@ -42,6 +42,12 @@ class MainViewModel @Inject constructor(
     private val _isOffline = MutableStateFlow(false)
     val isOffline: StateFlow<Boolean> = _isOffline
 
+    private val _isServerAvailable = MutableStateFlow(false)
+    val isServerAvailable: StateFlow<Boolean> = _isServerAvailable
+
+    private val _searchResults = MutableStateFlow<List<ProtocolItemDto>>(emptyList())
+    val searchResults: StateFlow<List<ProtocolItemDto>> = _searchResults
+
     private val _liveModusEnabled = MutableStateFlow(false)
     val liveModusEnabled: StateFlow<Boolean> = _liveModusEnabled
 
@@ -63,6 +69,90 @@ class MainViewModel @Inject constructor(
         // Run initial background tasks
         processSyncQueue()
         startLiveSyncLoop()
+        startConnectivityCheckLoop()
+        updateSearchQuery("")
+    }
+
+    private fun startConnectivityCheckLoop() {
+        viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                if (_isOffline.value) {
+                    _isServerAvailable.value = false
+                } else {
+                    try {
+                        val response = apiService.checkAuth()
+                        _isServerAvailable.value = response.isSuccessful
+                    } catch (e: Exception) {
+                        _isServerAvailable.value = false
+                    }
+                }
+                kotlinx.coroutines.delay(10000) // check every 10 seconds
+            }
+        }
+    }
+
+    fun checkConnectivity() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (_isOffline.value) {
+                _isServerAvailable.value = false
+                return@launch
+            }
+            try {
+                val response = apiService.checkAuth()
+                _isServerAvailable.value = response.isSuccessful
+            } catch (e: Exception) {
+                _isServerAvailable.value = false
+            }
+        }
+    }
+
+    fun searchRemoteProtocols(query: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (_isOffline.value || !_isServerAvailable.value) {
+                // Return local mock items if offline
+                _searchResults.value = getFallbackMockItems().filter {
+                    it.name.contains(query, ignoreCase = true) ||
+                    it.address.contains(query, ignoreCase = true) ||
+                    it.contract_number.contains(query, ignoreCase = true)
+                }
+                return@launch
+            }
+            try {
+                val response = apiService.searchProtocols(SearchRequestDto(query))
+                if (response.isSuccessful && response.body() != null) {
+                    _searchResults.value = response.body()!!
+                } else {
+                    _searchResults.value = getFallbackMockItems().filter {
+                        it.name.contains(query, ignoreCase = true) ||
+                        it.address.contains(query, ignoreCase = true) ||
+                        it.contract_number.contains(query, ignoreCase = true)
+                    }
+                }
+            } catch (e: Exception) {
+                _searchResults.value = getFallbackMockItems().filter {
+                    it.name.contains(query, ignoreCase = true) ||
+                    it.address.contains(query, ignoreCase = true) ||
+                    it.contract_number.contains(query, ignoreCase = true)
+                }
+            }
+        }
+    }
+
+    fun saveConfig(address: String, portVal: Int, user: String, passHex: String, keyHex: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val config = ServerConfigEntity(
+                serverAddress = address,
+                port = portVal,
+                username = user,
+                encryptedPasswordBase64 = passHex
+            )
+            serverConfigDao.saveConfig(config)
+            sessionManager.setNetworkConfig(address, portVal)
+            sessionManager.setSession(user, passHex.toCharArray(), keyHex.toCharArray())
+            checkConnectivity()
+            // reload search list with new server configs
+            searchRemoteProtocols(_searchQuery.value)
+        }
     }
 
     private fun startLiveSyncLoop() {
@@ -107,12 +197,16 @@ class MainViewModel @Inject constructor(
 
     fun updateSearchQuery(query: String) {
         _searchQuery.value = query
+        searchRemoteProtocols(query)
     }
 
     fun toggleOfflineMode() {
         _isOffline.value = !_isOffline.value
         if (!_isOffline.value) {
             processSyncQueue() // Retry queued syncs upon going back online
+            checkConnectivity()
+        } else {
+            _isServerAvailable.value = false
         }
     }
 
@@ -381,6 +475,33 @@ class MainViewModel @Inject constructor(
      */
     fun applyQrSetup(qrUriString: String): Boolean {
         return try {
+            if (qrUriString.startsWith("SECURE_MANDANT;")) {
+                val parts = qrUriString.split(";")
+                if (parts.size >= 7) {
+                    val tenantId = parts[1]
+                    val address = parts[2]
+                    val port = parts[3].toIntOrNull() ?: 3000
+                    val user = parts[4]
+                    val pass = parts[5]
+                    val key = parts[6]
+
+                    viewModelScope.launch(Dispatchers.IO) {
+                        val config = ServerConfigEntity(
+                            serverAddress = address,
+                            port = port,
+                            username = user,
+                            encryptedPasswordBase64 = pass
+                        )
+                        serverConfigDao.saveConfig(config)
+                        sessionManager.setNetworkConfig(address, port)
+                        sessionManager.setSession(user, pass.toCharArray(), key.toCharArray())
+                        checkConnectivity()
+                        searchRemoteProtocols(_searchQuery.value)
+                    }
+                    return true
+                }
+            }
+
             val uri = android.net.Uri.parse(qrUriString)
             if (uri.scheme == "maintenancepro" && uri.host == "setup") {
                 val address = uri.getQueryParameter("address") ?: "http://field-service.corp.internal"
@@ -399,9 +520,12 @@ class MainViewModel @Inject constructor(
                     serverConfigDao.saveConfig(config)
                     sessionManager.setNetworkConfig(address, port)
                     sessionManager.setSession(user, pass.toCharArray(), key.toCharArray())
+                    checkConnectivity()
+                    searchRemoteProtocols(_searchQuery.value)
                 }
-                true
-            } else false
+                return true
+            }
+            false
         } catch (e: Exception) {
             false
         }

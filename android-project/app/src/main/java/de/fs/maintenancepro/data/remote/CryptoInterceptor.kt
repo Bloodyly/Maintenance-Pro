@@ -1,6 +1,8 @@
 package de.fs.maintenancepro.data.remote
 
 import de.fs.maintenancepro.data.crypto.CryptoManager
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -15,7 +17,8 @@ import javax.crypto.spec.SecretKeySpec
  * and intercepts request/response payloads to encrypt and decrypt on the fly.
  */
 class CryptoInterceptor(
-    private val credentialsProvider: () -> Credentials?
+    private val credentialsProvider: () -> Credentials?,
+    private val baseUrlProvider: () -> String
 ) : Interceptor {
 
     data class Credentials(
@@ -26,11 +29,24 @@ class CryptoInterceptor(
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val originalRequest = chain.request()
+        
+        // Rewrite the request destination URL dynamically to the active base URL
+        val currentBaseUrlStr = baseUrlProvider()
+        val newUrl = originalRequest.url.newBuilder().apply {
+            val parsed = currentBaseUrlStr.toHttpUrlOrNull()
+            if (parsed != null) {
+                scheme(parsed.scheme)
+                host(parsed.host)
+                port(parsed.port)
+            }
+        }.build()
+        
+        val redirectedRequest = originalRequest.newBuilder().url(newUrl).build()
         val creds = credentialsProvider()
 
-        // If no credentials or main key is loaded yet, forward without alteration
+        // If no credentials or main key is loaded yet, forward with URL redirect done
         if (creds == null || creds.codewordKey == null) {
-            return chain.proceed(originalRequest)
+            return chain.proceed(redirectedRequest)
         }
 
         // 1. Build and encrypt X-Auth header
@@ -42,13 +58,13 @@ class CryptoInterceptor(
         val encryptedAuth = CryptoManager.encrypt(authJson, creds.codewordKey)
 
         // 2. Encrypt Body if it is a POST request
-        val requestBuilder = originalRequest.newBuilder()
+        val requestBuilder = redirectedRequest.newBuilder()
             .header("X-Auth", encryptedAuth)
             .header("Accept", "application/json")
 
-        if (originalRequest.method == "POST" && originalRequest.body != null) {
+        if (redirectedRequest.method == "POST" && redirectedRequest.body != null) {
             val buffer = Buffer()
-            originalRequest.body!!.writeTo(buffer)
+            redirectedRequest.body!!.writeTo(buffer)
             val originalBodyStr = buffer.readUtf8()
 
             if (originalBodyStr.isNotEmpty() && originalBodyStr.startsWith("{")) {

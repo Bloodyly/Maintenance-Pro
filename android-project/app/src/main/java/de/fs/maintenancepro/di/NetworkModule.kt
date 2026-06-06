@@ -23,9 +23,10 @@ object NetworkModule {
     fun provideCryptoInterceptor(
         sessionManager: ActiveSessionManager
     ): CryptoInterceptor {
-        return CryptoInterceptor {
-            sessionManager.getActiveCredentials()
-        }
+        return CryptoInterceptor(
+            credentialsProvider = { sessionManager.getActiveCredentials() },
+            baseUrlProvider = { sessionManager.getActiveBaseUrl() }
+        )
     }
 
     @Provides

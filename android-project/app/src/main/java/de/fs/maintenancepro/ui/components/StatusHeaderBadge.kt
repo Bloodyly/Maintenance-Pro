@@ -28,6 +28,7 @@ import de.fs.maintenancepro.ui.viewmodel.MainViewModel
 fun StatusHeaderBadge(viewModel: MainViewModel) {
     val context = LocalContext.current
     val isOffline by viewModel.isOffline.collectAsState()
+    val isServerAvailable by viewModel.isServerAvailable.collectAsState()
     val liveModus by viewModel.liveModusEnabled.collectAsState()
     var showDialog by remember { mutableStateOf(false) }
 
@@ -49,6 +50,7 @@ fun StatusHeaderBadge(viewModel: MainViewModel) {
                 .background(
                     color = when {
                         isOffline -> Color(0xFFE5E7EB) // Gray
+                        !isServerAvailable -> Color(0xFFFEF3C7) // Amber/Yellow
                         liveModus -> Color(0xFFCCFBF1) // Teal / Live
                         else -> Color(0xFFDCFCE7) // Green / Online
                     },
@@ -57,12 +59,12 @@ fun StatusHeaderBadge(viewModel: MainViewModel) {
                 .clickable {
                     if (isOffline) {
                         Toast
-                            .makeText(
+                             .makeText(
                                 context,
                                 "Offline-Modus aktiv. Live-Modus erfordert eine aktive Verbindung.",
                                 Toast.LENGTH_SHORT
-                            )
-                            .show()
+                             )
+                             .show()
                     } else {
                         showDialog = true
                     }
@@ -81,6 +83,19 @@ fun StatusHeaderBadge(viewModel: MainViewModel) {
                 Text(
                     text = "OFFLINE",
                     color = Color.Gray,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp
+                )
+            } else if (!isServerAvailable) {
+                Icon(
+                    imageVector = Icons.Default.WifiOff,
+                    contentDescription = null,
+                    tint = Color(0xFFD97706),
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    text = "UNREACHABLE",
+                    color = Color(0xFFB45309),
                     fontWeight = FontWeight.Bold,
                     fontSize = 11.sp
                 )
