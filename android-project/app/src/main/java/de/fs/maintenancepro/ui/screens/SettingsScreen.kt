@@ -1,6 +1,11 @@
 package de.fs.maintenancepro.ui.screens
 
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -54,6 +59,17 @@ fun SettingsScreen(
     var showQrInputDialog by remember { mutableStateOf(false) }
     var qrInputText by remember { mutableStateOf("") }
 
+    val cameraPermission = Manifest.permission.CAMERA
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            showQrInputDialog = true
+        } else {
+            Toast.makeText(context, "Kamera-Freigabe ist erforderlich, um einen QR-Code zu scannen.", Toast.LENGTH_LONG).show()
+        }
+    }
+
     // Update form when database state is loaded
     LaunchedEffect(configState) {
         configState?.let {
@@ -70,7 +86,14 @@ fun SettingsScreen(
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White),
                 actions = {
                     IconButton(onClick = {
-                        showQrInputDialog = true
+                        val hasCameraPermission = ContextCompat.checkSelfPermission(
+                            context, cameraPermission
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (hasCameraPermission) {
+                            showQrInputDialog = true
+                        } else {
+                            cameraPermissionLauncher.launch(cameraPermission)
+                        }
                     }) {
                         Icon(Icons.Default.QrCodeScanner, contentDescription = stringResource(R.string.btn_qr_scan), tint = IndustrialPrimary)
                     }

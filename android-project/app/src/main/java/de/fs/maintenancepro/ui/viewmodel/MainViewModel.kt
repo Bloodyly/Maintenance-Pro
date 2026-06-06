@@ -300,6 +300,47 @@ class MainViewModel @Inject constructor(
     }
 
     /**
+     * Updates multiple cells of a group row at once in SQLite database and state.
+     * Dramatically increases performance on "mark all / unmark all" row actions.
+     */
+    fun batchEditGroupCells(protocolId: String, groupId: String, cellValues: Map<String, String>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val protocol = protocolDao.getProtocolById(protocolId) ?: return@launch
+            val rootJson = JSONObject(protocol.decryptedPayloadJson)
+            val rowsArray = rootJson.getJSONArray("rows")
+            val now = System.currentTimeMillis()
+            var modified = false
+            
+            for (i in 0 until rowsArray.length()) {
+                val rowObj = rowsArray.getJSONObject(i)
+                if (rowObj.getString("group_id") == groupId) {
+                    val cellsArray = rowObj.getJSONArray("cells")
+                    for (j in 0 until cellsArray.length()) {
+                        val cellObj = cellsArray.getJSONObject(j)
+                        val slotKey = cellObj.getString("slot_key")
+                        if (cellValues.containsKey(slotKey)) {
+                            cellObj.put("value", cellValues[slotKey] ?: "")
+                            cellObj.put("updated_at", now)
+                            modified = true
+                        }
+                    }
+                    break
+                }
+            }
+
+            if (modified) {
+                val updatedEntity = protocol.copy(
+                    decryptedPayloadJson = rootJson.toString(),
+                    lastEditedAt = System.currentTimeMillis(),
+                    localStatus = "upload_pending"
+                )
+                protocolDao.insertOrUpdate(updatedEntity)
+                _activeProtocolPayload.value = rootJson.toString()
+            }
+        }
+    }
+
+    /**
      * Structure edit logic: add a new group dynamically to the detector matrix
      */
     fun addGroup(protocolId: String, newGroupId: String, groupName: String, columnKeys: List<String>) {
