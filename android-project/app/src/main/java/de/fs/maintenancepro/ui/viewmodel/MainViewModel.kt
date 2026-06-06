@@ -110,7 +110,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             if (_isOffline.value || !_isServerAvailable.value) {
                 // Return local mock items if offline
-                _searchResults.value = getFallbackMockItems().filter {
+                _searchResults.value = getOfflineFallbackMockItems().filter {
                     it.name.contains(query, ignoreCase = true) ||
                     it.address.contains(query, ignoreCase = true) ||
                     it.contract_number.contains(query, ignoreCase = true)
@@ -122,14 +122,14 @@ class MainViewModel @Inject constructor(
                 if (response.isSuccessful && response.body() != null) {
                     _searchResults.value = response.body()!!
                 } else {
-                    _searchResults.value = getFallbackMockItems().filter {
+                    _searchResults.value = getOfflineFallbackMockItems().filter {
                         it.name.contains(query, ignoreCase = true) ||
                         it.address.contains(query, ignoreCase = true) ||
                         it.contract_number.contains(query, ignoreCase = true)
                     }
                 }
             } catch (e: Exception) {
-                _searchResults.value = getFallbackMockItems().filter {
+                _searchResults.value = getOfflineFallbackMockItems().filter {
                     it.name.contains(query, ignoreCase = true) ||
                     it.address.contains(query, ignoreCase = true) ||
                     it.contract_number.contains(query, ignoreCase = true)
@@ -650,7 +650,7 @@ class MainViewModel @Inject constructor(
         }.toString()
     }
 
-    fun getFallbackMockItems(): List<ProtocolItemDto> {
+    private fun getOfflineFallbackMockItems(): List<ProtocolItemDto> {
         return listOf(
             ProtocolItemDto(
                 id = "1",
