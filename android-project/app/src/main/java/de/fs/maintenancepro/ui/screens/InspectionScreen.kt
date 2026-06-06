@@ -76,9 +76,34 @@ fun InspectionScreen(
     var activeSelectVal by remember { mutableStateOf("H1") }
     var expandedFabMenu by remember { mutableStateOf(false) }
 
+    // Synchronize default selection value based on loaded definitions
+    LaunchedEffect(applicableValuesArray) {
+        if (applicableValuesArray.length() > 0) {
+            activeSelectVal = applicableValuesArray.getJSONObject(0).getString("value")
+        }
+    }
+
     val totalColumns = columnsArray.length()
+
+    // Scroll states for 2D diagonal scrolling with frozen row/column
     val horizontalScrollState = rememberScrollState()
+    val headerScrollState = rememberScrollState()
     val verticalScrollState = rememberScrollState()
+    val leftScrollState = rememberScrollState()
+
+    // Maintain alignment
+    LaunchedEffect(horizontalScrollState.value) {
+        headerScrollState.scrollTo(horizontalScrollState.value)
+    }
+    LaunchedEffect(headerScrollState.value) {
+        horizontalScrollState.scrollTo(headerScrollState.value)
+    }
+    LaunchedEffect(verticalScrollState.value) {
+        leftScrollState.scrollTo(verticalScrollState.value)
+    }
+    LaunchedEffect(leftScrollState.value) {
+        verticalScrollState.scrollTo(leftScrollState.value)
+    }
 
     Scaffold(
         topBar = {
@@ -101,30 +126,83 @@ fun InspectionScreen(
         },
         floatingActionButton = {
             if (!protocolEntity.isArchived) {
-                // Floating Action Button displaying Active Select status
-                Box(modifier = Modifier.padding(bottom = 16.dp)) {
-                    FloatingActionButton(
-                        onClick = { expandedFabMenu = !expandedFabMenu },
-                        containerColor = if (activeSelectVal == "Def.") IndustrialError else IndustrialSecondaryContainer,
-                        contentColor = if (activeSelectVal == "Def.") Color.White else IndustrialOnSecondaryContainer
-                    ) {
-                        Text(text = activeSelectVal, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(bottom = 16.dp, end = 8.dp)
+                ) {
+                    // Modern selection bubbles overlay
+                    if (expandedFabMenu) {
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                            border = BorderStroke(1.dp, IndustrialOutlineVariant),
+                            modifier = Modifier.padding(bottom = 4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                for (v in 0 until applicableValuesArray.length()) {
+                                    val valObj = applicableValuesArray.getJSONObject(v)
+                                    val valStr = valObj.getString("value")
+                                    val labelStr = valObj.getString("label")
+                                    val isDefect = valObj.optBoolean("is_defect", false)
+                                    val isSelected = activeSelectVal == valStr
+
+                                    Box(
+                                        modifier = Modifier
+                                            .background(
+                                                color = if (isSelected) {
+                                                    if (isDefect) IndustrialError else IndustrialPrimary
+                                                } else {
+                                                    if (isDefect) IndustrialErrorContainer.copy(alpha = 0.4f) else LightSurfaceLow
+                                                },
+                                                shape = RoundedCornerShape(20.dp)
+                                            )
+                                            .border(
+                                                width = 1.dp,
+                                                color = if (isSelected) Color.Transparent else IndustrialOutlineVariant,
+                                                shape = RoundedCornerShape(20.dp)
+                                            )
+                                            .clickable {
+                                                activeSelectVal = valStr
+                                                expandedFabMenu = false
+                                            }
+                                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = labelStr,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp,
+                                            color = if (isSelected) Color.White else {
+                                                if (isDefect) IndustrialError else IndustrialOnSurface
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
 
-                    DropdownMenu(
-                        expanded = expandedFabMenu,
-                        onDismissRequest = { expandedFabMenu = false }
+                    // Main Active Choice Floating Action Button displaying status
+                    ExtendedFloatingActionButton(
+                        onClick = { expandedFabMenu = !expandedFabMenu },
+                        containerColor = if (activeSelectVal == "Def.") IndustrialError else IndustrialPrimary,
+                        contentColor = Color.White,
+                        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp)
                     ) {
-                        for (v in 0 until applicableValuesArray.length()) {
-                            val valObj = applicableValuesArray.getJSONObject(v)
-                            val valStr = valObj.getString("value")
-                            DropdownMenuItem(
-                                text = { Text(valObj.getString("label")) },
-                                onClick = {
-                                    activeSelectVal = valStr
-                                    expandedFabMenu = false
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            var activeLabel = activeSelectVal
+                            for (v in 0 until applicableValuesArray.length()) {
+                                val valObj = applicableValuesArray.getJSONObject(v)
+                                if (valObj.getString("value") == activeSelectVal) {
+                                    activeLabel = valObj.getString("label")
                                 }
-                            )
+                            }
+                            Text(text = "Aktion: $activeLabel", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         }
                     }
                 }
@@ -169,104 +247,195 @@ fun InspectionScreen(
                 }
             }
 
-            // Scrollable Dynamic Table Grid
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(verticalScrollState)
-                    .horizontalScroll(horizontalScrollState)
-            ) {
-                Column {
-                    // Header Row
+            // Beautiful frozen scrolling grid architecture supporting 2D diagonal scroll
+            Column(modifier = Modifier.fillMaxSize()) {
+                
+                // 1. HEADER ROW (Frozen top row, scrolls only horizontally linked with column content)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(LightSurfaceHigh)
+                        .border(1.dp, IndustrialOutlineVariant)
+                ) {
+                    // Frozen GRP Corner Cell
+                    Box(
+                        modifier = Modifier
+                            .width(100.dp)
+                            .height(44.dp)
+                            .background(LightSurfaceHigh)
+                            .padding(12.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        Text(text = "GRP", fontWeight = FontWeight.ExtraBold, color = IndustrialOutline, fontSize = 12.sp)
+                    }
+
+                    // Dynamic slot columns definitions (scrolls horizontally with headerScrollState)
                     Row(
                         modifier = Modifier
-                            .background(LightSurfaceHigh)
-                            .border(1.dp, IndustrialOutlineVariant)
+                            .fillMaxWidth()
+                            .height(44.dp)
+                            .horizontalScroll(headerScrollState)
                     ) {
-                        // Frozen GRP Corner Cell
-                        Box(
-                            modifier = Modifier
-                                .width(100.dp)
-                                .padding(12.dp)
-                        ) {
-                            Text(text = "GRP", fontWeight = FontWeight.Bold, color = IndustrialOutline)
-                        }
-
-                        // Dynamic slot columns definitions
                         for (c in 0 until totalColumns) {
                             val colObj = columnsArray.getJSONObject(c)
                             Box(
                                 modifier = Modifier
                                     .width(72.dp)
-                                    .padding(12.dp),
+                                    .fillMaxHeight()
+                                    .border(0.5.dp, IndustrialOutlineVariant),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text(text = colObj.getString("label"), fontWeight = FontWeight.Bold, color = IndustrialOutline)
+                                Text(
+                                    text = colObj.getString("label"),
+                                    fontWeight = FontWeight.Bold,
+                                    color = IndustrialOnSurface,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 2. SCROLLABLE INNER TABLE (Columns linked vertical / Grid scrollable both)
+                Row(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    // Left Column: List of Group IDs (Frozen horizontal, scrolls only vertically)
+                    Column(
+                        modifier = Modifier
+                            .width(100.dp)
+                            .fillMaxHeight()
+                            .background(Color.White)
+                            .verticalScroll(leftScrollState)
+                    ) {
+                        for (rIndex in 0 until rowsArray.length()) {
+                            val rowObj = rowsArray.getJSONObject(rIndex)
+                            val groupId = rowObj.getString("group_id")
+                            val cellsArray = rowObj.getJSONArray("cells")
+
+                            Box(
+                                modifier = Modifier
+                                    .width(100.dp)
+                                    .height(48.dp) // Compact heights!
+                                    .background(LightSurfaceLow)
+                                    .border(0.5.dp, IndustrialOutlineVariant)
+                                    .clickable {
+                                        // Tap on Group ID (first column) selects/marks the entire row with active choice!!
+                                        if (!protocolEntity.isArchived) {
+                                            for (cIndex in 0 until cellsArray.length()) {
+                                                val cellObj = cellsArray.getJSONObject(cIndex)
+                                                val slotKey = cellObj.getString("slot_key")
+                                                val detectorType = cellObj.getString("detector_type")
+                                                if (detectorType != "-") {
+                                                    viewModel.editCell(protocolId, groupId, slotKey, activeSelectVal)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                contentAlignment = Alignment.CenterStart
+                            ) {
+                                Text(
+                                    text = groupId,
+                                    fontWeight = FontWeight.Bold,
+                                    color = IndustrialPrimary,
+                                    fontSize = 12.sp
+                                )
                             }
                         }
                     }
 
-                    // Dynamically populated group checklist items
-                    for (rIndex in 0 until rowsArray.length()) {
-                        val rowObj = rowsArray.getJSONObject(rIndex)
-                        val groupId = rowObj.getString("group_id")
-                        val cellsArray = rowObj.getJSONArray("cells")
-
+                    // Central Grid Container (Fully scrollable horizontally & vertically = DIAGONAL 2D SCROLL!)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(verticalScrollState)
+                    ) {
                         Row(
                             modifier = Modifier
-                                .background(Color.White)
-                                .border(0.5.dp, IndustrialOutlineVariant)
+                                .fillMaxHeight()
+                                .horizontalScroll(horizontalScrollState)
                         ) {
-                            // Frozen GRP ID column
-                            Box(
-                                modifier = Modifier
-                                    .width(100.dp)
-                                    .background(Color.White)
-                                    .border(0.5.dp, IndustrialOutlineVariant)
-                                    .padding(16.dp)
-                            ) {
-                                Text(text = groupId, fontWeight = FontWeight.Bold, color = IndustrialPrimary)
-                            }
+                            Column {
+                                for (rIndex in 0 until rowsArray.length()) {
+                                    val rowObj = rowsArray.getJSONObject(rIndex)
+                                    val groupId = rowObj.getString("group_id")
+                                    val cellsArray = rowObj.getJSONArray("cells")
 
-                            // Interactive slots cells
-                            for (cIndex in 0 until cellsArray.length()) {
-                                val cellObj = cellsArray.getJSONObject(cIndex)
-                                val slotKey = cellObj.getString("slot_key")
-                                val detectorType = cellObj.getString("detector_type")
-                                val cellVal = cellObj.optString("value", "")
+                                    Row {
+                                        // Interactive slots cells
+                                        for (cIndex in 1..cellsArray.length()) {
+                                            val cellObj = cellsArray.getJSONObject(cIndex - 1)
+                                            val slotKey = cellObj.getString("slot_key")
+                                            val detectorType = cellObj.getString("detector_type")
+                                            val cellVal = cellObj.optString("value", "")
 
-                                val isDisabled = detectorType == "-"
+                                            val isDisabled = detectorType == "-"
 
-                                Box(
-                                    modifier = Modifier
-                                        .width(72.dp)
-                                        .height(64.dp)
-                                        .background(if (isDisabled) LightSurfaceLow else if (cellVal.isNotEmpty()) {
-                                            if (cellVal == "Def.") IndustrialErrorContainer else IndustrialPrimaryContainer.copy(alpha = 0.1f)
-                                        } else Color.White)
-                                    .border(1.dp, IndustrialOutlineVariant)
-                                    .clickable(enabled = !isDisabled && !protocolEntity.isArchived) {
-                                        val writeText = if (cellVal == activeSelectVal) "" else activeSelectVal
-                                        viewModel.editCell(protocolId, groupId, slotKey, writeText)
-                                    },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    if (isDisabled) {
-                                        Text(text = "-", color = IndustrialOutline)
-                                    } else if (cellVal.isNotEmpty()) {
-                                        if (cellVal == "Def.") {
-                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                                Icon(Icons.Default.Warning, contentDescription = null, tint = IndustrialError, modifier = Modifier.size(12.dp))
-                                                Text(text = "DEF.", color = IndustrialError, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                                            }
-                                        } else {
-                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                                Text(text = cellVal, color = IndustrialPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                                Text(text = detectorType, color = IndustrialOutline, fontSize = 9.sp)
+                                            Box(
+                                                modifier = Modifier
+                                                    .width(72.dp)
+                                                    .height(48.dp) // Compact heights!
+                                                    .background(
+                                                        if (isDisabled) LightSurfaceLow 
+                                                        else if (cellVal.isNotEmpty()) {
+                                                            if (cellVal == "Def.") IndustrialErrorContainer 
+                                                            else IndustrialPrimaryContainer.copy(alpha = 0.12f)
+                                                        } else Color.White
+                                                    )
+                                                    .border(0.5.dp, IndustrialOutlineVariant)
+                                                    .clickable(enabled = !isDisabled && !protocolEntity.isArchived) {
+                                                        val writeText = if (cellVal == activeSelectVal) "" else activeSelectVal
+                                                        viewModel.editCell(protocolId, groupId, slotKey, writeText)
+                                                    },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                if (isDisabled) {
+                                                    Text(text = "-", color = IndustrialOutline.copy(alpha = 0.5f), fontSize = 12.sp)
+                                                } else if (cellVal.isNotEmpty()) {
+                                                    if (cellVal == "Def." || cellVal.lowercase().contains("def")) {
+                                                        Row(
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.spacedBy(1.dp)
+                                                        ) {
+                                                            Icon(
+                                                                Icons.Default.Warning,
+                                                                contentDescription = null,
+                                                                tint = IndustrialError,
+                                                                modifier = Modifier.size(10.dp)
+                                                            )
+                                                            Text(
+                                                                text = "DEF.",
+                                                                color = IndustrialError,
+                                                                fontWeight = FontWeight.ExtraBold,
+                                                                fontSize = 10.sp
+                                                            )
+                                                        }
+                                                    } else {
+                                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                            Text(
+                                                                text = cellVal,
+                                                                color = IndustrialPrimary,
+                                                                fontWeight = FontWeight.Bold,
+                                                                fontSize = 11.sp
+                                                            )
+                                                            Text(
+                                                                text = detectorType,
+                                                                color = IndustrialOutline,
+                                                                fontSize = 8.sp,
+                                                                fontWeight = FontWeight.Light
+                                                            )
+                                                        }
+                                                    }
+                                                } else {
+                                                    Text(
+                                                        text = detectorType,
+                                                        color = IndustrialOutline.copy(alpha = 0.7f),
+                                                        fontSize = 10.sp
+                                                    )
+                                                }
                                             }
                                         }
-                                    } else {
-                                        Text(text = detectorType, color = IndustrialOutline, fontSize = 11.sp)
                                     }
                                 }
                             }

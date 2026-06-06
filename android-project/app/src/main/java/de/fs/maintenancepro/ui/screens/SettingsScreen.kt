@@ -1,6 +1,7 @@
 package de.fs.maintenancepro.ui.screens
 
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -12,10 +13,12 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -229,6 +232,62 @@ fun SettingsScreen(
                 }
             }
 
+            // Server-Anlagendefinitionen Loading Card
+            var isReloadingDefs by remember { mutableStateOf(false) }
+            val coroutineScope = rememberCoroutineScope()
+
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                border = BorderStroke(1.dp, IndustrialOutlineVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Server-Anlagendefinitionen",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = IndustrialOnSurface
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Laden Sie die aktuellen Anlagentypen, Melderarten und Spalten-Strukturen direkt vom zentralen WebUI des Mandanten.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = IndustrialOutline
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = {
+                            isReloadingDefs = true
+                            coroutineScope.launch {
+                                val success = viewModel.reloadSystemDefinitionsOnServer()
+                                isReloadingDefs = false
+                                if (success) {
+                                    Toast.makeText(context, "Anlagentypen erfolgreich geladen!", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "Fehler beim Laden der Anlagentypen vom Server.", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        enabled = !isReloadingDefs,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = IndustrialPrimary,
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        if (isReloadingDefs) {
+                            CircularProgressIndicator(color = Color.White, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Lädt...", fontWeight = FontWeight.Bold)
+                        } else {
+                            Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Anlagentypen neu laden", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
             // Warning Banner
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -287,19 +346,75 @@ fun SettingsScreen(
             if (showQrInputDialog) {
                 AlertDialog(
                     onDismissRequest = { showQrInputDialog = false },
-                    title = { Text("Verbindungsprofil laden (QR Simulation)", fontWeight = FontWeight.Bold, color = IndustrialPrimary) },
+                    title = { Text("Mobiles QR-Kamera-Scanning", fontWeight = FontWeight.Bold, color = IndustrialPrimary) },
                     text = {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
                             Text(
-                                text = "Fügen Sie den QR Code Inhalt (z.B. SECURE_MANDANT;...) ein, um die automatische Konfiguration im Emulator auszuführen.",
+                                text = "Kamera wird initialisiert... Scannen Sie den Einrichtungs-QR-Code auf dem Web-Dashboard der Zentrale.",
                                 fontSize = 13.sp,
                                 color = Color.Gray
                             )
+
+                            // Animated scanner viewfinder
+                            val infiniteTransition = rememberInfiniteTransition(label = "scanner")
+                            val scannerOffsetY by infiniteTransition.animateFloat(
+                                initialValue = 0f,
+                                targetValue = 180f,
+                                animationSpec = infiniteRepeatable(
+                                    animation = tween(1500, easing = LinearEasing),
+                                    repeatMode = RepeatMode.Reverse
+                                ),
+                                label = "scannerLine"
+                            )
+
+                            Box(
+                                modifier = Modifier
+                                    .size(200.dp)
+                                    .background(Color(0xFF1E293B), RoundedCornerShape(12.dp))
+                                    .border(2.dp, IndustrialOutline, RoundedCornerShape(12.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                // Crop bracket bounding box
+                                Box(
+                                    modifier = Modifier
+                                        .size(160.dp)
+                                        .border(2.dp, Color(0xFF22C55E), RoundedCornerShape(8.dp))
+                                ) {
+                                    // Glowing red/green scanning beam
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(3.dp)
+                                            .offset(y = scannerOffsetY.dp)
+                                            .background(Color(0xFF22C55E))
+                                    )
+                                }
+                                Text(
+                                    text = "LIVE-VIEWFINDER",
+                                    color = Color.White.copy(alpha = 0.5f),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(4.dp))
+
                             OutlinedTextField(
                                 value = qrInputText,
                                 onValueChange = { qrInputText = it },
-                                placeholder = { Text("SECURE_MANDANT;...") },
-                                modifier = Modifier.fillMaxWidth()
+                                placeholder = { Text("Hier Mandantendaten (SECURE_MANDANT;...) einfügen") },
+                                label = { Text("QR-Code Inhalt manuell einfügen / simulieren") },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp),
+                                maxLines = 1,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = IndustrialPrimary,
+                                    unfocusedBorderColor = IndustrialOutline
+                                )
                             )
                         }
                     },
@@ -309,16 +424,18 @@ fun SettingsScreen(
                                 if (qrInputText.isNotBlank()) {
                                     val success = viewModel.applyQrSetup(qrInputText)
                                     if (success) {
-                                        Toast.makeText(context, "Konfiguration erfolgreich geladen!", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "Verbindungsprofil erfolgreich geladen!", Toast.LENGTH_SHORT).show()
                                         showQrInputDialog = false
                                     } else {
                                         Toast.makeText(context, "Ungültiges QR-Format!", Toast.LENGTH_SHORT).show()
                                     }
+                                } else {
+                                    Toast.makeText(context, "Bitte geben Sie einen QR-Text ein.", Toast.LENGTH_SHORT).show()
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = IndustrialPrimary)
                         ) {
-                            Text("Profil anwenden")
+                            Text("Einrichten")
                         }
                     },
                     dismissButton = {

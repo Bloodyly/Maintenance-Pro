@@ -47,8 +47,12 @@ fun SearchScreen(
     val localProtocols by viewModel.protocols.collectAsState(initial = emptyList())
     var activeDetailsPayload by remember { mutableStateOf<String?>(null) }
 
-    val filteredItems = remember(searchResults, localProtocols) {
-        searchResults.map { item ->
+    var showFilterOptions by remember { mutableStateOf(false) }
+    var filterSystemType by remember { mutableStateOf("Alle") }
+    var sortByOption by remember { mutableStateOf("Kunde (Name)") }
+
+    val filteredItems = remember(searchResults, localProtocols, filterSystemType, sortByOption) {
+        var list = searchResults.map { item ->
             val localItem = localProtocols.find { it.id == item.id }
             if (localItem != null) {
                 item.copy(status = localItem.localStatus)
@@ -56,6 +60,20 @@ fun SearchScreen(
                 item
             }
         }
+
+        // Filter system type local
+        if (filterSystemType != "Alle") {
+            list = list.filter { it.system_type == filterSystemType }
+        }
+
+        // Sort option local
+        list = when (sortByOption) {
+            "Adresse" -> list.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.address })
+            "Vertragsnummer" -> list.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.contract_number })
+            else -> list.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
+        }
+
+        list
     }
 
     Scaffold(
@@ -104,13 +122,77 @@ fun SearchScreen(
                 )
 
                 IconButton(
-                    onClick = { /* Filter dialogue */ },
+                    onClick = { showFilterOptions = !showFilterOptions },
                     modifier = Modifier
                         .size(52.dp)
-                        .border(2.dp, IndustrialOutline, RoundedCornerShape(8.dp))
-                        .background(Color.White, RoundedCornerShape(8.dp))
+                        .border(2.dp, if (showFilterOptions) IndustrialPrimary else IndustrialOutline, RoundedCornerShape(8.dp))
+                        .background(if (showFilterOptions) IndustrialPrimaryContainer else Color.White, RoundedCornerShape(8.dp))
                 ) {
-                    Icon(Icons.Default.Tune, contentDescription = null, tint = IndustrialOnSurface)
+                    Icon(Icons.Default.Tune, contentDescription = null, tint = if (showFilterOptions) IndustrialPrimary else IndustrialOnSurface)
+                }
+            }
+
+            // Quick Filters Bar
+            if (showFilterOptions) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(LightSurfaceLow)
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // System Type Selector
+                    var typeExpanded by remember { mutableStateOf(false) }
+                    Box {
+                        Button(
+                            onClick = { typeExpanded = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.DarkGray),
+                            border = BorderStroke(1.dp, IndustrialOutlineVariant),
+                            shape = RoundedCornerShape(20.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Text("Typ: $filterSystemType", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                        DropdownMenu(expanded = typeExpanded, onDismissRequest = { typeExpanded = false }) {
+                            listOf("Alle", "BMA", "EMA", "ELA", "LIRA", "SLA").forEach { t ->
+                                DropdownMenuItem(
+                                    text = { Text(t) },
+                                    onClick = {
+                                        filterSystemType = t
+                                        typeExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    // Sort By Selector
+                    var sortExpanded by remember { mutableStateOf(false) }
+                    Box {
+                        Button(
+                            onClick = { sortExpanded = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.DarkGray),
+                            border = BorderStroke(1.dp, IndustrialOutlineVariant),
+                            shape = RoundedCornerShape(20.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Text("Sort: $sortByOption", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                        DropdownMenu(expanded = sortExpanded, onDismissRequest = { sortExpanded = false }) {
+                            listOf("Kunde (Name)", "Adresse", "Vertragsnummer").forEach { s ->
+                                DropdownMenuItem(
+                                    text = { Text(s) },
+                                    onClick = {
+                                        sortByOption = s
+                                        sortExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
             }
 

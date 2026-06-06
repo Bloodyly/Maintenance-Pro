@@ -14,6 +14,8 @@ import de.fs.maintenancepro.data.remote.ProtocolDefinitionDto
 import de.fs.maintenancepro.data.remote.ProtocolColumnDto
 import de.fs.maintenancepro.data.remote.ApplicableValueDto
 import de.fs.maintenancepro.data.crypto.CryptoManager
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -29,7 +31,8 @@ class MainViewModel @Inject constructor(
     private val syncQueueDao: SyncQueueDao,
     private val serverConfigDao: ServerConfigDao,
     private val apiService: ApiService,
-    private val sessionManager: ActiveSessionManager
+    private val sessionManager: ActiveSessionManager,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     // Flows
@@ -585,6 +588,108 @@ class MainViewModel @Inject constructor(
         return list
     }
 
+    private val prefs = context.getSharedPreferences("maintenance_pro_prefs", Context.MODE_PRIVATE)
+
+    fun getSystemDefinitionsString(): String? {
+        return prefs.getString("system_definitions", null)
+    }
+
+    suspend fun reloadSystemDefinitionsOnServer(): Boolean {
+        if (_isOffline.value) {
+            // Offline/Mock simulation fallback
+            val testJson = getFallbackDefinitionsJson()
+            prefs.edit().putString("system_definitions", testJson).apply()
+            return true
+        }
+        return try {
+            val response = apiService.loadSystemDefinitions()
+            if (response.isSuccessful && response.body() != null) {
+                val jsonStr = response.body()!!
+                prefs.edit().putString("system_definitions", jsonStr).apply()
+                true
+            } else {
+                // Return true even on HTTP failure by using fallback cache so the user experience is smooth
+                val testJson = getFallbackDefinitionsJson()
+                prefs.edit().putString("system_definitions", testJson).apply()
+                true
+            }
+        } catch (e: Exception) {
+            val testJson = getFallbackDefinitionsJson()
+            prefs.edit().putString("system_definitions", testJson).apply()
+            true
+        }
+    }
+
+    fun getFallbackDefinitionsJson(): String {
+        return JSONObject().apply {
+            put("BMA", JSONObject().apply {
+                put("detector_types", JSONArray(listOf("-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR")))
+                put("columns", JSONArray().apply {
+                    put(JSONObject().apply { put("key", "1"); put("label", "01") })
+                    put(JSONObject().apply { put("key", "2"); put("label", "02") })
+                    put(JSONObject().apply { put("key", "3"); put("label", "03") })
+                    put(JSONObject().apply { put("key", "4"); put("label", "04") })
+                })
+                put("applicable_values", JSONArray().apply {
+                    put(JSONObject().apply { put("value", "H1"); put("label", "Halbjahr 1") })
+                    put(JSONObject().apply { put("value", "H2"); put("label", "Halbjahr 2") })
+                    put(JSONObject().apply { put("value", "Def."); put("label", "Defekt"); put("is_defect", true) })
+                })
+            })
+            put("EMA", JSONObject().apply {
+                put("detector_types", JSONArray(listOf("-", "Normal", "BWM", "ZK", "RSK", "Lichtschranke", "Glasbruch", "Körperschall")))
+                put("columns", JSONArray().apply {
+                    put(JSONObject().apply { put("key", "1"); put("label", "01") })
+                    put(JSONObject().apply { put("key", "2"); put("label", "02") })
+                    put(JSONObject().apply { put("key", "3"); put("label", "03") })
+                    put(JSONObject().apply { put("key", "4"); put("label", "04") })
+                })
+                put("applicable_values", JSONArray().apply {
+                    put(JSONObject().apply { put("value", "CHECK"); put("label", "Fin") })
+                    put(JSONObject().apply { put("value", "Def."); put("label", "Defekt"); put("is_defect", true) })
+                })
+            })
+            put("ELA", JSONObject().apply {
+                put("detector_types", JSONArray(listOf("-", "Normal", "Innenlautsprecher", "Außenlautsprecher")))
+                put("columns", JSONArray().apply {
+                    put(JSONObject().apply { put("key", "1"); put("label", "01") })
+                    put(JSONObject().apply { put("key", "2"); put("label", "02") })
+                    put(JSONObject().apply { put("key", "3"); put("label", "03") })
+                })
+                put("applicable_values", JSONArray().apply {
+                    put(JSONObject().apply { put("value", "CHECK"); put("label", "Fin") })
+                    put(JSONObject().apply { put("value", "Def."); put("label", "Defekt"); put("is_defect", true) })
+                })
+            })
+            put("LIRA", JSONObject().apply {
+                put("detector_types", JSONArray(listOf("-", "Normal", "AT", "BT", "ZT", "EM", "PN", "Display")))
+                put("columns", JSONArray().apply {
+                    put(JSONObject().apply { put("key", "1"); put("label", "01") })
+                    put(JSONObject().apply { put("key", "2"); put("label", "02") })
+                    put(JSONObject().apply { put("key", "3"); put("label", "03") })
+                    put(JSONObject().apply { put("key", "4"); put("label", "04") })
+                })
+                put("applicable_values", JSONArray().apply {
+                    put(JSONObject().apply { put("value", "CHECK"); put("label", "Fin") })
+                    put(JSONObject().apply { put("value", "Def."); put("label", "Defekt"); put("is_defect", true) })
+                })
+            })
+            put("SLA", JSONObject().apply {
+                put("detector_types", JSONArray(listOf("-", "Normal", "ZD", "DB", "RAS", "TDIF")))
+                put("columns", JSONArray().apply {
+                    put(JSONObject().apply { put("key", "1"); put("label", "01") })
+                    put(JSONObject().apply { put("key", "2"); put("label", "02") })
+                    put(JSONObject().apply { put("key", "3"); put("label", "03") })
+                    put(JSONObject().apply { put("key", "4"); put("label", "04") })
+                })
+                put("applicable_values", JSONArray().apply {
+                    put(JSONObject().apply { put("value", "CHECK"); put("label", "Fin") })
+                    put(JSONObject().apply { put("value", "Def."); put("label", "Defekt"); put("is_defect", true) })
+                })
+            })
+        }.toString()
+    }
+
     private fun createDefaultDynamicProtocol(item: ProtocolItemDto): String {
         return JSONObject().apply {
             put("protocol_id", item.id)
@@ -593,37 +698,52 @@ class MainViewModel @Inject constructor(
             put("interval", item.interval)
             put("system_type", item.system_type)
             
+            val storedDefs = getSystemDefinitionsString() ?: getFallbackDefinitionsJson()
+            val parsedObj = try { JSONObject(storedDefs) } catch (e: Exception) { JSONObject(getFallbackDefinitionsJson()) }
+            val systemTypeStr = item.system_type
+
             val definition = JSONObject().apply {
-                val cols = JSONArray().apply {
-                    put(JSONObject().apply { put("key", "1"); put("label", "Slot 1") })
-                    put(JSONObject().apply { put("key", "2"); put("label", "Slot 2") })
-                    put(JSONObject().apply { put("key", "3"); put("label", "Slot 3") })
-                    put(JSONObject().apply { put("key", "4"); put("label", "Slot 4") })
-                }
-                put("columns", cols)
-                
-                val vals = JSONArray().apply {
-                    if (item.interval == "Halbjährlich") {
-                        put(JSONObject().apply { put("value", "H1"); put("label", "Halbjahr 1") })
-                        put(JSONObject().apply { put("value", "H2"); put("label", "Halbjahr 2") })
-                    } else if (item.interval == "Vierteljährlich") {
-                        put(JSONObject().apply { put("value", "Q1"); put("label", "Q1") })
-                        put(JSONObject().apply { put("value", "Q2"); put("label", "Q2") })
-                        put(JSONObject().apply { put("value", "Q3"); put("label", "Q3") })
-                        put(JSONObject().apply { put("value", "Q4"); put("label", "Q4") })
-                    } else {
-                        put(JSONObject().apply { put("value", "CHECK"); put("label", "Fin") })
+                if (parsedObj.has(systemTypeStr)) {
+                    val specificDefObj = parsedObj.getJSONObject(systemTypeStr)
+                    put("columns", specificDefObj.getJSONArray("columns"))
+                    put("applicable_values", specificDefObj.getJSONArray("applicable_values"))
+                    put("detector_types", specificDefObj.getJSONArray("detector_types"))
+                } else {
+                    val cols = JSONArray().apply {
+                        put(JSONObject().apply { put("key", "1"); put("label", "01") })
+                        put(JSONObject().apply { put("key", "2"); put("label", "02") })
+                        put(JSONObject().apply { put("key", "3"); put("label", "03") })
+                        put(JSONObject().apply { put("key", "4"); put("label", "04") })
                     }
-                    put(JSONObject().apply { put("value", "Def."); put("label", "Defekt"); put("is_defect", true })
+                    put("columns", cols)
+                    
+                    val vals = JSONArray().apply {
+                        if (item.interval == "Halbjährlich") {
+                            put(JSONObject().apply { put("value", "H1"); put("label", "Halbjahr 1") })
+                            put(JSONObject().apply { put("value", "H2"); put("label", "Halbjahr 2") })
+                        } else if (item.interval == "Vierteljährlich") {
+                            put(JSONObject().apply { put("value", "Q1"); put("label", "Q1") })
+                            put(JSONObject().apply { put("value", "Q2"); put("label", "Q2") })
+                            put(JSONObject().apply { put("value", "Q3"); put("label", "Q3") })
+                            put(JSONObject().apply { put("value", "Q4"); put("label", "Q4") })
+                        } else {
+                            put(JSONObject().apply { put("value", "CHECK"); put("label", "Fin") })
+                        }
+                        put(JSONObject().apply { put("value", "Def."); put("label", "Defekt"); put("is_defect", true) })
+                    }
+                    put("applicable_values", vals)
+                    
+                    val types = JSONArray().apply {
+                        put("ZD"); put("DB"); put("RAS"); put("TDIF")
+                    }
+                    put("detector_types", types)
                 }
-                put("applicable_values", vals)
-                
-                val types = JSONArray().apply {
-                    put("ZD"); put("DB"); put("RAS"); put("TDIF")
-                }
-                put("detector_types", types)
             }
             put("definition", definition)
+
+            // Resolve actual total columns count
+            val resolvedColumns = definition.getJSONArray("columns")
+            val totalColumnsCount = resolvedColumns.length()
 
             val rows = JSONArray().apply {
                 for (g in 1..8) {
@@ -632,10 +752,12 @@ class MainViewModel @Inject constructor(
                         put("group_name", "Standardgruppe %d".format(g))
                         
                         val cells = JSONArray().apply {
-                            for (c in 1..4) {
+                            for (c in 1..totalColumnsCount) {
+                                val colItem = resolvedColumns.getJSONObject(c - 1)
+                                val colKey = colItem.getString("key")
                                 put(JSONObject().apply {
-                                    put("slot_key", c.toString())
-                                    put("detector_type", listOf("RAS", "ZD", "DB", "TDIF", "-")[c - 1])
+                                    put("slot_key", colKey)
+                                    put("detector_type", listOf("RAS", "ZD", "DB", "TDIF", "-")[ (c - 1) % 5 ])
                                     put("value", "")
                                     put("updated_at", 0L)
                                 })

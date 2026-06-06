@@ -11,6 +11,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -36,9 +38,37 @@ fun DownloadedScreen(
     val context = LocalContext.current
     val downloadedProtocols by viewModel.protocols.collectAsState(initial = emptyList())
     
-    // Filter out archived ones and keep only downloaded, pending, or synchronized local items
-    val localList = downloadedProtocols.filter { 
-        (it.localStatus == "downloaded" || it.localStatus == "upload_pending" || it.localStatus == "synchronized") && !it.isArchived 
+    var searchQuery by remember { mutableStateOf("") }
+    var showFilterOptions by remember { mutableStateOf(false) }
+    var filterSystemType by remember { mutableStateOf("Alle") }
+    var sortByOption by remember { mutableStateOf("Kunde (Name)") }
+    
+    // Filter out archived ones and keep only downloaded, pending, or synchronized local items, plus client search and filters
+    val localList = remember(downloadedProtocols, searchQuery, filterSystemType, sortByOption) {
+        var list = downloadedProtocols.filter { 
+            (it.localStatus == "downloaded" || it.localStatus == "upload_pending" || it.localStatus == "synchronized") && !it.isArchived 
+        }
+        
+        if (searchQuery.isNotBlank()) {
+            val q = searchQuery.trim().lowercase()
+            list = list.filter {
+                it.name.lowercase().contains(q) ||
+                it.address.lowercase().contains(q) ||
+                it.contractNumber.lowercase().contains(q)
+            }
+        }
+        
+        if (filterSystemType != "Alle") {
+            list = list.filter { it.systemType == filterSystemType }
+        }
+        
+        list = when (sortByOption) {
+            "Adresse" -> list.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.address })
+            "Vertragsnummer" -> list.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.contractNumber })
+            else -> list.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
+        }
+        
+        list
     }
 
     var activeDetailsPayload by remember { mutableStateOf<String?>(null) }
@@ -61,11 +91,110 @@ fun DownloadedScreen(
             modifier = Modifier
                 .padding(innerPadding)
                 .fillMaxSize()
-                .padding(16.dp)
         ) {
+            // Search Input Row
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(LightSurfaceLow)
+                    .padding(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Lokal durchsuchen...") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = IndustrialOutline) },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = Color.White,
+                        unfocusedContainerColor = Color.White,
+                        focusedBorderColor = IndustrialPrimary
+                    )
+                )
+
+                IconButton(
+                    onClick = { showFilterOptions = !showFilterOptions },
+                    modifier = Modifier
+                        .size(52.dp)
+                        .border(2.dp, if (showFilterOptions) IndustrialPrimary else IndustrialOutline, RoundedCornerShape(8.dp))
+                        .background(if (showFilterOptions) IndustrialPrimaryContainer else Color.White, RoundedCornerShape(8.dp))
+                ) {
+                    Icon(Icons.Default.Tune, contentDescription = null, tint = if (showFilterOptions) IndustrialPrimary else IndustrialOnSurface)
+                }
+            }
+
+            // Quick Filters Bar
+            if (showFilterOptions) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(LightSurfaceLow)
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // System Type Selector
+                    var typeExpanded by remember { mutableStateOf(false) }
+                    Box {
+                        Button(
+                            onClick = { typeExpanded = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.DarkGray),
+                            border = BorderStroke(1.dp, IndustrialOutlineVariant),
+                            shape = RoundedCornerShape(20.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Text("Typ: $filterSystemType", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                        DropdownMenu(expanded = typeExpanded, onDismissRequest = { typeExpanded = false }) {
+                            listOf("Alle", "BMA", "EMA", "ELA", "LIRA", "SLA").forEach { t ->
+                                DropdownMenuItem(
+                                    text = { Text(t) },
+                                    onClick = {
+                                        filterSystemType = t
+                                        typeExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    // Sort By Selector
+                    var sortExpanded by remember { mutableStateOf(false) }
+                    Box {
+                        Button(
+                            onClick = { sortExpanded = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.DarkGray),
+                            border = BorderStroke(1.dp, IndustrialOutlineVariant),
+                            shape = RoundedCornerShape(20.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Text("Sort: $sortByOption", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                        DropdownMenu(expanded = sortExpanded, onDismissRequest = { sortExpanded = false }) {
+                            listOf("Kunde (Name)", "Adresse", "Vertragsnummer").forEach { s ->
+                                DropdownMenuItem(
+                                    text = { Text(s) },
+                                    onClick = {
+                                        sortByOption = s
+                                        sortExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
             ) {
                 if (localList.isEmpty()) {
                     item {

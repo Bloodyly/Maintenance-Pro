@@ -283,6 +283,159 @@ async function startServer() {
     }
   });
 
+  // ----------------- Android App Service API Endpoints -----------------
+
+  const systemDefinitionsData = {
+    BMA: {
+      detector_types: ["-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR"],
+      columns: [
+        { key: "1", label: "01" },
+        { key: "2", label: "02" },
+        { key: "3", label: "03" },
+        { key: "4", label: "04" }
+      ],
+      applicable_values: [
+        { value: "H1", label: "Halbjahr 1" },
+        { value: "H2", label: "Halbjahr 2" },
+        { value: "Def.", label: "Defekt", is_defect: true }
+      ]
+    },
+    EMA: {
+      detector_types: ["-", "Normal", "BWM", "ZK", "RSK", "Lichtschranke", "Glasbruch", "Körperschall"],
+      columns: [
+        { key: "1", label: "01" },
+        { key: "2", label: "02" },
+        { key: "3", label: "03" },
+        { key: "4", label: "04" }
+      ],
+      applicable_values: [
+        { value: "CHECK", label: "Fin" },
+        { value: "Def.", label: "Defekt", is_defect: true }
+      ]
+    },
+    ELA: {
+      detector_types: ["-", "Normal", "Innenlautsprecher", "Außenlautsprecher"],
+      columns: [
+        { key: "1", label: "01" },
+        { key: "2", label: "02" },
+        { key: "3", label: "03" }
+      ],
+      applicable_values: [
+        { value: "CHECK", label: "Fin" },
+        { value: "Def.", label: "Defekt", is_defect: true }
+      ]
+    },
+    LIRA: {
+      detector_types: ["-", "Normal", "AT", "BT", "ZT", "EM", "PN", "Display"],
+      columns: [
+        { key: "1", label: "01" },
+        { key: "2", label: "02" },
+        { key: "3", label: "03" },
+        { key: "4", label: "04" }
+      ],
+      applicable_values: [
+        { value: "CHECK", label: "Fin" },
+        { value: "Def.", label: "Defekt", is_defect: true }
+      ]
+    },
+    SLA: {
+      detector_types: ["-", "Normal", "ZD", "DB", "RAS", "TDIF"],
+      columns: [
+        { key: "1", label: "01" },
+        { key: "2", label: "02" },
+        { key: "3", label: "03" },
+        { key: "4", label: "04" }
+      ],
+      applicable_values: [
+        { value: "CHECK", label: "Fin" },
+        { value: "Def.", label: "Defekt", is_defect: true }
+      ]
+    }
+  };
+
+  const mockProtocolItems = [
+    {
+      id: "PRO-100",
+      name: "Klinikum Nord - BMA",
+      address: "Klinikweg 12, N-04",
+      contract_number: "V-2026-NBF",
+      interval: "Halbjährlich",
+      system_type: "BMA",
+      status: "pending",
+      is_live: true
+    },
+    {
+      id: "PRO-101",
+      name: "Seniorenheim Lebensbaum - SAA",
+      address: "Sonnenstr. 4, L-05",
+      contract_number: "V-2026-LBM",
+      interval: "Jährlich",
+      system_type: "SAA",
+      status: "pending",
+      is_live: true
+    },
+    {
+      id: "PRO-102",
+      name: "Einkaufszentrum CityGallerie",
+      address: "Marktplatz 1, C-01",
+      contract_number: "V-2026-CTG",
+      interval: "Vierteljährlich",
+      system_type: "BMA",
+      status: "pending",
+      is_live: true
+    }
+  ];
+
+  // Helper to handle double route registrations support
+  const registerGet = (pathStr: string, handler: any) => {
+    app.get(pathStr, handler);
+    app.get("/api" + pathStr, handler);
+  };
+  const registerPost = (pathStr: string, handler: any) => {
+    app.post(pathStr, handler);
+    app.post("/api" + pathStr, handler);
+  };
+
+  registerPost("/auth/check", (req: express.Request, res: express.Response) => {
+    res.json({
+      status: "SUCCESS",
+      technician_id: "T-01",
+      name: "Max Mustermann"
+    });
+  });
+
+  registerPost("/protocols/search", (req: express.Request, res: express.Response) => {
+    res.json(mockProtocolItems);
+  });
+
+  registerPost("/protocols/list-pending", (req: express.Request, res: express.Response) => {
+    res.json(mockProtocolItems);
+  });
+
+  registerPost("/protocols/definitions", (req: express.Request, res: express.Response) => {
+    res.json(systemDefinitionsData);
+  });
+
+  registerPost("/protocols/download/:id", (req: express.Request, res: express.Response) => {
+    // Return standard 404 to trigger client-side fallback default dynamic structure generator
+    res.status(404).send("Explicit client-side dynamic fallback fallback.");
+  });
+
+  registerPost("/protocols/upload/:id", (req: express.Request, res: express.Response) => {
+    res.json({
+      status: "SUCCESS",
+      version: 1,
+      message: "Protokoll erfolgreich hochgeladen und mit Zentralserver synchronisiert!"
+    });
+  });
+
+  registerPost("/protocols/live-sync/:id", (req: express.Request, res: express.Response) => {
+    res.json({
+      protocol_id: req.params.id,
+      payload_json: "{}"
+    });
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

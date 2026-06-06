@@ -30,6 +30,9 @@ interface ApiService {
         @Path("id") protocolId: String,
         @Body request: LiveSyncRequestDto
     ): Response<LiveSyncResponseDto>
+
+    @POST("protocols/definitions")
+    suspend fun loadSystemDefinitions(): Response<String>
 }
 
 // Data Transfer Objects (DTOs)
