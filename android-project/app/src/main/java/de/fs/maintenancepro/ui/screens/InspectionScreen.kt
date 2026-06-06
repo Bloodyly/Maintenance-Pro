@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -76,7 +77,8 @@ fun InspectionScreen(
     var expandedFabMenu by remember { mutableStateOf(false) }
 
     val totalColumns = columnsArray.length()
-    val scrollState = rememberScrollState()
+    val horizontalScrollState = rememberScrollState()
+    val verticalScrollState = rememberScrollState()
 
     Scaffold(
         topBar = {
@@ -89,37 +91,41 @@ fun InspectionScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { onNavigateToEditMatrix(protocolId) }) {
-                        Icon(Icons.Default.Edit, contentDescription = "Editor Modus", tint = IndustrialPrimary)
+                    if (!protocolEntity.isArchived) {
+                        IconButton(onClick = { onNavigateToEditMatrix(protocolId) }) {
+                            Icon(Icons.Default.Edit, contentDescription = "Editor Modus", tint = IndustrialPrimary)
+                        }
                     }
                 }
             )
         },
         floatingActionButton = {
-            // Floating Action Button displaying Active Select status
-            Box(modifier = Modifier.padding(bottom = 16.dp)) {
-                FloatingActionButton(
-                    onClick = { expandedFabMenu = !expandedFabMenu },
-                    containerColor = if (activeSelectVal == "Def.") IndustrialError else IndustrialSecondaryContainer,
-                    contentColor = if (activeSelectVal == "Def.") Color.White else IndustrialOnSecondaryContainer
-                ) {
-                    Text(text = activeSelectVal, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                }
+            if (!protocolEntity.isArchived) {
+                // Floating Action Button displaying Active Select status
+                Box(modifier = Modifier.padding(bottom = 16.dp)) {
+                    FloatingActionButton(
+                        onClick = { expandedFabMenu = !expandedFabMenu },
+                        containerColor = if (activeSelectVal == "Def.") IndustrialError else IndustrialSecondaryContainer,
+                        contentColor = if (activeSelectVal == "Def.") Color.White else IndustrialOnSecondaryContainer
+                    ) {
+                        Text(text = activeSelectVal, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    }
 
-                DropdownMenu(
-                    expanded = expandedFabMenu,
-                    onDismissRequest = { expandedFabMenu = false }
-                ) {
-                    for (v in 0 until applicableValuesArray.length()) {
-                        val valObj = applicableValuesArray.getJSONObject(v)
-                        val valStr = valObj.getString("value")
-                        DropdownMenuItem(
-                            text = { Text(valObj.getString("label")) },
-                            onClick = {
-                                activeSelectVal = valStr
-                                expandedFabMenu = false
-                            }
-                        )
+                    DropdownMenu(
+                        expanded = expandedFabMenu,
+                        onDismissRequest = { expandedFabMenu = false }
+                    ) {
+                        for (v in 0 until applicableValuesArray.length()) {
+                            val valObj = applicableValuesArray.getJSONObject(v)
+                            val valStr = valObj.getString("value")
+                            DropdownMenuItem(
+                                text = { Text(valObj.getString("label")) },
+                                onClick = {
+                                    activeSelectVal = valStr
+                                    expandedFabMenu = false
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -167,44 +173,41 @@ fun InspectionScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .horizontalScroll(scrollState)
+                    .verticalScroll(verticalScrollState)
+                    .horizontalScroll(horizontalScrollState)
             ) {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize()
-                ) {
+                Column {
                     // Header Row
-                    item {
-                        Row(
+                    Row(
+                        modifier = Modifier
+                            .background(LightSurfaceHigh)
+                            .border(1.dp, IndustrialOutlineVariant)
+                    ) {
+                        // Frozen GRP Corner Cell
+                        Box(
                             modifier = Modifier
-                                .background(LightSurfaceHigh)
-                                .border(1.dp, IndustrialOutlineVariant)
+                                .width(100.dp)
+                                .padding(12.dp)
                         ) {
-                            // Frozen GRP Corner Cell
+                            Text(text = "GRP", fontWeight = FontWeight.Bold, color = IndustrialOutline)
+                        }
+
+                        // Dynamic slot columns definitions
+                        for (c in 0 until totalColumns) {
+                            val colObj = columnsArray.getJSONObject(c)
                             Box(
                                 modifier = Modifier
-                                    .width(100.dp)
-                                    .padding(12.dp)
+                                    .width(72.dp)
+                                    .padding(12.dp),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Text(text = "GRP", fontWeight = FontWeight.Bold, color = IndustrialOutline)
-                            }
-
-                            // Dynamic slot columns definitions
-                            for (c in 0 until totalColumns) {
-                                val colObj = columnsArray.getJSONObject(c)
-                                Box(
-                                    modifier = Modifier
-                                        .width(72.dp)
-                                        .padding(12.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(text = colObj.getString("label"), fontWeight = FontWeight.Bold, color = IndustrialOutline)
-                                }
+                                Text(text = colObj.getString("label"), fontWeight = FontWeight.Bold, color = IndustrialOutline)
                             }
                         }
                     }
 
                     // Dynamically populated group checklist items
-                    items((0 until rowsArray.length()).toList()) { rIndex ->
+                    for (rIndex in 0 until rowsArray.length()) {
                         val rowObj = rowsArray.getJSONObject(rIndex)
                         val groupId = rowObj.getString("group_id")
                         val cellsArray = rowObj.getJSONArray("cells")
@@ -242,7 +245,7 @@ fun InspectionScreen(
                                             if (cellVal == "Def.") IndustrialErrorContainer else IndustrialPrimaryContainer.copy(alpha = 0.1f)
                                         } else Color.White)
                                     .border(1.dp, IndustrialOutlineVariant)
-                                    .clickable(enabled = !isDisabled) {
+                                    .clickable(enabled = !isDisabled && !protocolEntity.isArchived) {
                                         val writeText = if (cellVal == activeSelectVal) "" else activeSelectVal
                                         viewModel.editCell(protocolId, groupId, slotKey, writeText)
                                     },

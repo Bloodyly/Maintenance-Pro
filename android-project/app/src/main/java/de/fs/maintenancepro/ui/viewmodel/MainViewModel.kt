@@ -460,6 +460,37 @@ class MainViewModel @Inject constructor(
     }
 
     /**
+     * Set a protocol as archived (isArchived = true)
+     */
+    fun archiveProtocol(protocolId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val protocol = protocolDao.getProtocolById(protocolId) ?: return@launch
+            val updated = protocol.copy(isArchived = true)
+            protocolDao.insertOrUpdate(updated)
+        }
+    }
+
+    /**
+     * Restore a protocol from archive (isArchived = false)
+     */
+    fun restoreProtocol(protocolId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val protocol = protocolDao.getProtocolById(protocolId) ?: return@launch
+            val updated = protocol.copy(isArchived = false)
+            protocolDao.insertOrUpdate(updated)
+        }
+    }
+
+    /**
+     * Delete a protocol locally (delete from Room entirely so it goes back to ready_to_download)
+     */
+    fun deleteProtocolLocally(protocolId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            protocolDao.deleteById(protocolId)
+        }
+    }
+
+    /**
      * Wipes database variables for debug and cache security
      */
     fun clearDatabaseCache() {
@@ -617,5 +648,48 @@ class MainViewModel @Inject constructor(
             }
             put("rows", rows)
         }.toString()
+    }
+
+    fun getFallbackMockItems(): List<ProtocolItemDto> {
+        return listOf(
+            ProtocolItemDto(
+                id = "1",
+                name = "Siemens AG - Campus Nord",
+                address = "Gürtelstraße 14-16, 1210 Wien",
+                contract_number = "V-2023-9941-Z",
+                interval = "Jährlich",
+                system_type = "BMA",
+                status = "ready_to_download",
+                is_live = true
+            ),
+            ProtocolItemDto(
+                id = "2",
+                name = "Logistikzentrum West - Bau B",
+                address = "Industriestraße 1, 5020 Salzburg",
+                contract_number = "V-2022-1025-X",
+                interval = "Jährlich",
+                system_type = "SLA",
+                status = "downloaded"
+            ),
+            ProtocolItemDto(
+                id = "3",
+                name = "Wohnpark Am Graben",
+                address = "Am Graben 42, 8010 Graz",
+                contract_number = "V-2024-0012-A",
+                interval = "Halbjährlich",
+                system_type = "ELA",
+                status = "synchronized"
+            ),
+            ProtocolItemDto(
+                id = "4",
+                name = "Krankenhaus Nord - Station 4CD",
+                address = "Brünner Straße 68, 1210 Wien",
+                contract_number = "V-2021-4819-B",
+                interval = "Vierteljährlich",
+                system_type = "BMA",
+                status = "ready_to_download",
+                is_live = false
+            )
+        )
     }
 }

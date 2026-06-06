@@ -72,6 +72,19 @@ class MainActivity : ComponentActivity() {
                                 selected = selectedTab == 2,
                                 onClick = {
                                     selectedTab = 2
+                                    navController.navigate("archive") {
+                                        popUpTo("search") { saveState = true }
+                                        launchSingleTop = true
+                                        restoreState = true
+                                    }
+                                },
+                                icon = { Icon(Icons.Default.List, contentDescription = null) },
+                                label = { Text("Archiv") }
+                            )
+                            NavigationBarItem(
+                                selected = selectedTab == 3,
+                                onClick = {
+                                    selectedTab = 3
                                     navController.navigate("settings") {
                                         popUpTo("search") { saveState = true }
                                         launchSingleTop = true
@@ -95,7 +108,7 @@ class MainActivity : ComponentActivity() {
                                     navController.navigate("inspection/$id")
                                 },
                                 onNavigateToSettings = {
-                                    selectedTab = 2
+                                    selectedTab = 3
                                     navController.navigate("settings")
                                 }
                             )
@@ -103,6 +116,15 @@ class MainActivity : ComponentActivity() {
                         
                         composable("downloaded") {
                             DownloadedScreen(
+                                viewModel = viewModel,
+                                onNavigateToInspection = { id ->
+                                    navController.navigate("inspection/$id")
+                                }
+                            )
+                        }
+
+                        composable("archive") {
+                            ArchiveScreen(
                                 viewModel = viewModel,
                                 onNavigateToInspection = { id ->
                                     navController.navigate("inspection/$id")

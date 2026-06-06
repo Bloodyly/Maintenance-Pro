@@ -5,7 +5,7 @@ import androidx.room.RoomDatabase
 
 @Database(
     entities = [ProtocolEntity::class, SyncQueueEntity::class, ServerConfigEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class MaintenanceDatabase : RoomDatabase() {

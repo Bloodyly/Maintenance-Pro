@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Sync
@@ -44,6 +45,7 @@ fun SearchScreen(
     val liveModusEnabled by viewModel.liveModusEnabled.collectAsState()
     val searchResults by viewModel.searchResults.collectAsState()
     val localProtocols by viewModel.protocols.collectAsState(initial = emptyList())
+    var activeDetailsPayload by remember { mutableStateOf<String?>(null) }
 
     val filteredItems = remember(searchResults, localProtocols) {
         searchResults.map { item ->
@@ -124,7 +126,13 @@ fun SearchScreen(
                         item = item,
                         isLiveEditing = (liveModusEnabled && item.is_live == true),
                         onDownload = { viewModel.downloadProtocol(item) },
-                        onEdit = { onNavigateToInspection(item.id) }
+                        onEdit = { onNavigateToInspection(item.id) },
+                        onShowDetails = {
+                            val local = localProtocols.find { it.id == item.id }
+                            if (local != null) {
+                                activeDetailsPayload = local.decryptedPayloadJson
+                            }
+                        }
                     )
                 }
 
@@ -136,6 +144,13 @@ fun SearchScreen(
             }
         }
     }
+
+    if (activeDetailsPayload != null) {
+        de.fs.maintenancepro.ui.components.ProtocolDetailsDialog(
+            payloadJson = activeDetailsPayload!!,
+            onDismiss = { activeDetailsPayload = null }
+        )
+    }
 }
 
 @Composable
@@ -143,7 +158,8 @@ fun ProtocolCard(
     item: ProtocolItemDto,
     isLiveEditing: Boolean = false,
     onDownload: () -> Unit,
-    onEdit: () -> Unit
+    onEdit: () -> Unit,
+    onShowDetails: () -> Unit = {}
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -159,11 +175,13 @@ fun ProtocolCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.Top
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(text = item.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, color = IndustrialOnSurface)
                     Text(text = item.address, style = MaterialTheme.typography.labelMedium, color = IndustrialOutline)
                 }
                 
+                Spacer(modifier = Modifier.width(8.dp))
+
                 // System Type Badge
                 Box(
                     modifier = Modifier
@@ -260,12 +278,32 @@ fun ProtocolCard(
                             )
                         }
 
-                        Button(
-                            onClick = onEdit,
-                            colors = ButtonDefaults.buttonColors(containerColor = IndustrialPrimary),
-                            shape = RoundedCornerShape(8.dp)
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Bearbeiten", fontWeight = FontWeight.Bold)
+                            IconButton(
+                                onClick = onShowDetails,
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .border(1.dp, IndustrialOutlineVariant, RoundedCornerShape(8.dp))
+                                    .background(Color.White, RoundedCornerShape(8.dp))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = "Details",
+                                    tint = IndustrialPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            Button(
+                                onClick = onEdit,
+                                colors = ButtonDefaults.buttonColors(containerColor = IndustrialPrimary),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("Bearbeiten", fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                     else -> { // Synchronized

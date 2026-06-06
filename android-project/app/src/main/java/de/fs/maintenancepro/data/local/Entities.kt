@@ -22,7 +22,9 @@ data class ProtocolEntity(
     // Serialization of dynamic layouts to support flexible schemas and arbitrary column sizes
     val decryptedPayloadJson: String,
     
-    val lastEditedAt: Long = 0L
+    val lastEditedAt: Long = 0L,
+    
+    val isArchived: Boolean = false
 )
 
 /**

@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,26 +30,24 @@ import de.fs.maintenancepro.ui.viewmodel.MainViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DownloadedScreen(
+fun ArchiveScreen(
     viewModel: MainViewModel,
     onNavigateToInspection: (String) -> Unit
 ) {
     val context = LocalContext.current
-    val downloadedProtocols by viewModel.protocols.collectAsState(initial = emptyList())
+    val allProtocols by viewModel.protocols.collectAsState(initial = emptyList())
     
-    // Filter out archived ones and keep only downloaded, pending, or synchronized local items
-    val localList = downloadedProtocols.filter { 
-        (it.localStatus == "downloaded" || it.localStatus == "upload_pending" || it.localStatus == "synchronized") && !it.isArchived 
-    }
+    // Filter to get exclusively archived protocols
+    val archiveList = allProtocols.filter { it.isArchived }
 
     var activeDetailsPayload by remember { mutableStateOf<String?>(null) }
-    var selectedArchiveProtocol by remember { mutableStateOf<ProtocolEntity?>(null) }
+    var selectedRestoreProtocol by remember { mutableStateOf<ProtocolEntity?>(null) }
     var selectedDeleteProtocol by remember { mutableStateOf<ProtocolEntity?>(null) }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.title_inspections), color = IndustrialPrimary, fontWeight = FontWeight.Bold) },
+                title = { Text(stringResource(R.string.btn_archives), color = IndustrialPrimary, fontWeight = FontWeight.Bold) },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White),
                 actions = {
                     StatusHeaderBadge(viewModel)
@@ -67,7 +66,7 @@ fun DownloadedScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
-                if (localList.isEmpty()) {
+                if (archiveList.isEmpty()) {
                     item {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
@@ -76,7 +75,7 @@ fun DownloadedScreen(
                         ) {
                             Box(modifier = Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
                                 Text(
-                                    text = "Keine lokalen Auslöselisten geladen. Suchen Sie eine Anlage in der 'Online Suche' und laden Sie diese herunter.",
+                                    text = "Keine archivierten Protokolle vorhanden. Archivieren Sie ungenutzte oder abgeschlossene Listeneinträge in der Ansicht 'Geladen'.",
                                     color = IndustrialOutline,
                                     fontSize = 14.sp
                                 )
@@ -85,7 +84,7 @@ fun DownloadedScreen(
                     }
                 }
 
-                items(localList) { protocol ->
+                items(archiveList) { protocol ->
                     ElevatedCard(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -103,10 +102,10 @@ fun DownloadedScreen(
                                 }
                                 Box(
                                     modifier = Modifier
-                                        .background(IndustrialPrimaryContainer, RoundedCornerShape(4.dp))
+                                        .background(Color(0xFFE2E8F0), RoundedCornerShape(4.dp))
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
-                                    Text(text = protocol.systemType, color = IndustrialOnPrimaryContainer, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    Text(text = protocol.systemType, color = Color(0xFF475569), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
                             
@@ -122,17 +121,7 @@ fun DownloadedScreen(
                                 }
                                 Column {
                                     Text(text = "STATUS", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = IndustrialOutline)
-                                    val statusText = when (protocol.localStatus) {
-                                        "upload_pending" -> "Upload ausstehend"
-                                        "synchronized" -> "Synchronisiert"
-                                        else -> "Lokal Geladen"
-                                    }
-                                    val statusColor = when (protocol.localStatus) {
-                                        "upload_pending" -> Color(0xFFB45309)
-                                        "synchronized" -> Color(0xFF15803D)
-                                        else -> IndustrialPrimary
-                                    }
-                                    Text(text = statusText, style = MaterialTheme.typography.labelMedium, color = statusColor, fontWeight = FontWeight.Bold)
+                                    Text(text = "Archiviert (Gesperrt)", style = MaterialTheme.typography.labelMedium, color = Color(0xFF64748B), fontWeight = FontWeight.Bold)
                                 }
                             }
 
@@ -145,17 +134,17 @@ fun DownloadedScreen(
                             ) {
                                 Button(
                                     onClick = { onNavigateToInspection(protocol.id) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = IndustrialPrimary),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569)),
                                     shape = RoundedCornerShape(8.dp)
                                 ) {
-                                    Text("Ausfüllen", fontWeight = FontWeight.Bold)
+                                    Text("Ansehen", fontWeight = FontWeight.Bold)
                                 }
 
                                 Row(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    // Info Details Button
+                                    // Info Button
                                     IconButton(
                                         onClick = { activeDetailsPayload = protocol.decryptedPayloadJson },
                                         modifier = Modifier
@@ -171,17 +160,19 @@ fun DownloadedScreen(
                                         )
                                     }
 
-                                    // Move to Archive Button
+                                    // Restore Button
                                     OutlinedButton(
-                                        onClick = { selectedArchiveProtocol = protocol },
+                                        onClick = { selectedRestoreProtocol = protocol },
                                         colors = ButtonDefaults.outlinedButtonColors(contentColor = IndustrialPrimary),
                                         border = BorderStroke(1.dp, IndustrialOutlineVariant),
                                         shape = RoundedCornerShape(8.dp)
                                     ) {
-                                        Text("Archivieren", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        Icon(imageVector = Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Re-Act", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                     }
 
-                                    // Local Delete Button
+                                    // Delete / Discard locally
                                     IconButton(
                                         onClick = { selectedDeleteProtocol = protocol },
                                         modifier = Modifier
@@ -192,7 +183,7 @@ fun DownloadedScreen(
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.Delete,
-                                            contentDescription = "Entladen",
+                                            contentDescription = "Löschen",
                                             modifier = Modifier.size(20.dp)
                                         )
                                     }
@@ -213,27 +204,27 @@ fun DownloadedScreen(
         )
     }
 
-    // Archive Confirmation
-    if (selectedArchiveProtocol != null) {
+    // Restore Confirmation
+    if (selectedRestoreProtocol != null) {
         AlertDialog(
-            onDismissRequest = { selectedArchiveProtocol = null },
-            title = { Text("In das Archiv verschieben?", fontWeight = FontWeight.Bold, color = IndustrialPrimary) },
+            onDismissRequest = { selectedRestoreProtocol = null },
+            title = { Text("Aus dem Archiv entlassen?", fontWeight = FontWeight.Bold, color = IndustrialPrimary) },
             text = {
-                Text("Möchten Sie das Protokoll \"${selectedArchiveProtocol!!.name}\" manuell ins Archiv verschieben? Die Bearbeitung wird danach gesperrt.")
+                Text("Möchten Sie das Protokoll \"${selectedRestoreProtocol!!.name}\" wiederherstellen? Es wird zurück in Ihre 'Geladen' Liste verschoben und die Bearbeitung wird reaktiviert.")
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        viewModel.archiveProtocol(selectedArchiveProtocol!!.id)
-                        Toast.makeText(context, "Protokoll archiviert.", Toast.LENGTH_SHORT).show()
-                        selectedArchiveProtocol = null
+                        viewModel.restoreProtocol(selectedRestoreProtocol!!.id)
+                        Toast.makeText(context, "Protokoll reaktiviert.", Toast.LENGTH_SHORT).show()
+                        selectedRestoreProtocol = null
                     }
                 ) {
-                    Text("Archivieren", fontWeight = FontWeight.Bold, color = IndustrialPrimary)
+                    Text("Reaktivieren", fontWeight = FontWeight.Bold, color = IndustrialPrimary)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { selectedArchiveProtocol = null }) {
+                TextButton(onClick = { selectedRestoreProtocol = null }) {
                     Text("Abbrechen", color = Color.Gray)
                 }
             }
@@ -244,19 +235,19 @@ fun DownloadedScreen(
     if (selectedDeleteProtocol != null) {
         AlertDialog(
             onDismissRequest = { selectedDeleteProtocol = null },
-            title = { Text("Vom Mobilgerät entfernen?", fontWeight = FontWeight.Bold, color = Color(0xFFEF4444)) },
+            title = { Text("Dauerhaft vom Gerät löschen?", fontWeight = FontWeight.Bold, color = Color(0xFFEF4444)) },
             text = {
-                Text("Möchten Sie das Protokoll \"${selectedDeleteProtocol!!.name}\" wirklich von diesem Gerät entladen? Ungespeicherte Änderungen gehen dauerhaft verloren.")
+                Text("Möchten Sie das Protokoll \"${selectedDeleteProtocol!!.name}\" dauerhaft löschen? Alle Messdaten werden gelöscht und es muss bei Bedarf neu heruntergeladen werden.")
             },
             confirmButton = {
                 TextButton(
                     onClick = {
                         viewModel.deleteProtocolLocally(selectedDeleteProtocol!!.id)
-                        Toast.makeText(context, "Vom Gerät entfernt.", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Erfolgreich gelöscht.", Toast.LENGTH_SHORT).show()
                         selectedDeleteProtocol = null
                     }
                 ) {
-                    Text("Entfernen", fontWeight = FontWeight.Bold, color = Color(0xFFEF4444))
+                    Text("Löschen", fontWeight = FontWeight.Bold, color = Color(0xFFEF4444))
                 }
             },
             dismissButton = {
