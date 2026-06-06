@@ -12,6 +12,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.core.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
@@ -54,7 +56,7 @@ fun SettingsScreen(
     var password by remember { mutableStateOf("••••••••••••") }
     var codeword by remember { mutableStateOf("77-XJ-900-PLX-22") }
     
-    var showPassword by remember { privateStateOf(false) }
+    var showPassword by remember { mutableStateOf(false) }
     
     var showQrInputDialog by remember { mutableStateOf(false) }
     var qrInputText by remember { mutableStateOf("") }
@@ -471,7 +473,3 @@ fun SettingsScreen(
         }
     }
 }
-
-// Custom private state helper wrapping remember
-@Composable
-fun <T> privateStateOf(value: T): MutableState<T> = remember { mutableStateOf(value) }

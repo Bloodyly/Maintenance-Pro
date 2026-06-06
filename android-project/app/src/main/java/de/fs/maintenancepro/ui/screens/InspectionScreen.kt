@@ -17,6 +17,7 @@ import androidx.compose.foundation.gestures.transformable
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.zIndex
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
@@ -142,25 +143,9 @@ fun InspectionScreen(
 
     val totalColumns = columnsList.size
 
-    // Scroll states for 2D diagonal scrolling with frozen row/column
+    // Single horizontal and vertical scroll state for perfect 2D diagonal scrolling without lag/drift!
     val horizontalScrollState = rememberScrollState()
-    val headerScrollState = rememberScrollState()
     val verticalScrollState = rememberScrollState()
-    val leftScrollState = rememberScrollState()
-
-    // Maintain alignment
-    LaunchedEffect(horizontalScrollState.value) {
-        headerScrollState.scrollTo(horizontalScrollState.value)
-    }
-    LaunchedEffect(headerScrollState.value) {
-        horizontalScrollState.scrollTo(headerScrollState.value)
-    }
-    LaunchedEffect(verticalScrollState.value) {
-        leftScrollState.scrollTo(verticalScrollState.value)
-    }
-    LaunchedEffect(leftScrollState.value) {
-        verticalScrollState.scrollTo(leftScrollState.value)
-    }
 
     Scaffold(
         topBar = {
@@ -359,111 +344,200 @@ fun InspectionScreen(
                     .clipToBounds()
                     .transformable(state = transformState)
             ) {
-                Column(
+                // Dimensions dynamically scaled at layout-level by zoomScale to resolve all scroll issues
+                val cellWidth = (72 * zoomScale).dp
+                val cellHeight = (48 * zoomScale).dp
+                val groupCellWidth = (100 * zoomScale).dp
+                val headerRowHeight = (44 * zoomScale).dp
+
+                val headerFontSize = (12 * zoomScale).sp
+                val cellFontSize = (11 * zoomScale).sp
+                val subFontSize = (8 * zoomScale).sp
+
+                Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .graphicsLayer(
-                            scaleX = zoomScale,
-                            scaleY = zoomScale,
-                            transformOrigin = TransformOrigin(0f, 0f)
-                        )
+                        .verticalScroll(verticalScrollState)
+                        .horizontalScroll(horizontalScrollState)
                 ) {
-                    // 1. HEADER ROW (Frozen top row, scrolls only horizontally linked with column content)
-                    Row(
+                    Column(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .background(LightSurfaceHigh)
-                            .border(1.dp, IndustrialOutlineVariant)
+                            .width(groupCellWidth + (columnsList.size * cellWidth))
                     ) {
-                        // Frozen GRP Corner Cell
-                        Box(
-                            modifier = Modifier
-                                .width(100.dp)
-                                .height(44.dp)
-                                .background(LightSurfaceHigh)
-                                .padding(12.dp),
-                            contentAlignment = Alignment.CenterStart
-                        ) {
-                            Text(text = "GRP", fontWeight = FontWeight.ExtraBold, color = IndustrialOutline, fontSize = 12.sp)
-                        }
-
-                        // Dynamic slot columns definitions (scrolls horizontally with headerScrollState)
+                        // Row 0: Header Row (GRP Corner + Dynamic Columns Headers)
                         Row(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .height(44.dp)
-                                .horizontalScroll(headerScrollState)
+                                .height(headerRowHeight)
+                                .graphicsLayer {
+                                    translationY = verticalScrollState.value.toFloat()
+                                }
+                                .zIndex(2f)
                         ) {
-                            columnsList.forEach { colModel ->
-                                TableHeaderCell(label = colModel.label)
-                            }
-                        }
-                    }
-
-                    // 2. SCROLLABLE INNER TABLE (Columns linked vertical / Grid scrollable both)
-                    Row(
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        // Left Column: List of Group IDs (Frozen horizontal, scrolls only vertically)
-                        Column(
-                            modifier = Modifier
-                                .width(100.dp)
-                                .fillMaxHeight()
-                                .background(Color.White)
-                                .verticalScroll(leftScrollState)
-                        ) {
-                            rowsList.forEach { row ->
-                                val isSelected = selectedGroupIdForSubTable == row.groupId
-                                GroupHeaderCell(
-                                    groupId = row.groupId,
-                                    isSelected = isSelected,
-                                    onClick = {
-                                        // Highlight column / toggle sub-table visibility
-                                        selectedGroupIdForSubTable = if (isSelected) null else row.groupId
-                                        
-                                        // Robust Group click toggle mark/unmark cell behavior requested:
-                                        if (!protocolEntity.isArchived) {
-                                            val validCells = row.cells.filter { it.detectorType != "-" }
-                                            val allMatchingActive = validCells.isNotEmpty() && validCells.all { it.value == activeSelectVal }
-                                            
-                                            // Toggle state values: if all are marked with active select, unmark them, otherwise mark all!
-                                            val writeVal = if (allMatchingActive) "" else activeSelectVal
-                                            val batchValues = validCells.associate { it.slotKey to writeVal }
-                                            
-                                            if (batchValues.isNotEmpty()) {
-                                                viewModel.batchEditGroupCells(protocolId, row.groupId, batchValues)
-                                            }
-                                        }
+                            // First cell: "GRP" Corner Cell (translated vertically & horizontally)
+                            Box(
+                                modifier = Modifier
+                                    .width(groupCellWidth)
+                                    .height(headerRowHeight)
+                                    .background(LightSurfaceHigh)
+                                    .graphicsLayer {
+                                        translationX = horizontalScrollState.value.toFloat()
                                     }
+                                    .zIndex(3f)
+                                    .border(0.5.dp, IndustrialOutlineVariant)
+                                    .padding(horizontal = 12.dp),
+                                contentAlignment = Alignment.CenterStart
+                            ) {
+                                Text(
+                                    text = "GRP",
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = IndustrialOutline,
+                                    fontSize = headerFontSize
                                 )
                             }
+
+                            // Dynamic slot columns definitions
+                            columnsList.forEach { colModel ->
+                                Box(
+                                    modifier = Modifier
+                                        .width(cellWidth)
+                                        .height(headerRowHeight)
+                                        .background(LightSurfaceHigh)
+                                        .border(0.5.dp, IndustrialOutlineVariant),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = colModel.label,
+                                        fontWeight = FontWeight.Bold,
+                                        color = IndustrialOnSurface,
+                                        fontSize = headerFontSize
+                                    )
+                                }
+                            }
                         }
 
-                        // Central Grid Container (Fully scrollable horizontally & vertically = DIAGONAL 2D SCROLL!)
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(verticalScrollState)
-                        ) {
+                        // Data Rows
+                        rowsList.forEach { row ->
                             Row(
-                                modifier = Modifier
-                                    .fillMaxHeight()
-                                    .horizontalScroll(horizontalScrollState)
+                                modifier = Modifier.height(cellHeight)
                             ) {
-                                Column {
-                                    rowsList.forEach { row ->
-                                        Row {
-                                            row.cells.forEach { cell ->
-                                                GridInteractiveCell(
-                                                    cell = cell,
-                                                    isArchived = protocolEntity.isArchived,
-                                                    activeSelectVal = activeSelectVal,
-                                                    onClick = {
-                                                        val writeText = if (cell.value == activeSelectVal) "" else activeSelectVal
-                                                        viewModel.editCell(protocolId, row.groupId, cell.slotKey, writeText)
-                                                    }
-                                                )
+                                // Left Column Cell: GroupHeaderCell (translated horizontally)
+                                val isSelected = selectedGroupIdForSubTable == row.groupId
+                                Box(
+                                    modifier = Modifier
+                                        .width(groupCellWidth)
+                                        .height(cellHeight)
+                                        .graphicsLayer {
+                                            translationX = horizontalScrollState.value.toFloat()
+                                        }
+                                        .zIndex(1f)
+                                        .background(if (isSelected) IndustrialSecondaryContainer.copy(alpha = 0.35f) else LightSurfaceLow)
+                                        .border(0.5.dp, IndustrialOutlineVariant)
+                                        .clickable {
+                                            // Highlight column / toggle sub-table visibility
+                                            selectedGroupIdForSubTable = if (isSelected) null else row.groupId
+
+                                            // Robust Group click toggle mark/unmark cell behavior requested:
+                                            if (!protocolEntity.isArchived) {
+                                                val validCells = row.cells.filter { it.detectorType != "-" }
+                                                val allMatchingActive = validCells.isNotEmpty() && validCells.all { it.value == activeSelectVal }
+
+                                                // Toggle state values: if all are marked with active select, unmark them, otherwise mark all!
+                                                val writeVal = if (allMatchingActive) "" else activeSelectVal
+                                                val batchValues = validCells.associate { it.slotKey to writeVal }
+
+                                                if (batchValues.isNotEmpty()) {
+                                                    viewModel.batchEditGroupCells(protocolId, row.groupId, batchValues)
+                                                }
                                             }
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    contentAlignment = Alignment.CenterStart
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size((6 * zoomScale).dp)
+                                                .background(if (isSelected) IndustrialPrimary else Color.Transparent, RoundedCornerShape(3.dp))
+                                        )
+                                        Text(
+                                            text = row.groupId,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isSelected) IndustrialPrimary else IndustrialPrimary.copy(alpha = 0.8f),
+                                            fontSize = cellFontSize
+                                        )
+                                    }
+                                }
+
+                                // Central Interactive Grid Cells of this row
+                                row.cells.forEach { cell ->
+                                    val cellVal = cell.value
+                                    val detectorType = cell.detectorType
+                                    val isDisabled = detectorType == "-"
+
+                                    Box(
+                                        modifier = Modifier
+                                            .width(cellWidth)
+                                            .height(cellHeight)
+                                            .background(
+                                                if (isDisabled) LightSurfaceLow 
+                                                else if (cellVal.isNotEmpty()) {
+                                                    if (cellVal == "Def." || cellVal.lowercase().contains("def")) IndustrialErrorContainer 
+                                                    else IndustrialPrimaryContainer.copy(alpha = 0.12f)
+                                                } else Color.White
+                                            )
+                                            .border(0.5.dp, IndustrialOutlineVariant)
+                                            .clickable(enabled = !isDisabled && !protocolEntity.isArchived) {
+                                                val writeText = if (cellVal == activeSelectVal) "" else activeSelectVal
+                                                viewModel.editCell(protocolId, row.groupId, cell.slotKey, writeText)
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (isDisabled) {
+                                            Text(text = "-", color = IndustrialOutline.copy(alpha = 0.5f), fontSize = cellFontSize)
+                                        } else if (cellVal.isNotEmpty()) {
+                                            if (cellVal == "Def." || cellVal.lowercase().contains("def")) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(1.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.Warning,
+                                                        contentDescription = null,
+                                                        tint = IndustrialError,
+                                                        modifier = Modifier.size((10 * zoomScale).dp)
+                                                    )
+                                                    Text(
+                                                        text = "DEF.",
+                                                        color = IndustrialError,
+                                                        fontWeight = FontWeight.ExtraBold,
+                                                        fontSize = cellFontSize
+                                                    )
+                                                }
+                                            } else {
+                                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                    Text(
+                                                        text = cellVal,
+                                                        color = IndustrialPrimary,
+                                                        fontWeight = FontWeight.Bold,
+                                                        fontSize = cellFontSize
+                                                    )
+                                                    Text(
+                                                        text = detectorType,
+                                                        color = IndustrialOutline,
+                                                        fontSize = subFontSize,
+                                                        fontWeight = FontWeight.Light
+                                                    )
+                                                }
+                                            }
+                                        } else {
+                                            Text(
+                                                text = detectorType,
+                                                color = IndustrialOutline.copy(alpha = 0.7f),
+                                                fontSize = cellFontSize
+                                            )
                                         }
                                     }
                                 }
