@@ -74,9 +74,9 @@ services:
       - internal_lan
 
 networks:
-  # Secure Internal LAN Network: Has no internet access (strictly private)
+  # Internal LAN Network: Standard bridge so Docker and Portainer can map host ports
   internal_lan:
-    internal: true
+    driver: bridge
   # WAN Internet Network: Allows external access, connecting Netlink with Android apps
   internet_wan:
     driver: bridge
