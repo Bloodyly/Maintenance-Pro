@@ -32,7 +32,7 @@ services:
     networks:
       - internet_wan # Only has internet access, no internal_lan connection
     ports:
-      - "3000:3000" # Public gateway for secure HTTPS/HTTP requests from apps
+      - "3360:3000" # Exposes on host port 3360 to bypass the 3000 conflict (Grafana)
 
   # 3. ProtocolDB Service - Internal database explorer and schema validator
   # Uses the shared SQLite workspace volume, keeping it separated from the WAN netlink network
