@@ -418,6 +418,97 @@ class MainViewModel @Inject constructor(
     }
 
     /**
+     * Delete a group row from the matrix
+     */
+    fun deleteGroup(protocolId: String, groupId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val protocol = protocolDao.getProtocolById(protocolId) ?: return@launch
+            val rootJson = JSONObject(protocol.decryptedPayloadJson)
+            val rowsArray = rootJson.getJSONArray("rows")
+            
+            val newRowsArray = JSONArray()
+            for (i in 0 until rowsArray.length()) {
+                val rowObj = rowsArray.getJSONObject(i)
+                if (rowObj.getString("group_id") != groupId) {
+                    newRowsArray.put(rowObj)
+                }
+            }
+            rootJson.put("rows", newRowsArray)
+
+            val updatedEntity = protocol.copy(
+                decryptedPayloadJson = rootJson.toString(),
+                lastEditedAt = System.currentTimeMillis(),
+                localStatus = "upload_pending"
+            )
+            protocolDao.insertOrUpdate(updatedEntity)
+            _activeProtocolPayload.value = rootJson.toString()
+        }
+    }
+
+    /**
+     * Update group metadata (ID, name, and option type)
+     */
+    fun updateGroupDetails(protocolId: String, oldGroupId: String, newGroupId: String, newGroupName: String, newGroupType: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val protocol = protocolDao.getProtocolById(protocolId) ?: return@launch
+            val rootJson = JSONObject(protocol.decryptedPayloadJson)
+            val rowsArray = rootJson.getJSONArray("rows")
+            
+            for (i in 0 until rowsArray.length()) {
+                val rowObj = rowsArray.getJSONObject(i)
+                if (rowObj.getString("group_id") == oldGroupId) {
+                    rowObj.put("group_id", newGroupId)
+                    rowObj.put("group_name", newGroupName)
+                    rowObj.put("group_type", newGroupType)
+                    break
+                }
+            }
+
+            val updatedEntity = protocol.copy(
+                decryptedPayloadJson = rootJson.toString(),
+                lastEditedAt = System.currentTimeMillis(),
+                localStatus = "upload_pending"
+            )
+            protocolDao.insertOrUpdate(updatedEntity)
+            _activeProtocolPayload.value = rootJson.toString()
+        }
+    }
+
+    /**
+     * Update the detector type for a particular cell slot
+     */
+    fun updateCellDetectorType(protocolId: String, groupId: String, slotKey: String, newDetectorType: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val protocol = protocolDao.getProtocolById(protocolId) ?: return@launch
+            val rootJson = JSONObject(protocol.decryptedPayloadJson)
+            val rowsArray = rootJson.getJSONArray("rows")
+            
+            for (i in 0 until rowsArray.length()) {
+                val rowObj = rowsArray.getJSONObject(i)
+                if (rowObj.getString("group_id") == groupId) {
+                    val cellsArray = rowObj.getJSONArray("cells")
+                    for (j in 0 until cellsArray.length()) {
+                        val cellObj = cellsArray.getJSONObject(j)
+                        if (cellObj.getString("slot_key") == slotKey) {
+                            cellObj.put("detector_type", newDetectorType)
+                            break
+                        }
+                    }
+                    break
+                }
+            }
+
+            val updatedEntity = protocol.copy(
+                decryptedPayloadJson = rootJson.toString(),
+                lastEditedAt = System.currentTimeMillis(),
+                localStatus = "upload_pending"
+            )
+            protocolDao.insertOrUpdate(updatedEntity)
+            _activeProtocolPayload.value = rootJson.toString()
+        }
+    }
+
+    /**
      * Full synchronize of completed checklists. Places failing attempts safely
      * into the Room local background queue for robust retry.
      */

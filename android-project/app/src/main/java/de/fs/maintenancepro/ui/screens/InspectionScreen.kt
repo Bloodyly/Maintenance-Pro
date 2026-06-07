@@ -17,7 +17,6 @@ import androidx.compose.foundation.gestures.transformable
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.draw.zIndex
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
@@ -337,7 +336,7 @@ fun InspectionScreen(
             }
 
             // Scrollable Grid Box container restricting scaling artifacts from bleeding
-            Box(
+            Row(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
@@ -354,315 +353,206 @@ fun InspectionScreen(
                 val cellFontSize = (11 * zoomScale).sp
                 val subFontSize = (8 * zoomScale).sp
 
-                Box(
+                // 1. LEFT COLUMN: Frozen Row Headers (GRP Corner + Group IDs)
+                Column(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(verticalScrollState)
-                        .horizontalScroll(horizontalScrollState)
+                        .width(groupCellWidth)
+                        .fillMaxHeight()
                 ) {
+                    // Corner GRP Cell (Frozen left-and-top)
+                    Box(
+                        modifier = Modifier
+                            .width(groupCellWidth)
+                            .height(headerRowHeight)
+                            .background(LightSurfaceHigh)
+                            .border(0.5.dp, IndustrialOutlineVariant)
+                            .padding(horizontal = 12.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        Text(
+                            text = "GRP",
+                            fontWeight = FontWeight.ExtraBold,
+                            color = IndustrialOutline,
+                            fontSize = headerFontSize
+                        )
+                    }
+
+                    // Vertical scrollable Group IDs (synchronized with main vertical scrollbar)
                     Column(
                         modifier = Modifier
-                            .width(groupCellWidth + (columnsList.size * cellWidth))
+                            .width(groupCellWidth)
+                            .weight(1f)
+                            .verticalScroll(verticalScrollState)
                     ) {
-                        // Row 0: Header Row (GRP Corner + Dynamic Columns Headers)
-                        Row(
-                            modifier = Modifier
-                                .height(headerRowHeight)
-                                .graphicsLayer {
-                                    translationY = verticalScrollState.value.toFloat()
-                                }
-                                .zIndex(2f)
-                        ) {
-                            // First cell: "GRP" Corner Cell (translated vertically & horizontally)
+                        rowsList.forEach { row ->
                             Box(
                                 modifier = Modifier
                                     .width(groupCellWidth)
-                                    .height(headerRowHeight)
-                                    .background(LightSurfaceHigh)
-                                    .graphicsLayer {
-                                        translationX = horizontalScrollState.value.toFloat()
-                                    }
-                                    .zIndex(3f)
+                                    .height(cellHeight)
+                                    .background(LightSurfaceLow)
                                     .border(0.5.dp, IndustrialOutlineVariant)
-                                    .padding(horizontal = 12.dp),
+                                    .clickable {
+                                        if (!protocolEntity.isArchived) {
+                                            val validCells = row.cells.filter { it.detectorType != "-" }
+                                            val targetCells = validCells.filter { it.value.isEmpty() || it.value == activeSelectVal }
+                                            val hasEmptyTargets = targetCells.any { it.value.isEmpty() }
+                                            
+                                            val batchValues = if (hasEmptyTargets) {
+                                                targetCells.filter { it.value.isEmpty() }.associate { it.slotKey to activeSelectVal }
+                                            } else {
+                                                targetCells.filter { it.value == activeSelectVal }.associate { it.slotKey to "" }
+                                            }
+
+                                            if (batchValues.isNotEmpty()) {
+                                                viewModel.batchEditGroupCells(protocolId, row.groupId, batchValues)
+                                            } else {
+                                                Toast.makeText(context, "Keine änderbaren Felder in dieser Reihe", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
                                 contentAlignment = Alignment.CenterStart
                             ) {
-                                Text(
-                                    text = "GRP",
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = IndustrialOutline,
-                                    fontSize = headerFontSize
-                                )
-                            }
-
-                            // Dynamic slot columns definitions
-                            columnsList.forEach { colModel ->
-                                Box(
-                                    modifier = Modifier
-                                        .width(cellWidth)
-                                        .height(headerRowHeight)
-                                        .background(LightSurfaceHigh)
-                                        .border(0.5.dp, IndustrialOutlineVariant),
-                                    contentAlignment = Alignment.Center
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    Text(
-                                        text = colModel.label,
-                                        fontWeight = FontWeight.Bold,
-                                        color = IndustrialOnSurface,
-                                        fontSize = headerFontSize
-                                    )
-                                }
-                            }
-                        }
-
-                        // Data Rows
-                        rowsList.forEach { row ->
-                            Row(
-                                modifier = Modifier.height(cellHeight)
-                            ) {
-                                // Left Column Cell: GroupHeaderCell (translated horizontally)
-                                val isSelected = selectedGroupIdForSubTable == row.groupId
-                                Box(
-                                    modifier = Modifier
-                                        .width(groupCellWidth)
-                                        .height(cellHeight)
-                                        .graphicsLayer {
-                                            translationX = horizontalScrollState.value.toFloat()
-                                        }
-                                        .zIndex(1f)
-                                        .background(if (isSelected) IndustrialSecondaryContainer.copy(alpha = 0.35f) else LightSurfaceLow)
-                                        .border(0.5.dp, IndustrialOutlineVariant)
-                                        .clickable {
-                                            // Highlight column / toggle sub-table visibility
-                                            selectedGroupIdForSubTable = if (isSelected) null else row.groupId
-
-                                            // Robust Group click toggle mark/unmark cell behavior requested:
-                                            if (!protocolEntity.isArchived) {
-                                                val validCells = row.cells.filter { it.detectorType != "-" }
-                                                val allMatchingActive = validCells.isNotEmpty() && validCells.all { it.value == activeSelectVal }
-
-                                                // Toggle state values: if all are marked with active select, unmark them, otherwise mark all!
-                                                val writeVal = if (allMatchingActive) "" else activeSelectVal
-                                                val batchValues = validCells.associate { it.slotKey to writeVal }
-
-                                                if (batchValues.isNotEmpty()) {
-                                                    viewModel.batchEditGroupCells(protocolId, row.groupId, batchValues)
-                                                }
-                                            }
-                                        }
-                                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                                    contentAlignment = Alignment.CenterStart
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size((6 * zoomScale).dp)
-                                                .background(if (isSelected) IndustrialPrimary else Color.Transparent, RoundedCornerShape(3.dp))
-                                        )
-                                        Text(
-                                            text = row.groupId,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (isSelected) IndustrialPrimary else IndustrialPrimary.copy(alpha = 0.8f),
-                                            fontSize = cellFontSize
-                                        )
-                                    }
-                                }
-
-                                // Central Interactive Grid Cells of this row
-                                row.cells.forEach { cell ->
-                                    val cellVal = cell.value
-                                    val detectorType = cell.detectorType
-                                    val isDisabled = detectorType == "-"
-
                                     Box(
                                         modifier = Modifier
-                                            .width(cellWidth)
-                                            .height(cellHeight)
-                                            .background(
-                                                if (isDisabled) LightSurfaceLow 
-                                                else if (cellVal.isNotEmpty()) {
-                                                    if (cellVal == "Def." || cellVal.lowercase().contains("def")) IndustrialErrorContainer 
-                                                    else IndustrialPrimaryContainer.copy(alpha = 0.12f)
-                                                } else Color.White
-                                            )
-                                            .border(0.5.dp, IndustrialOutlineVariant)
-                                            .clickable(enabled = !isDisabled && !protocolEntity.isArchived) {
-                                                val writeText = if (cellVal == activeSelectVal) "" else activeSelectVal
-                                                viewModel.editCell(protocolId, row.groupId, cell.slotKey, writeText)
-                                            },
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        if (isDisabled) {
-                                            Text(text = "-", color = IndustrialOutline.copy(alpha = 0.5f), fontSize = cellFontSize)
-                                        } else if (cellVal.isNotEmpty()) {
-                                            if (cellVal == "Def." || cellVal.lowercase().contains("def")) {
-                                                Row(
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(1.dp)
-                                                ) {
-                                                    Icon(
-                                                        Icons.Default.Warning,
-                                                        contentDescription = null,
-                                                        tint = IndustrialError,
-                                                        modifier = Modifier.size((10 * zoomScale).dp)
-                                                    )
-                                                    Text(
-                                                        text = "DEF.",
-                                                        color = IndustrialError,
-                                                        fontWeight = FontWeight.ExtraBold,
-                                                        fontSize = cellFontSize
-                                                    )
-                                                }
-                                            } else {
-                                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                                    Text(
-                                                        text = cellVal,
-                                                        color = IndustrialPrimary,
-                                                        fontWeight = FontWeight.Bold,
-                                                        fontSize = cellFontSize
-                                                    )
-                                                    Text(
-                                                        text = detectorType,
-                                                        color = IndustrialOutline,
-                                                        fontSize = subFontSize,
-                                                        fontWeight = FontWeight.Light
-                                                    )
-                                                }
-                                            }
-                                        } else {
-                                            Text(
-                                                text = detectorType,
-                                                color = IndustrialOutline.copy(alpha = 0.7f),
-                                                fontSize = cellFontSize
-                                            )
-                                        }
-                                    }
+                                            .size((6 * zoomScale).dp)
+                                            .background(IndustrialPrimary, RoundedCornerShape(3.dp))
+                                    )
+                                    Text(
+                                        text = row.groupId,
+                                        fontWeight = FontWeight.Bold,
+                                        color = IndustrialPrimary,
+                                        fontSize = cellFontSize
+                                    )
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            // 3. SUB-TABLES HARDWARE DETAIL OVERLAY (Displays customized column weights underneath main grid)
-            selectedGroupIdForSubTable?.let { targetId ->
-                rowsList.find { it.groupId == targetId }?.let { activeRow ->
-                    Card(
+                // 2. RIGHT SIDE: Scrollable columns header + scrollable 2D grid cells
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                ) {
+                    // Column Headers (Scrolls only horizontally, matches main grid horizontal scroll)
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color.White),
-                        border = BorderStroke(1.dp, IndustrialOutlineVariant),
-                        shape = RoundedCornerShape(10.dp)
+                            .height(headerRowHeight)
+                            .horizontalScroll(horizontalScrollState)
                     ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column {
-                                    Text(
-                                        text = "Subtabelle: Hardware-Matrix Gruppe ${activeRow.groupId}",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        color = IndustrialPrimary,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    if (activeRow.groupName.isNotEmpty()) {
-                                        Text(text = "Montageort: ${activeRow.groupName}", color = IndustrialOutline, fontSize = 11.sp)
-                                    }
-                                }
-                                IconButton(modifier = Modifier.size(24.dp), onClick = { selectedGroupIdForSubTable = null }) {
-                                    Icon(Icons.Default.Close, contentDescription = "Schließen", tint = IndustrialOutline)
-                                }
-                            }
-
-                            // Subtable column headers
-                            Row(
+                        columnsList.forEach { colModel ->
+                            Box(
                                 modifier = Modifier
-                                    .fillMaxWidth()
+                                    .width(cellWidth)
+                                    .height(headerRowHeight)
                                     .background(LightSurfaceHigh)
-                                    .border(1.dp, IndustrialOutlineVariant)
-                                    .padding(vertical = 6.dp, horizontal = 10.dp)
+                                    .border(0.5.dp, IndustrialOutlineVariant),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Text(text = "Slot", modifier = Modifier.weight(1.5f), fontWeight = FontWeight.Bold, fontSize = 11.sp, color = IndustrialOnSurface)
-                                Text(text = "Typ", modifier = Modifier.weight(1.5f), fontWeight = FontWeight.Bold, fontSize = 11.sp, color = IndustrialOnSurface)
-                                Text(text = "Status", modifier = Modifier.weight(3.0f), fontWeight = FontWeight.Bold, fontSize = 11.sp, color = IndustrialOnSurface)
-                                Text(text = "Aktion", modifier = Modifier.weight(2.0f), fontWeight = FontWeight.Bold, fontSize = 11.sp, color = IndustrialOnSurface)
+                                Text(
+                                    text = colModel.label,
+                                    fontWeight = FontWeight.Bold,
+                                    color = IndustrialOnSurface,
+                                    fontSize = headerFontSize
+                                )
                             }
+                        }
+                    }
 
-                            // Limited subtable details to prevent screen crowding
-                            activeRow.cells.forEach { cell ->
-                                val isDisabled = cell.detectorType == "-"
+                    // Main Interactive 2D Grid Cells
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .verticalScroll(verticalScrollState)
+                            .horizontalScroll(horizontalScrollState)
+                    ) {
+                        Column {
+                            rowsList.forEach { row ->
                                 Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .border(0.5.dp, IndustrialOutlineVariant)
-                                        .background(if (isDisabled) LightSurfaceLow else Color.White)
-                                        .padding(vertical = 8.dp, horizontal = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                    modifier = Modifier.height(cellHeight)
                                 ) {
-                                    Text(
-                                        text = "Index ${cell.slotKey}",
-                                        modifier = Modifier.weight(1.5f),
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontSize = 11.sp,
-                                        color = if (isDisabled) IndustrialOutline else IndustrialOnSurface
-                                    )
-                                    Text(
-                                        text = cell.detectorType,
-                                        modifier = Modifier.weight(1.5f),
-                                        fontSize = 11.sp,
-                                        color = if (isDisabled) IndustrialOutline else IndustrialPrimary
-                                    )
-                                    Box(modifier = Modifier.weight(3.0f)) {
-                                        if (isDisabled) {
-                                            Text(text = "Spalte deaktiviert", fontSize = 10.sp, color = IndustrialOutline)
-                                        } else if (cell.value.isEmpty()) {
-                                            Text(text = "Nicht ausgelöst", fontSize = 10.sp, color = IndustrialOutline, fontWeight = FontWeight.Medium)
-                                        } else {
-                                            val isDef = cell.value == "Def."
-                                            Box(
-                                                modifier = Modifier
-                                                    .background(
-                                                        if (isDef) IndustrialErrorContainer else IndustrialPrimaryContainer.copy(alpha = 0.2f),
-                                                        RoundedCornerShape(4.dp)
-                                                    )
-                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                                            ) {
-                                                Text(
-                                                    text = if (isDef) "DEFEKT" else "OK (${cell.value})",
-                                                    color = if (isDef) IndustrialError else IndustrialPrimary,
-                                                    fontSize = 9.sp,
-                                                    fontWeight = FontWeight.Bold
+                                    row.cells.forEach { cell ->
+                                        val cellVal = cell.value
+                                        val detectorType = cell.detectorType
+                                        val isDisabled = detectorType == "-"
+
+                                        Box(
+                                            modifier = Modifier
+                                                .width(cellWidth)
+                                                .height(cellHeight)
+                                                .background(
+                                                    if (isDisabled) LightSurfaceLow 
+                                                    else if (cellVal.isNotEmpty()) {
+                                                        if (cellVal == "Def." || cellVal.lowercase().contains("def")) IndustrialErrorContainer 
+                                                        else IndustrialPrimaryContainer.copy(alpha = 0.12f)
+                                                    } else Color.White
                                                 )
-                                            }
-                                        }
-                                    }
-                                    
-                                    Box(
-                                        modifier = Modifier.weight(2.0f),
-                                        contentAlignment = Alignment.CenterStart
-                                    ) {
-                                        if (!isDisabled && !protocolEntity.isArchived) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .background(LightSurfaceHigh, RoundedCornerShape(4.dp))
-                                                    .border(0.5.dp, IndustrialOutlineVariant, RoundedCornerShape(4.dp))
-                                                    .clickable {
-                                                        val nextVal = if (cell.value == activeSelectVal) "" else activeSelectVal
-                                                        viewModel.editCell(protocolId, activeRow.groupId, cell.slotKey, nextVal)
+                                                .border(0.5.dp, IndustrialOutlineVariant)
+                                                .clickable(
+                                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                                    indication = null,
+                                                    enabled = !isDisabled && !protocolEntity.isArchived
+                                                ) {
+                                                    if (cellVal.isEmpty()) {
+                                                        viewModel.editCell(protocolId, row.groupId, cell.slotKey, activeSelectVal)
+                                                    } else if (cellVal == activeSelectVal) {
+                                                        viewModel.editCell(protocolId, row.groupId, cell.slotKey, "")
+                                                    } else {
+                                                        Toast.makeText(context, "Melder geschützt geprüft ($cellVal).", Toast.LENGTH_SHORT).show()
                                                     }
-                                                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                                            ) {
+                                                },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            if (isDisabled) {
+                                                Text(text = "-", color = IndustrialOutline.copy(alpha = 0.5f), fontSize = cellFontSize)
+                                            } else if (cellVal.isNotEmpty()) {
+                                                if (cellVal == "Def." || cellVal.lowercase().contains("def")) {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(1.dp)
+                                                    ) {
+                                                        Icon(
+                                                            Icons.Default.Warning,
+                                                            contentDescription = null,
+                                                            tint = IndustrialError,
+                                                            modifier = Modifier.size((11 * zoomScale).dp)
+                                                        )
+                                                        Text(
+                                                            text = "DEF.",
+                                                            color = IndustrialError,
+                                                            fontWeight = FontWeight.ExtraBold,
+                                                            fontSize = cellFontSize
+                                                        )
+                                                    }
+                                                } else {
+                                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                        Text(
+                                                            text = cellVal,
+                                                            color = IndustrialPrimary,
+                                                            fontWeight = FontWeight.Bold,
+                                                            fontSize = cellFontSize
+                                                        )
+                                                        Text(
+                                                            text = detectorType,
+                                                            color = IndustrialOutline,
+                                                            fontSize = subFontSize,
+                                                            fontWeight = FontWeight.Light
+                                                        )
+                                                    }
+                                                }
+                                            } else {
                                                 Text(
-                                                    text = "Tippen",
-                                                    fontSize = 10.sp,
-                                                    color = IndustrialPrimary,
-                                                    fontWeight = FontWeight.Bold
+                                                    text = detectorType,
+                                                    color = IndustrialOutline.copy(alpha = 0.7f),
+                                                    fontSize = cellFontSize
                                                 )
                                             }
                                         }

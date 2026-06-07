@@ -3,13 +3,21 @@ package de.fs.maintenancepro.ui.screens
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddCircle
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -19,12 +27,21 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import de.fs.maintenancepro.R
 import de.fs.maintenancepro.ui.theme.*
 import de.fs.maintenancepro.ui.viewmodel.MainViewModel
 import org.json.JSONObject
+
+data class EditRowModel(
+    val groupId: String,
+    val groupName: String,
+    val groupType: String,
+    val cells: List<CellModel>
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -49,12 +66,102 @@ fun MatrixEditScreen(
 
     if (protocolEntity == null) return
 
-    val rootJson = remember(protocolEntity.decryptedPayloadJson) {
-        JSONObject(protocolEntity.decryptedPayloadJson)
+    val tableData = remember(protocolEntity.decryptedPayloadJson) {
+        try {
+            val root = JSONObject(protocolEntity.decryptedPayloadJson)
+            val rowsArr = root.getJSONArray("rows")
+            val defObj = root.optJSONObject("definition")
+            val colsArr = defObj?.optJSONArray("columns")
+            
+            val detTypesArr = defObj?.optJSONArray("detector_types")
+            val detChoices = if (detTypesArr != null && detTypesArr.length() > 0) {
+                List(detTypesArr.length()) { i -> detTypesArr.getString(i) }
+            } else {
+                listOf("-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR")
+            }
+
+            val rows = List(rowsArr.length()) { i ->
+                val rowO = rowsArr.getJSONObject(i)
+                val cellsArr = rowO.getJSONArray("cells")
+                val cells = List(cellsArr.length()) { j ->
+                    val cellO = cellsArr.getJSONObject(j)
+                    CellModel(
+                        slotKey = cellO.getString("slot_key"),
+                        detectorType = cellO.getString("detector_type"),
+                        value = cellO.optString("value", "")
+                    )
+                }
+                EditRowModel(
+                    groupId = rowO.getString("group_id"),
+                    groupName = rowO.optString("group_name", ""),
+                    groupType = rowO.optString("group_type", "NAM"),
+                    cells = cells
+                )
+            }
+            Pair(rows, detChoices)
+        } catch (e: Exception) {
+            Pair(emptyList<EditRowModel>(), listOf("-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR"))
+        }
     }
 
-    val columnsArray = rootJson.getJSONObject("definition").getJSONArray("columns")
-    val rowsArray = rootJson.getJSONArray("rows")
+    val rowsList = tableData.first
+    val detChoices = tableData.second
+
+    var activeCellForDetectorDialog by remember { mutableStateOf<Pair<EditRowModel, CellModel>?>(null) }
+
+    // Dialog for picking detector types for a specific slot cell
+    activeCellForDetectorDialog?.let { (row, cell) ->
+        AlertDialog(
+            onDismissRequest = { activeCellForDetectorDialog = null },
+            title = { Text("Slot ${cell.slotKey} Typisierung", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "Gewünschten Melder-Typ oder Status für diesen Tabelleneintrag auswählen:",
+                        fontSize = 13.sp,
+                        color = IndustrialOutline
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 240.dp)
+                    ) {
+                        items(detChoices) { choice ->
+                            val isCurrent = cell.detectorType == choice
+                            val displayName = if (choice == "-") "- (Deaktiviert)" else choice
+                            
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        viewModel.updateCellDetectorType(protocolId, row.groupId, cell.slotKey, choice)
+                                        activeCellForDetectorDialog = null
+                                        Toast.makeText(context, "Slot ${cell.slotKey} auf $displayName aktualisiert", Toast.LENGTH_SHORT).show()
+                                    }
+                                    .padding(vertical = 10.dp, horizontal = 14.dp),
+                                color = if (isCurrent) IndustrialPrimaryContainer else Color.Transparent,
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = displayName,
+                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isCurrent) IndustrialPrimary else IndustrialOnSurface,
+                                    fontSize = 14.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { activeCellForDetectorDialog = null }) {
+                    Text("Abbrechen", color = IndustrialOutline)
+                }
+            }
+        )
+    }
 
     Scaffold(
         topBar = {
@@ -81,13 +188,14 @@ fun MatrixEditScreen(
             // Warning Alert
             Card(
                 colors = CardDefaults.cardColors(containerColor = IndustrialErrorContainer),
-                border = BorderStroke(2.dp, IndustrialError)
+                border = BorderStroke(1.dp, IndustrialError),
+                shape = RoundedCornerShape(8.dp)
             ) {
-                Row(modifier = Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(Icons.Default.Warning, contentDescription = null, tint = IndustrialError)
                     Column {
                         Text(text = stringResource(R.string.matrix_warning_title), fontWeight = FontWeight.Bold, color = IndustrialOnErrorContainer)
-                        Text(text = stringResource(R.string.matrix_warning_desc), fontSize = 14.sp, color = IndustrialOnErrorContainer)
+                        Text(text = stringResource(R.string.matrix_warning_desc), fontSize = 13.sp, color = IndustrialOnErrorContainer)
                     }
                 }
             }
@@ -99,10 +207,10 @@ fun MatrixEditScreen(
             ) {
                 Button(
                     onClick = {
-                        val count = rowsArray.length() + 1
+                        val count = rowsList.size + 1
                         val newGrpId = "GRP %02d".format(count)
-                        val colKeys = (1..columnsArray.length()).map { it.toString() }
-                        viewModel.addGroup(protocolId, newGrpId, "Neue Standardgruppe", colKeys)
+                        val slotKeys = rowsList.firstOrNull()?.cells?.map { it.slotKey } ?: listOf("1", "2", "3", "4")
+                        viewModel.addGroup(protocolId, newGrpId, "Neue Standardgruppe", slotKeys)
                         Toast.makeText(context, "$newGrpId hinzugefügt.", Toast.LENGTH_SHORT).show()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = IndustrialPrimary),
@@ -115,9 +223,10 @@ fun MatrixEditScreen(
 
                 Button(
                     onClick = {
-                        val count = columnsArray.length() + 1
-                        viewModel.addSlotColumn(protocolId, count.toString(), "Slot $count")
-                        Toast.makeText(context, "Slot $count Spalte hinzugefügt.", Toast.LENGTH_SHORT).show()
+                        val slotsCount = rowsList.firstOrNull()?.cells?.size ?: 0
+                        val newIndex = slotsCount + 1
+                        viewModel.addSlotColumn(protocolId, newIndex.toString(), "Slot $newIndex")
+                        Toast.makeText(context, "Slot $newIndex Spalte hinzugefügt.", Toast.LENGTH_SHORT).show()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = IndustrialPrimary),
                     modifier = Modifier.weight(1f)
@@ -128,26 +237,220 @@ fun MatrixEditScreen(
                 }
             }
 
-            // Simple group list representations
-            Text(text = "Aktuelle Gruppen:", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            for (i in 0 until rowsArray.length()) {
-                val rowObj = rowsArray.getJSONObject(i)
-                val grpId = rowObj.getString("group_id")
-                val grpName = rowObj.getString("group_name")
+            Text(text = "Segmente und Gruppen verwalten:", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = IndustrialPrimary)
 
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
-                    border = BorderStroke(1.dp, IndustrialOutlineVariant)
+            // Render rich editor cards
+            rowsList.forEach { row ->
+                key(row.groupId) {
+                    RowEditCard(
+                        protocolId = protocolId,
+                        row = row,
+                        viewModel = viewModel,
+                        onSelectCell = { r, c ->
+                            activeCellForDetectorDialog = Pair(r, c)
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RowEditCard(
+    protocolId: String,
+    row: EditRowModel,
+    viewModel: MainViewModel,
+    onSelectCell: (EditRowModel, CellModel) -> Unit
+) {
+    var grpIdInput by remember(row.groupId) { mutableStateOf(row.groupId) }
+    var grpNameInput by remember(row.groupName) { mutableStateOf(row.groupName) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
+
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("Segment löschen", fontWeight = FontWeight.Bold) },
+            text = { Text("Möchten Sie die Gruppe \"${row.groupId}\" wirklich löschen? Alle zugeordneten Prüfergebnisse dieses Segments werden dauerhaft entfernt!") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteDialog = false
+                    viewModel.deleteGroup(protocolId, row.groupId)
+                    Toast.makeText(context, "Gruppe gelöscht.", Toast.LENGTH_SHORT).show()
+                }) {
+                    Text("Löschen", color = IndustrialError, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) {
+                    Text("Abbrechen", color = IndustrialOutline)
+                }
+            }
+        )
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        border = BorderStroke(1.dp, IndustrialOutlineVariant),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // First Row: Group ID code + Delete Button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = grpIdInput,
+                    onValueChange = { grpIdInput = it },
+                    label = { Text("Index-Kennung") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, imeAction = ImeAction.Done),
+                    modifier = Modifier.weight(1f),
+                    trailingIcon = {
+                        if (grpIdInput != row.groupId) {
+                            IconButton(onClick = {
+                                if (grpIdInput.trim().isEmpty()) {
+                                    Toast.makeText(context, "Index-ID darf nicht leer sein", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    viewModel.updateGroupDetails(
+                                        protocolId = protocolId,
+                                        oldGroupId = row.groupId,
+                                        newGroupId = grpIdInput.trim(),
+                                        newGroupName = grpNameInput,
+                                        newGroupType = row.groupType
+                                    )
+                                    Toast.makeText(context, "Kennung aktualisiert.", Toast.LENGTH_SHORT).show()
+                                }
+                            }) {
+                                Icon(Icons.Default.Check, contentDescription = "Übernehmen", tint = IndustrialPrimary)
+                            }
+                        }
+                    }
+                )
+
+                IconButton(
+                    onClick = { showDeleteDialog = true },
+                    modifier = Modifier.size(48.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    Icon(Icons.Default.Delete, contentDescription = "Löschen", tint = IndustrialError)
+                }
+            }
+
+            // Second Row: Segment Name Textfield
+            OutlinedTextField(
+                value = grpNameInput,
+                onValueChange = { newVal ->
+                    grpNameInput = newVal
+                    viewModel.updateGroupDetails(
+                        protocolId = protocolId,
+                        oldGroupId = row.groupId,
+                        newGroupId = row.groupId,
+                        newGroupName = newVal,
+                        newGroupType = row.groupType
+                    )
+                },
+                label = { Text("Name (Auslösegruppe / Einbauort)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            // Third Row: Option Type scroll list Chips
+            Text(
+                text = "Gruppentyp (Typisierung):",
+                fontWeight = FontWeight.Bold,
+                fontSize = 11.sp,
+                color = IndustrialOutline
+            )
+
+            val groupTypeOptions = listOf(
+                "NAM" to "Normal",
+                "AM" to "Alarm",
+                "TECH" to "Störung",
+                "HLK" to "HLK",
+                "GLT" to "GLT",
+                "VS" to "Verschluss"
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                groupTypeOptions.forEach { (typeVal, typeLabel) ->
+                    val isSelected = row.groupType == typeVal
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = {
+                            viewModel.updateGroupDetails(
+                                protocolId = protocolId,
+                                oldGroupId = row.groupId,
+                                newGroupId = row.groupId,
+                                newGroupName = row.groupName,
+                                newGroupType = typeVal
+                            )
+                        },
+                        label = { Text("$typeVal ($typeLabel)") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = IndustrialPrimaryContainer,
+                            selectedLabelColor = IndustrialPrimary
+                        )
+                    )
+                }
+            }
+
+            HorizontalDivider(color = IndustrialOutlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
+
+            // Fourth Row: Slot column buttons
+            Text(
+                text = "Melder-Typisierung je Spalten-Slot (Tippen zum Ändern):",
+                fontWeight = FontWeight.Bold,
+                fontSize = 11.sp,
+                color = IndustrialOutline
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                row.cells.forEach { cell ->
+                    val hasDet = cell.detectorType != "-"
+                    val displayType = if (cell.detectorType == "-") "Inaktiv" else cell.detectorType
+
+                    Card(
+                        modifier = Modifier.clickable {
+                            onSelectCell(row, cell)
+                        },
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (hasDet) LightSurfaceHigh else Color.Transparent
+                        ),
+                        border = BorderStroke(1.dp, if (hasDet) IndustrialOutlineVariant else IndustrialOutlineVariant.copy(alpha = 0.4f)),
+                        shape = RoundedCornerShape(8.dp)
                     ) {
-                        Column {
-                            Text(text = grpId, fontWeight = FontWeight.Bold, color = IndustrialPrimary)
-                            Text(text = grpName, fontSize = 14.sp, color = IndustrialOutline)
+                        Column(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "Slot ${cell.slotKey}",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (hasDet) IndustrialPrimary else IndustrialOutline
+                            )
+                            Text(
+                                text = displayType,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = if (hasDet) IndustrialPrimary else IndustrialOutline.copy(alpha = 0.6f)
+                            )
                         }
                     }
                 }
