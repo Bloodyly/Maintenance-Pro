@@ -76,6 +76,7 @@ Das Sicherheitskonzept basiert auf einer strikten Trennung zwischen dem öffentl
     2.  `\\Protokolle\`: Enthält immer das **aktuellste**, vollständig ausgefüllte Revisionsprotokoll als PDF. Pro Objekt/Vertragsnummer existiert hier stets nur *eine* Datei.
     3.  `\\Archiv\`: Enthält ältere oder überarbeitete Prüfberichte in einer strukturierten Ordnerhierarchie:
         `[Vertragsnummer] / [Monatsjahr] / [Halbjahr] / [Vertragsnummer]_V[Version].pdf`
+*   **💡 Optionaler Betrieb:** Wenn bereits ein physischer NAS-Server (z.B. Synology, QNAP, TrueNAS) im Netz vorhanden ist, kann dieser Container komplett abgeschaltet werden. Details dazu siehe unten.
 
 ### 4. ⚙️ ProtocolCore
 *   **Zweck:** Der clevere, automatische Service-Hintergrund-Daemon.
@@ -88,6 +89,37 @@ Das Sicherheitskonzept basiert auf einer strikten Trennung zwischen dem öffentl
 ### 5. 🗄️ ProtocolDB
 *   **Zweck:** Interner SQLite-Verzeichnishalter. Bindet das `db_data` Volume und stellt Werkzeuge zur Integritätsprüfung bereit.
 *   **Sicherheitszone:** Internes Firmennetzwerk (`internal_lan`).
+
+---
+
+## 💾 Integration eines physischen NAS (Optionaler Samba-Betrieb)
+
+Wenn Sie den integrierten Samba-Container nicht benötigen und stattdessen ein bestehendes Firmen-NAS ankoppeln möchten, haben Sie zwei Möglichkeiten in `docker-compose.yml`:
+
+### Option A: Direktes Host-Path Binding (Empfohlen)
+Besitzt der Docker-Host bereits einen Mount zum NAS (z.B. `/mnt/nas/wartungen`), können Sie diesen direkt in die Services `webui` und `protocol_core` schleifen:
+1. Kommentieren Sie den Dienst `samba` in `docker-compose.yml` aus oder löschen Sie ihn.
+2. Ändern Sie die Volumes bei `webui` und `protocol_core` von `samba_data:/samba_shares` wie folgt um:
+   ```yaml
+   volumes:
+     - db_data:/shared_db:ro
+     - /mnt/nas/wartungen:/samba_shares:rw  # Lokales Verzeichnis oder NAS-Einhängepunkt
+   ```
+
+### Option B: Direkter Docker-CIFS-Volume-Treiber
+Sie können Docker anweisen, die SMB-Freigabe des NAS direkt beim Start der Container per Netzwerk zu mounten:
+1. Kommentieren oder löschen Sie den Dienst `samba` in `docker-compose.yml`.
+2. Aktivieren Sie die Volume-Konfiguration am Ende der `docker-compose.yml`:
+   ```yaml
+   volumes:
+     db_data:
+     samba_data:
+       driver: local
+       driver_opts:
+         type: "cifs"
+         device: "//192.168.1.100/my-wartung-share"   # IP/Freigabename Ihres NAS
+         o: "username=nas_user,password=nas_pass,vers=3.0,rw,uid=1000,gid=1000"
+   ```
 
 ---
 

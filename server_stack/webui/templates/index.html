@@ -1,0 +1,1155 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maintenance Pro - Zentral-Kundenverwaltung & Leitstelle</title>
+    <!-- AlpineJS for reactive frontend states -->
+    <script src="https://unpkg.com/alpinejs" defer></script>
+    <!-- Tailwind CSS for modern aesthetics -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide CDN for beautiful iconography -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .font-mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen flex flex-col" x-data="webui">
+
+    <!-- 1. Header / Corporate Intranet Banner -->
+    <header class="bg-[#003D9B] text-white border-b-2 border-slate-200">
+        <div class="max-w-7xl mx-auto px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
+            <div class="flex items-center gap-3">
+                <div class="bg-white text-[#003D9B] p-2 rounded-lg font-bold text-xl uppercase tracking-wider shadow-md">
+                    MP
+                </div>
+                <div>
+                    <h1 class="text-lg font-bold tracking-tight">Maintenance Pro Leitstelle</h1>
+                    <p class="text-xs text-blue-200">Zentralserver & Administrator-Kundenverwaltung</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-4">
+                <div class="flex items-center gap-2 bg-[#002e75] px-3 py-1.5 rounded-full border border-blue-400/30 text-xs text-blue-100">
+                    <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span>Secure VPN Link / VLAN 20 active</span>
+                </div>
+                <div class="flex items-center gap-1.5 text-xs text-blue-200">
+                    <span>Leitstelle Codewort:</span>
+                    <strong class="font-mono bg-[#002e75] px-2 py-1 rounded text-white text-[10px]">77-XJ-900-PLX-22</strong>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- 2. Main Navigation Rail -->
+    <nav class="bg-white border-b border-slate-200">
+        <div class="max-w-7xl mx-auto px-6 flex justify-between items-center">
+            <div class="flex gap-1.5 py-3">
+                <button 
+                    @click="activeTab = 'dashboard'; showDetailView = false;" 
+                    class="px-4 py-2 text-sm font-medium rounded-lg transition-all flex items-center gap-2"
+                    :class="activeTab === 'dashboard' ? 'bg-slate-100 text-slate-950 font-semibold' : 'text-slate-600 hover:text-slate-950 hover:bg-slate-50'"
+                >
+                    <i data-lucide="layout-dashboard" class="w-4.5 h-4.5"></i>
+                    <span>Prüfpanele & Kunden</span>
+                </button>
+                <button 
+                    @click="activeTab = 'technicians'" 
+                    class="px-4 py-2 text-sm font-medium rounded-lg transition-all flex items-center gap-2"
+                    :class="activeTab === 'technicians' ? 'bg-slate-100 text-slate-950 font-semibold' : 'text-slate-600 hover:text-slate-950 hover:bg-slate-50'"
+                >
+                    <i data-lucide="users" class="w-4.5 h-4.5"></i>
+                    <span>Techniker-Verwaltung</span>
+                </button>
+                <button 
+                    @click="activeTab = 'settings'" 
+                    class="px-4 py-2 text-sm font-medium rounded-lg transition-all flex items-center gap-2"
+                    :class="activeTab === 'settings' ? 'bg-slate-100 text-slate-950 font-semibold' : 'text-slate-600 hover:text-slate-950 hover:bg-slate-50'"
+                >
+                    <i data-lucide="settings" class="w-4.5 h-4.5"></i>
+                    <span>System-Definitionen</span>
+                </button>
+            </div>
+            <div>
+                <button 
+                    @click="openCreateProtocol()" 
+                    class="bg-[#003D9B] text-white hover:bg-blue-800 text-xs font-semibold px-4 py-2.5 rounded-lg flex items-center gap-2 transition shadow-sm"
+                >
+                    <i data-lucide="plus-circle" class="w-4 h-4"></i>
+                    <span>Neuer Wartungsvertrag</span>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 3. Primary Workspace -->
+    <main class="flex-grow max-w-7xl w-full mx-auto px-6 py-8">
+        
+        <!-- Toast Status Overlay -->
+        <div x-show="toast.show" 
+             x-transition:enter="transition ease-out duration-300"
+             x-transition:enter-start="opacity-0 transform translate-y-2"
+             x-transition:enter-end="opacity-100 transform translate-y-0"
+             x-transition:leave="transition ease-in duration-200"
+             x-transition:leave-start="opacity-100 transform translate-y-0"
+             x-transition:leave-end="opacity-0 transform translate-y-2"
+             class="fixed bottom-6 right-6 z-55 max-w-sm w-full bg-white border border-slate-200 rounded-xl shadow-xl p-4 flex items-start gap-3"
+             style="display: none;">
+            <div class="p-1 rounded-full text-white" :class="toast.type === 'success' ? 'bg-emerald-500' : 'bg-red-500'">
+                <template x-if="toast.type === 'success'">
+                    <i data-lucide="check-circle" class="w-5 h-5"></i>
+                </template>
+                <template x-if="toast.type !== 'success'">
+                    <i data-lucide="alert-circle" class="w-5 h-5"></i>
+                </template>
+            </div>
+            <div>
+                <h4 class="text-sm font-semibold text-slate-900" x-text="toast.type === 'success' ? 'Erfolgreich' : 'Hinweis'"></h4>
+                <p class="text-xs text-slate-600 mt-0.5" x-text="toast.message"></p>
+            </div>
+        </div>
+
+        <!-- TAB: DASHBOARD -->
+        <div x-show="activeTab === 'dashboard'" x-transition class="space-y-8">
+            
+            <!-- Statistics Bento Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                    <div class="flex justify-between items-start">
+                        <span class="text-xs font-semibold uppercase text-slate-500 tracking-wider">Kundenobjekte</span>
+                        <div class="p-1.5 rounded-lg bg-blue-50 text-blue-600">
+                            <i data-lucide="building-2" class="w-4 h-4"></i>
+                        </div>
+                    </div>
+                    <div class="mt-4 flex items-baseline gap-2">
+                        <span class="text-3xl font-extrabold tracking-tight font-mono text-slate-900" x-text="stats.total"></span>
+                        <span class="text-xs text-slate-500">Verträge registriert</span>
+                    </div>
+                </div>
+
+                <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                    <div class="flex justify-between items-start">
+                        <span class="text-xs font-semibold uppercase text-slate-500 tracking-wider">Bereit für App</span>
+                        <div class="p-1.5 rounded-lg bg-amber-50 text-amber-600">
+                            <i data-lucide="smartphone" class="w-4 h-4"></i>
+                        </div>
+                    </div>
+                    <div class="mt-4 flex items-baseline gap-2">
+                        <span class="text-3xl font-extrabold tracking-tight font-mono text-slate-900" x-text="stats.pending"></span>
+                        <span class="text-xs text-slate-500">Wartung ausstehend</span>
+                    </div>
+                </div>
+
+                <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                    <div class="flex justify-between items-start">
+                        <span class="text-xs font-semibold uppercase text-slate-500 tracking-wider">Synchronisiert</span>
+                        <div class="p-1.5 rounded-lg bg-emerald-50 text-emerald-600">
+                            <i data-lucide="cloud-lightning" class="w-4 h-4"></i>
+                        </div>
+                    </div>
+                    <div class="mt-4 flex items-baseline gap-2">
+                        <span class="text-3xl font-extrabold tracking-tight font-mono text-slate-900" x-text="stats.synced"></span>
+                        <span class="text-xs text-slate-500">Dossier archiviert</span>
+                    </div>
+                </div>
+
+                <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                    <div class="flex justify-between items-start">
+                        <span class="text-xs font-semibold uppercase text-slate-500 tracking-wider">Samba Freigabe</span>
+                        <div class="p-1.5 rounded-lg bg-purple-50 text-purple-600">
+                            <i data-lucide="folder-network" class="w-4 h-4"></i>
+                        </div>
+                    </div>
+                    <div class="mt-4 flex items-baseline gap-2">
+                        <span class="text-md font-bold tracking-tight text-slate-700">Offline NAS</span>
+                        <span class="text-xs text-slate-500">/samba_shares/Protokolle</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Primary Tables -->
+            <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden" x-show="!showDetailView">
+                <div class="border-b border-slate-100 px-6 py-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                    <div>
+                        <h3 class="text-base font-bold text-slate-900">Aktive Wartungsverträge & Prüflisten</h3>
+                        <p class="text-xs text-slate-500">Statusübersicht der im SQL DBMS hinterlegten Sicherheitsanlagen</p>
+                    </div>
+                    <div class="flex items-center gap-2 w-full md:w-auto">
+                        <input 
+                            type="text" 
+                            x-model="searchQuery" 
+                            placeholder="Anlage, Adresse oder Vertrag suchen..." 
+                            class="border border-slate-200 px-3.5 py-1.5 rounded-lg text-xs w-full md:w-64 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        >
+                    </div>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-slate-50 text-slate-500 text-[10px] font-semibold uppercase border-b border-slate-200/50">
+                                <th class="px-6 py-3.5">ID</th>
+                                <th class="px-6 py-3.5">Kunde & Objektadresse</th>
+                                <th class="px-6 py-3.5">Vertragsnummer</th>
+                                <th class="px-6 py-3.5">Typ & Intervall</th>
+                                <th class="px-6 py-3.5">Status (App-Schnittstelle)</th>
+                                <th class="px-6 py-3.5">Letzte Änderung</th>
+                                <th class="px-6 py-3.5 text-right">Aktionen</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100 text-sm">
+                            <template x-for="p in filteredProtocols()" :key="p.id">
+                                <tr class="hover:bg-slate-50/50 transition">
+                                    <td class="px-6 py-4.5 font-mono text-xs font-bold text-slate-400" x-text="p.id"></td>
+                                    <td class="px-6 py-4.5">
+                                        <div class="font-semibold text-slate-950" x-text="p.name"></div>
+                                        <div class="text-xs text-slate-500 mt-0.5 flex items-center gap-1">
+                                            <i data-lucide="map-pin" class="w-3.5 h-3.5 text-slate-400"></i>
+                                            <span x-text="p.address"></span>
+                                        </div>
+                                    </td>
+                                    <td class="px-6 py-4.5">
+                                        <span class="font-mono bg-slate-100 px-2.5 py-1 rounded-md text-xs font-semibold text-slate-700" x-text="p.contract_number"></span>
+                                    </td>
+                                    <td class="px-6 py-4.5">
+                                        <div class="flex flex-col gap-1">
+                                            <span class="text-xs font-semibold w-max" x-text="p.system_type"></span>
+                                            <span class="text-[10px] text-slate-500" x-text="p.interval"></span>
+                                        </div>
+                                    </td>
+                                    <td class="px-6 py-4.5">
+                                        <template x-if="p.status === 'ready_to_download'">
+                                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-100/50">
+                                                <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                                                Bereit für App
+                                            </span>
+                                        </template>
+                                        <template x-if="p.status === 'downloaded'">
+                                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-100/50">
+                                                <span class="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+                                                In Bearbeitung
+                                            </span>
+                                        </template>
+                                        <template x-if="p.status === 'upload_pending'">
+                                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-purple-50 text-purple-700 border border-purple-100/50 animate-pulse">
+                                                <span class="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
+                                                Übertragung ausstehend
+                                            </span>
+                                        </template>
+                                        <template x-if="p.status === 'synchronized'">
+                                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-100/50">
+                                                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                                                Synchronisiert
+                                            </span>
+                                        </template>
+                                    </td>
+                                    <td class="px-6 py-4.5">
+                                        <div class="text-xs font-medium text-slate-700" x-text="p.last_edited_by"></div>
+                                        <div class="text-[10px] text-slate-400 mt-0.5" x-text="p.last_edited_at"></div>
+                                    </td>
+                                    <td class="px-6 py-4.5 text-right">
+                                        <div class="flex items-center justify-end gap-1.5">
+                                            <button 
+                                                @click="viewProtocolDetails(p.id)"
+                                                class="px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs font-semibold text-slate-700 rounded-lg transition"
+                                            >
+                                                Einsicht / Detail
+                                            </button>
+                                            <template x-if="p.has_pdf">
+                                                <a 
+                                                    :href="'/download_pdf/' + p.contract_number" 
+                                                    class="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 transition"
+                                                >
+                                                    <i data-lucide="file-text" class="w-3.5 h-3.5"></i>
+                                                    <span>PDF</span>
+                                                </a>
+                                            </template>
+                                            <button 
+                                                @click="triggerReset(p.id)"
+                                                class="p-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-slate-400 hover:text-slate-800 transition"
+                                                title="Interval zurücksetzen / Neu planen"
+                                            >
+                                                <i data-lucide="arrow-path-repeat" class="w-4 h-4"></i>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
+                            <template x-if="filteredProtocols().length === 0">
+                                <tr>
+                                    <td colspan="7" class="text-center py-10 text-xs text-slate-400">
+                                        Keine Wartungsverträge den Suchkriterien entsprechend gefunden.
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- DETAILED MATRIX VIEW & ACTION SHEET (Shown when viewing a single protocol) -->
+            <div class="space-y-8" x-show="showDetailView">
+                <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                    <div class="flex items-center gap-4">
+                        <button 
+                            @click="showDetailView = false" 
+                            class="p-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-slate-700 transition"
+                        >
+                            <i data-lucide="arrow-left" class="w-4 h-4"></i>
+                        </button>
+                        <div>
+                            <span class="text-[10px] uppercase font-bold tracking-widest text-[#003D9B]" x-text="selectedProtocol ? selectedProtocol.system_type + ' Wartungsprotokoll' : ''"></span>
+                            <h2 class="text-lg font-bold text-slate-950" x-text="selectedProtocol ? selectedProtocol.name : ''"></h2>
+                            <p class="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                                <i data-lucide="map-pin" class="w-3.5 h-3.5"></i>
+                                <span x-text="selectedProtocol ? selectedProtocol.address : ''"></span>
+                            </p>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2 w-full md:w-auto">
+                        <button 
+                            @click="openEditProtocol()" 
+                            class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-xs font-semibold rounded-lg text-slate-800 flex items-center gap-2"
+                        >
+                            <i data-lucide="edit" class="w-4 h-4"></i>
+                            <span>Editor öffnen</span>
+                        </button>
+                        <button 
+                            @click="deleteProtocol(selectedProtocol.id)" 
+                            class="px-4 py-2 bg-red-50 hover:bg-red-100 text-xs font-semibold rounded-lg text-red-600 border border-red-200 flex items-center gap-2"
+                        >
+                            <i data-lucide="trash-2" class="w-4 h-4"></i>
+                            <span>Vertrag löschen</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Matrix State Visualizer -->
+                <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden p-6 space-y-4">
+                    <div>
+                        <h4 class="text-sm font-bold text-slate-900">Techniker Messdatenübersicht</h4>
+                        <p class="text-xs text-slate-500">Diese Ansicht zeigt den aktuellen, unverschlüsselten Ist-Zustand aller Melder im SQLite DBMS an.</p>
+                    </div>
+
+                    <div class="overflow-x-auto border border-slate-100 rounded-xl">
+                        <table class="w-full text-left border-collapse font-mono text-xs">
+                            <thead>
+                                <tr class="bg-slate-50 border-b border-slate-200">
+                                    <th class="px-4 py-3 text-slate-500 text-[10px] font-semibold w-24">Gruppe</th>
+                                    <th class="px-4 py-3 text-slate-500 text-[10px] font-semibold w-48">Bereich bezeichnung</th>
+                                    <th class="px-4 py-3 text-slate-500 text-[10px] font-semibold w-20">Art</th>
+                                    <template x-for="col in (selectedProtocol ? selectedProtocol.columns : [])" :key="col">
+                                        <th class="px-2 py-3 text-center text-slate-400 font-bold" x-text="'M' + col.padStart(2, '0')"></th>
+                                    </template>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                <template x-for="row in (selectedProtocol ? selectedProtocol.rows : [])" :key="row.groupId">
+                                    <tr class="hover:bg-slate-50/50">
+                                        <td class="px-4 py-3 font-semibold text-slate-500" x-text="row.groupId"></td>
+                                        <td class="px-4 py-3 text-slate-900 font-sans" x-text="row.groupName"></td>
+                                        <td class="px-4 py-3">
+                                            <span class="px-2 py-0.5 rounded text-[10px] font-bold"
+                                                  :class="row.groupType === 'TECH' ? 'bg-indigo-100 text-indigo-700' : (row.groupType === 'VS' ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-600')">
+                                                <span x-text="row.groupType"></span>
+                                            </span>
+                                        </td>
+                                        <template x-for="cell in row.cells" :key="cell.slotKey">
+                                            <td class="px-2 py-3 text-center">
+                                                <div class="inline-flex flex-col items-center justify-center min-w-10 p-1.5 rounded"
+                                                     :class="cell.value === 'Def.' ? 'bg-red-50 border border-red-200/50 text-red-600' : (cell.value && cell.value !== '-' ? 'bg-green-50 border border-green-200/50 text-green-700' : 'bg-slate-50 text-slate-400')">
+                                                    <!-- Detector Symbol -->
+                                                    <span class="text-[9px] font-semibold tracking-wider opacity-60" x-text="cell.detectorType"></span>
+                                                    <!-- Cell value -->
+                                                    <span class="text-xs font-bold mt-0.5" x-text="cell.value || '•'"></span>
+                                                </div>
+                                            </td>
+                                        </template>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Samba Archiv Log recursively listed -->
+                <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-4">
+                    <div>
+                        <h4 class="text-sm font-bold text-slate-900">Historisches Samba PDF-Archiv</h4>
+                        <p class="text-xs text-slate-500 font-sans">Dokumentenverlauf im Sambashare Verzeichnis <span class="font-mono bg-slate-100 px-1 rounded text-slate-700">/samba_shares/Archiv</span>.</p>
+                    </div>
+
+                    <div class="overflow-hidden border border-slate-100 rounded-xl">
+                        <table class="w-full text-left border-collapse text-xs">
+                            <thead>
+                                <tr class="bg-slate-50 border-b border-slate-100 text-slate-400 font-semibold uppercase text-[10px]">
+                                    <th class="px-4 py-3">Archivjahr</th>
+                                    <th class="px-4 py-3">Wartungs-Halbjahr</th>
+                                    <th class="px-4 py-3">Dateiname</th>
+                                    <th class="px-4 py-3">Größe (KB)</th>
+                                    <th class="px-4 py-3 text-right">Verbindung</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                <template x-for="arc in archives" :key="arc.filename">
+                                    <tr class="hover:bg-slate-50 transition">
+                                        <td class="px-4 py-3 font-bold font-mono text-slate-700" x-text="arc.year"></td>
+                                        <td class="px-4 py-3 text-slate-600" x-text="arc.half_year"></td>
+                                        <td class="px-4 py-3 font-mono text-slate-600" x-text="arc.filename"></td>
+                                        <td class="px-4 py-3 text-slate-500 font-mono" x-text="arc.size_kb + ' KB'"></td>
+                                        <td class="px-4 py-3 text-right">
+                                            <a :href="arc.path" class="inline-flex items-center gap-1 text-[#003D9B] font-bold hover:underline">
+                                                <span>Download PDF</span>
+                                                <i data-lucide="arrow-down-to-line" class="w-3.5 h-3.5"></i>
+                                            </a>
+                                        </td>
+                                    </tr>
+                                </template>
+                                <template x-if="archives.length === 0">
+                                    <tr>
+                                        <td colspan="5" class="text-center py-6 text-slate-400">
+                                            Ausgelagerte Turnusberichte existieren für diesen Vertrag noch nicht.
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: TECHNICIANS -->
+        <div x-show="activeTab === 'technicians'" x-transition class="space-y-8">
+            <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-6">
+                <div class="flex justify-between items-center border-b border-slate-100 pb-5">
+                    <div>
+                        <h3 class="text-base font-bold text-slate-950">Intranet Außendienst Techniker-Verzeichnis</h3>
+                        <p class="text-xs text-slate-500 mt-1">Hier angemeldete Mitarbeiter weisen sich über das Tablet via AES-GCM-Schlüsselkarte aus.</p>
+                    </div>
+                    <button 
+                        @click="openAddTechModal()" 
+                        class="bg-[#003D9B] text-white hover:bg-blue-800 text-xs font-semibold px-4 py-2 rounded-lg flex items-center gap-1.5 transition"
+                    >
+                        <i data-lucide="plus" class="w-4 h-4"></i>
+                        <span>Mitarbeiter anlegen</span>
+                    </button>
+                </div>
+
+                <div class="overflow-x-auto border border-slate-100 rounded-xl">
+                    <table class="w-full text-left border-collapse text-sm">
+                        <thead>
+                            <tr class="bg-slate-50 border-b border-slate-200 text-slate-500 text-[10px] font-semibold uppercase">
+                                <th class="px-6 py-3.5">Mitarbeiter ID</th>
+                                <th class="px-6 py-3.5">Name</th>
+                                <th class="px-6 py-3.5">App Benutzername</th>
+                                <th class="px-6 py-3.5">Authentifizierungstyp</th>
+                                <th class="px-6 py-3.5 text-right">Aktionen</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100 text-slate-700">
+                            <template x-for="tech in technicians" :key="tech.id">
+                                <tr class="hover:bg-slate-50/50 transition">
+                                    <td class="px-6 py-4 font-mono font-bold text-xs text-[#003D9B]" x-text="tech.id"></td>
+                                    <td class="px-6 py-4 font-semibold text-slate-900" x-text="tech.name"></td>
+                                    <td class="px-6 py-4 font-mono text-xs" x-text="tech.username"></td>
+                                    <td class="px-6 py-4">
+                                        <span class="inline-flex items-center gap-1 bg-blue-50 text-blue-800 border border-blue-100 text-[10px] font-bold px-2 py-0.5 rounded uppercase">
+                                            AES PBKDF2 Token
+                                        </span>
+                                    </td>
+                                    <td class="px-6 py-4 text-right">
+                                        <div class="flex justify-end gap-1.5">
+                                            <button 
+                                                @click="editTech(tech)" 
+                                                class="px-2.5 py-1 bg-slate-50 hover:bg-slate-100 border border-slate-100 rounded text-xs"
+                                            >
+                                                Bearbeiten
+                                            </button>
+                                            <button 
+                                                @click="deleteTech(tech.id)" 
+                                                class="px-2.5 py-1 bg-red-50 hover:bg-red-100 hover:text-red-700 border border-red-200 text-red-600 rounded text-xs"
+                                            >
+                                                Löschen
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: SETTINGS & BRAND IDENTITIES -->
+        <div x-show="activeTab === 'settings'" x-transition class="space-y-8">
+            <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-6">
+                <div>
+                    <h3 class="text-base font-bold text-slate-950">System-Definitionen & globales Signalrouting</h3>
+                    <p class="text-xs text-slate-500 mt-1">Hier konfigurierst du standardisierte Melder-Abkürzungen, Matrixspalten-Standardwerte, und Farbzuweisungen.</p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <template x-for="(set, key) in systemSettings" :key="key">
+                        <div class="border border-slate-200 rounded-xl p-5 space-y-3 shadow-sm bg-white">
+                            <div class="flex justify-between items-center">
+                                <div class="flex items-center gap-2">
+                                    <span class="w-3.5 h-3.5 rounded-full" :class="set.badgeColor"></span>
+                                    <h4 class="font-bold text-slate-800" x-text="key + ' - ' + set.name"></h4>
+                                </div>
+                            </div>
+                            <div class="text-xs space-y-2">
+                                <div>
+                                    <span class="text-slate-400 font-medium font-sans">Unterstützte Melder-Typen:</span>
+                                    <div class="flex flex-wrap gap-1.5 mt-1 font-mono">
+                                        <template x-for="detType in set.detectors" :key="detType">
+                                            <span class="bg-slate-100 px-2 py-0.5 rounded text-slate-700 font-semibold text-[10px]" x-text="detType"></span>
+                                        </template>
+                                    </div>
+                                </div>
+                                <div>
+                                    <span class="text-slate-400 font-medium font-sans">Quartalsprüfungsergebnisse:</span>
+                                    <div class="flex flex-wrap gap-1.5 mt-1 font-mono">
+                                        <template x-for="val in set.values" :key="val">
+                                            <span class="bg-blue-50 text-[#003D9B] px-2 py-0.5 rounded text-[10px] font-bold" x-text="val"></span>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- 4. MODAL: UNIFIED CONTRACT DRAW-BASED CREATOR/EDITOR -->
+    <div 
+        x-show="isEditorOpen" 
+        class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 overflow-y-auto flex justify-center p-4"
+        style="display: none;"
+    >
+        <div 
+            @click.outside="isEditorOpen = false"
+            class="bg-white border border-slate-200 rounded-2xl w-full max-w-6xl shadow-2xl overflow-hidden my-4 flex flex-col"
+            x-transition
+        >
+            <div class="border-b border-indigo-100 bg-slate-50 px-6 py-4 flex justify-between items-center">
+                <div>
+                    <h3 class="text-base font-bold text-[#003D9B]" x-text="editorMode === 'create' ? 'Neuen Wartungsvertrag entwerfen' : 'Protokoll strukturieren & pflegen'"></h3>
+                    <p class="text-xs text-slate-500 mt-1">Spezifizierung der Meldergruppen, Linien, und Messpunkte</p>
+                </div>
+                <button @click="isEditorOpen = false" class="p-1.5 rounded-full hover:bg-slate-200 transition text-slate-400">
+                    <i data-lucide="close" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <div class="p-6 space-y-6 flex-grow overflow-y-auto">
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 uppercase mb-1">Gebäude / Kunde</label>
+                        <input type="text" x-model="editorData.name" class="border border-slate-200 rounded-lg px-3 py-1.5 w-full text-xs" placeholder="z.B. Klinik Nord B1">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 uppercase mb-1">Standort / Adresse</label>
+                        <input type="text" x-model="editorData.address" class="border border-slate-200 rounded-lg px-3 py-1.5 w-full text-xs" placeholder="Musterstr. 10">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 uppercase mb-1">Vertragsnummer / Prüf-ID</label>
+                        <input type="text" x-model="editorData.contract_number" class="border border-slate-200 rounded-lg px-3 py-1.5 w-full text-xs" placeholder="V-2026-X">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 uppercase mb-1">Anlagentyp</label>
+                        <select x-model="editorData.system_type" @change="onEditorSystemTypeChange()" class="border border-slate-200 rounded-lg px-3 py-1.5 w-full text-xs">
+                            <option value="BMA">BMA (Brandmeldeanlage)</option>
+                            <option value="EMA">EMA (Einbruchmeldeanlage)</option>
+                            <option value="ELA">ELA (Elektroakustik)</option>
+                            <option value="Lichtruf">Lichtruf (Rufanlage)</option>
+                            <option value="SLA">SLA (Sprechanlage)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 uppercase mb-1">Prüfintervall</label>
+                        <select x-model="editorData.interval" class="border border-slate-200 rounded-lg px-3 py-1.5 w-full text-xs">
+                            <option value="Jährlich">Jährlich</option>
+                            <option value="Halbjährlich">Halbjährlich</option>
+                            <option value="Vierteljährlich">Vierteljährlich</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 uppercase mb-1">Status</label>
+                        <select x-model="editorData.status" class="border border-slate-200 rounded-lg px-3 py-1.5 w-full text-xs">
+                            <option value="ready_to_download">Prüfung offen / Download freigegeben</option>
+                            <option value="downloaded">Ausgecheckt beim Techniker</option>
+                            <option value="synchronized">Abgeschlossen / Sync beendet</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- IMPORT FILE MODULE -->
+                <div class="bg-indigo-50/50 border border-indigo-100 rounded-xl p-4 space-y-3">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="import" class="w-4.5 h-4.5 text-[#003D9B]"></i>
+                        <h4 class="text-xs font-bold text-[#003D9B] uppercase tracking-wider">Muster-Import-Assistent</h4>
+                    </div>
+                    <div class="flex flex-col md:flex-row items-start md:items-center gap-4 text-xs font-sans">
+                        <div class="flex items-center gap-1.5">
+                            <span class="text-slate-500">Dateityp:</span>
+                            <select x-model="editorImportFileType" class="border border-slate-200 bg-white rounded px-2 py-1">
+                                <option value="esser">ESSER .etb (Werksprogrammierung)</option>
+                                <option value="csv">CSV-Tabelle (Gruppe;Name;Slot;Typ;Wert)</option>
+                                <option value="notifier">NOTIFIER Schema (Import-Simulat)</option>
+                                <option value="hekatron">HEKATRON Schema (Import-Simulat)</option>
+                            </select>
+                        </div>
+                        <input type="file" @change="importProtocolFile($event)" class="text-xs file:mr-4 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-[#003D9B] hover:file:bg-indigo-100">
+                    </div>
+                    <p class="text-[10px] text-slate-400">Automatische Dekodierung und Übertragung der Daten direkt aus dem Admin-Importprozess.</p>
+                </div>
+
+                <!-- Matrix Canvas drawing settings -->
+                <div class="bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-center gap-4">
+                    <div class="flex items-center gap-1.5 border-r border-slate-200 pr-4">
+                        <i data-lucide="paintbrush" class="w-4 h-4 text-slate-400"></i>
+                        <span class="text-xs font-bold text-slate-800">Muster-Pinselfunktionen:</span>
+                    </div>
+
+                    <div class="flex items-center gap-3 text-xs">
+                        <span class="text-slate-500">Modus:</span>
+                        <label class="inline-flex items-center gap-1">
+                            <input type="radio" value="type" x-model="paintTool" class="text-blue-600 focus:ring-0"> Splittyp pinseln
+                        </label>
+                        <label class="inline-flex items-center gap-1">
+                            <input type="radio" value="trigger" x-model="paintTool" class="text-blue-600 focus:ring-0"> Ergebnis pinseln
+                        </label>
+                    </div>
+
+                    <div class="flex items-center gap-1 bg-slate-50 p-1 rounded-lg border border-slate-200">
+                        <template x-if="paintTool === 'type'">
+                            <select x-model="paintValue" class="bg-transparent border-none text-xs font-bold focus:outline-none focus:ring-0">
+                                <template x-for="t in editorData.detector_types" :key="t">
+                                    <option :value="t" x-text="t"></option>
+                                </template>
+                            </select>
+                        </template>
+                        <template x-if="paintTool === 'trigger'">
+                            <select x-model="paintValue" class="bg-transparent border-none text-xs font-bold focus:outline-none focus:ring-0">
+                                <option value="">(Leeren)</option>
+                                <template x-for="val in editorData.applicable_values" :key="val">
+                                    <option :value="val" x-text="val"></option>
+                                </template>
+                            </select>
+                        </template>
+                    </div>
+                    <span class="text-[10px] text-slate-400">Pinsel aktivieren und einfach auf die Felder der Melder-Matrix tippen um Werte zügig zu vergeben.</span>
+                </div>
+
+                <!-- LIVE GRID MATRIX EDITOR -->
+                <div class="space-y-3">
+                    <div class="flex justify-between items-center">
+                        <h4 class="text-xs font-bold text-slate-800 uppercase tracking-widest">Meldergruppen & Linien-Layout</h4>
+                        <div class="flex gap-2">
+                            <button @click="addEditorColumn()" class="px-2.5 py-1.5 border border-slate-200 text-xs text-slate-700 bg-slate-50 rounded-lg hover:bg-slate-100 font-bold flex items-center gap-1">
+                                Spalte anlegen (Slot)
+                            </button>
+                            <button @click="removeEditorColumn()" class="px-2.5 py-1.5 border border-slate-200 text-xs text-slate-700 bg-slate-50 rounded-lg hover:bg-slate-100 font-bold flex items-center gap-1">
+                                Spalte löschen
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="overflow-x-auto border border-slate-200 rounded-xl max-h-96">
+                        <table class="w-full text-left border-collapse font-mono text-xs">
+                            <thead>
+                                <tr class="bg-slate-50 border-b border-secondary">
+                                    <th class="px-4 py-3 text-slate-400 text-[10px] w-24 uppercase">Gruppe ID</th>
+                                    <th class="px-4 py-3 text-slate-400 text-[10px] w-48 uppercase">Linien / Gruppenname</th>
+                                    <th class="px-4 py-3 text-slate-400 text-[10px] w-24 uppercase">Typ</th>
+                                    <template x-for="col in editorData.columns" :key="col">
+                                        <th class="px-2 py-3 text-center text-slate-500 font-bold" x-text="'M' + col.padStart(2, '0')"></th>
+                                    </template>
+                                    <th class="px-3 py-3 w-10 text-right"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="(row, rIndex) in editorData.rows" :key="rIndex">
+                                    <tr class="hover:bg-slate-50">
+                                        <td class="px-4 py-3 font-semibold text-slate-600">
+                                            <input type="text" x-model="row.groupId" class="border border-slate-200 rounded px-1.5 py-1 w-20 text-xs font-bold font-mono">
+                                        </td>
+                                        <td class="px-4 py-3">
+                                            <input type="text" x-model="row.groupName" class="border border-slate-200 rounded px-1.5 py-1 w-full text-xs font-sans">
+                                        </td>
+                                        <td class="px-4 py-3">
+                                            <select x-model="row.groupType" class="border border-slate-200 rounded px-1.5 py-1 text-xs">
+                                                <option value="NAM">NAM</option>
+                                                <option value="VS">VS</option>
+                                                <option value="TECH">TECH</option>
+                                            </select>
+                                        </td>
+                                        <template x-for="cell in row.cells" :key="cell.slotKey">
+                                            <td class="px-2 py-3 text-center">
+                                                <button 
+                                                    @click="paintCell(cell)"
+                                                    class="inline-flex flex-col items-center justify-center p-1.5 rounded transition min-w-10 border border-dashed border-slate-200"
+                                                    :class="cell.value === 'Def.' ? 'bg-red-50 text-red-600 border border-red-200' : (cell.value ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-slate-50 text-slate-400 hover:bg-slate-100')"
+                                                >
+                                                    <span class="text-[9px] font-semibold tracking-wider opacity-60" x-text="cell.detectorType"></span>
+                                                    <span class="text-xs font-bold mt-0.5" x-text="cell.value || '•'"></span>
+                                                </button>
+                                            </td>
+                                        </template>
+                                        <td class="px-3 py-3 text-right">
+                                            <button @click="removeEditorRow(rIndex)" class="p-1 hover:text-red-600 text-slate-300">
+                                                <i data-lucide="trash" class="w-4.5 h-4.5"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                    <button @click="addEditorRow()" class="px-4 py-2.5 bg-slate-50 hover:bg-slate-100 border border-dashed border-slate-300 text-xs text-slate-600 rounded-xl w-full font-semibold flex items-center justify-center gap-1.5">
+                        <i data-lucide="plus" class="w-4 h-4"></i>
+                        <span>Meldergruppe manuell anlegen</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Modal and actions -->
+            <div class="px-6 py-4 bg-slate-50 border-t border-slate-200 flex justify-between items-center">
+                <p class="text-xs text-slate-400">Verbindung über interne API-Schnittstelle gesichert.</p>
+                <div class="flex gap-2">
+                    <button @click="isEditorOpen = false" class="px-4 py-2 text-xs font-semibold rounded-lg hover:bg-slate-100 text-slate-500">
+                        Abbrechen
+                    </button>
+                    <button @click="saveProtocolFromEditor()" class="px-5 py-2.5 bg-[#003D9B] hover:bg-blue-800 text-xs font-semibold text-white rounded-lg flex items-center gap-1 shadow-md">
+                        <i data-lucide="save" class="w-4 h-4"></i>
+                        <span>Wartungsvertrag sichern</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 5. MODAL: ADD / UPDATE TECHNICIAN -->
+    <div x-show="isTechModalOpen" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4" style="display: none;">
+        <div @click.outside="isTechModalOpen = false" class="bg-white border border-slate-200 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden py-5 px-6 space-y-4">
+            <h3 class="font-bold text-[#003D9B] text-base">Techniker-Zugang deklarieren</h3>
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-[10px] uppercase font-bold text-slate-500 mb-1">Mitarbeiter-Name</label>
+                    <input type="text" x-model="techForm.name" class="border border-slate-200 px-3 py-1.5 rounded-lg w-full text-xs" placeholder="Max Mustermann">
+                </div>
+                <div>
+                    <label class="block text-[10px] uppercase font-bold text-slate-500 mb-1">App Benutzername</label>
+                    <input type="text" x-model="techForm.username" class="border border-slate-200 px-3 py-1.5 rounded-lg w-full text-xs font-mono" placeholder="mmustermann">
+                </div>
+                <div>
+                    <label class="block text-[10px] uppercase font-bold text-slate-500 mb-1">Passwort (verschlüsselt via SHA-256)</label>
+                    <input type="password" x-model="techForm.password" class="border border-slate-200 px-3 py-1.5 rounded-lg w-full text-xs" placeholder="Passwort eingeben">
+                </div>
+            </div>
+            <div class="flex justify-end gap-2 pt-2">
+                <button @click="isTechModalOpen = false" class="px-3.5 py-1.5 text-xs text-slate-400 hover:bg-slate-50 rounded">
+                    Abbrechen
+                </button>
+                <button @click="saveTechnician()" class="px-4 py-1.5 bg-[#003D9B] hover:bg-blue-800 text-xs font-semibold text-white rounded-lg">
+                    Sichern
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 6. Footer -->
+    <footer class="bg-white border-t border-slate-200 text-xs text-slate-400 py-6 mt-12">
+        <div class="max-w-7xl mx-auto px-6 flex justify-between items-center">
+            <span>Maintenance Pro Office-WebUI Version 4.1.2</span>
+            <span>Made in Austria - Secured Intranets</span>
+        </div>
+    </footer>
+
+    <!-- Setup the state machine -->
+    <script>
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('webui', () => ({
+                activeTab: 'dashboard',
+                protocols: [],
+                technicians: [],
+                searchQuery: '',
+                stats: { total: 0, pending: 0, synced: 0 },
+                
+                showDetailView: false,
+                selectedProtocol: null,
+                archives: [],
+                
+                // Unified editor
+                isEditorOpen: false,
+                editorMode: 'create', // 'create' or 'edit'
+                editorData: {
+                    id: '',
+                    name: '',
+                    address: '',
+                    contract_number: '',
+                    interval: 'Halbjährlich',
+                    system_type: 'BMA',
+                    status: 'ready_to_download',
+                    columns: ['1', '2', '3', '4'],
+                    detector_types: [],
+                    applicable_values: [],
+                    rows: []
+                },
+                editorImportFileType: 'esser',
+                
+                // Brush tool settings
+                paintTool: 'type',
+                paintValue: '-',
+                
+                // Technicians
+                isTechModalOpen: false,
+                techForm: { id: '', name: '', username: '', password: '' },
+                
+                // Toast
+                toast: { show: false, message: '', type: 'success' },
+                
+                // System Settings Default Template Lookups
+                systemSettings: {
+                    "BMA": {
+                        name: "Brandmeldeanlage",
+                        color: "bg-red-50 text-red-800 border-red-200",
+                        badgeColor: "bg-red-500",
+                        detectors: ["-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR"],
+                        values: ["CHECK", "H1", "H2", "Def."],
+                    },
+                    "EMA": {
+                        name: "Einbruchmeldeanlage",
+                        color: "bg-yellow-50 text-yellow-800 border-yellow-200",
+                        badgeColor: "bg-yellow-500",
+                        detectors: ["-", "Normal", "BWM", "ZK", "RSK", "Lichtschranke", "Glasbruch", "Körperschall"],
+                        values: ["CHECK", "Def."],
+                    },
+                    "ELA": {
+                        name: "Elektroakustik",
+                        color: "bg-blue-50 text-blue-800 border-blue-200",
+                        badgeColor: "bg-blue-500",
+                        detectors: ["-", "Normal", "Innenlautsprecher", "Außenlautsprecher"],
+                        values: ["CHECK", "Def."],
+                    },
+                    "Lichtruf": {
+                        name: "Lichtrufanlage",
+                        color: "bg-emerald-50 text-emerald-800 border-emerald-200",
+                        badgeColor: "bg-emerald-500",
+                        detectors: ["-", "Normal", "AT", "BT", "ZT", "EM", "PN", "Display"],
+                        values: ["CHECK", "Def."],
+                    },
+                    "SLA": {
+                        name: "Sprechanlage",
+                        color: "bg-purple-50 text-purple-800 border-purple-200",
+                        badgeColor: "bg-purple-500",
+                        detectors: ["-", "Normal", "ZD", "DB", "RAS", "TDIF"],
+                        values: ["CHECK", "Def."],
+                    }
+                },
+                
+                init() {
+                    this.loadProtocols();
+                    this.loadTechnicians();
+                    
+                    // Trigger Lucide icons generation
+                    setTimeout(() => {
+                        lucide.createIcons();
+                    }, 200);
+                },
+                
+                triggerToast(message, type = 'success') {
+                    this.toast.message = message;
+                    this.toast.type = type;
+                    this.toast.show = true;
+                    setTimeout(() => { this.toast.show = false; }, 3500);
+                },
+                
+                loadProtocols() {
+                    fetch('/api/protocols')
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            this.protocols = data.protocols;
+                            this.calcStats();
+                        }
+                    });
+                },
+                
+                calcStats() {
+                    this.stats.total = this.protocols.length;
+                    this.stats.pending = this.protocols.filter(p => p.status === 'ready_to_download').length;
+                    this.stats.synced = this.protocols.filter(p => p.status === 'synchronized').length;
+                },
+                
+                filteredProtocols() {
+                    if (!this.searchQuery) return this.protocols;
+                    let q = this.searchQuery.toLowerCase();
+                    return this.protocols.filter(p => 
+                        p.name.toLowerCase().includes(q) || 
+                        p.address.toLowerCase().includes(q) || 
+                        p.contract_number.toLowerCase().includes(q) ||
+                        p.system_type.toLowerCase().includes(q)
+                    );
+                },
+                
+                viewProtocolDetails(id) {
+                    fetch('/api/protocols/' + id)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            this.selectedProtocol = data.protocol;
+                            this.archives = data.archives;
+                            this.showDetailView = true;
+                            setTimeout(() => { lucide.createIcons(); }, 150);
+                        }
+                    });
+                },
+                
+                triggerReset(id) {
+                    if (confirm("Möchten Sie diesen Vertrag ins nächste Prüfintervall verschieben? Das aktuelle PDF-Protokoll wird archiviert und die Messwerte geleert.")) {
+                        fetch('/api/protocols/reset/' + id, { method: 'POST' })
+                        .then(r => r.json())
+                        .then(data => {
+                            if (data.success) {
+                                this.triggerToast(data.message, 'success');
+                                this.loadProtocols();
+                                if (this.showDetailView && this.selectedProtocol.id === id) {
+                                    this.viewProtocolDetails(id);
+                                }
+                            } else {
+                                this.triggerToast(data.error, 'warning');
+                            }
+                        });
+                    }
+                },
+                
+                deleteProtocol(id) {
+                    if (confirm("Achtung: Möchten Sie dieses Protokoll und alle zugehörigen Daten unumkehrbar löschen?")) {
+                        fetch('/api/protocols/delete/' + id, { method: 'POST' })
+                        .then(r => r.json())
+                        .then(data => {
+                            if (data.success) {
+                                this.triggerToast(data.message, 'success');
+                                this.showDetailView = false;
+                                this.loadProtocols();
+                            }
+                        });
+                    }
+                },
+                
+                // Technician handlers
+                loadTechnicians() {
+                    fetch('/api/technicians')
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            this.technicians = data.technicians;
+                        }
+                    });
+                },
+                
+                openAddTechModal() {
+                    this.techForm = { id: '', name: '', username: '', password: '' };
+                    this.isTechModalOpen = true;
+                },
+                
+                editTech(tech) {
+                    this.techForm = { id: tech.id, name: tech.name, username: tech.username, password: '' };
+                    this.isTechModalOpen = true;
+                },
+                
+                saveTechnician() {
+                    fetch('/api/technicians/save', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(this.techForm)
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            this.triggerToast(data.message, 'success');
+                            this.isTechModalOpen = false;
+                            this.loadTechnicians();
+                        } else {
+                            this.triggerToast(data.error, 'warning');
+                        }
+                    });
+                },
+                
+                deleteTech(id) {
+                    if (confirm("Benutzerzugang unwiderruflich sperren?")) {
+                        fetch('/api/technicians/delete/' + id, { method: 'POST' })
+                        .then(r => r.json())
+                        .then(data => {
+                            if (data.success) {
+                                this.triggerToast(data.message, 'success');
+                                this.loadTechnicians();
+                            }
+                        });
+                    }
+                },
+                
+                // UNIFIED EDITOR LOGIC
+                openCreateProtocol() {
+                    this.editorMode = 'create';
+                    this.editorData = {
+                        id: '',
+                        name: '',
+                        address: '',
+                        contract_number: '',
+                        interval: 'Halbjährlich',
+                        system_type: 'BMA',
+                        status: 'ready_to_download',
+                        columns: ['1', '2', '3', '4'],
+                        detector_types: ["-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR"],
+                        applicable_values: ["CHECK", "H1", "H2", "Def."],
+                        rows: []
+                    };
+                    this.onEditorSystemTypeChange();
+                    this.isEditorOpen = true;
+                    setTimeout(() => { lucide.createIcons(); }, 150);
+                },
+                
+                openEditProtocol() {
+                    this.editorMode = 'edit';
+                    this.editorData = JSON.parse(JSON.stringify(this.selectedProtocol));
+                    this.isEditorOpen = true;
+                    setTimeout(() => { lucide.createIcons(); }, 150);
+                },
+                
+                onEditorSystemTypeChange() {
+                    let set = this.systemSettings[this.editorData.system_type] || this.systemSettings["BMA"];
+                    this.editorData.detector_types = set.detectors;
+                    this.editorData.applicable_values = set.values;
+                    this.paintValue = set.detectors[1] || '-';
+                },
+                
+                addEditorRow() {
+                    let cells = [];
+                    this.editorData.columns.forEach(col => {
+                        cells.push({
+                            slotKey: col,
+                            detectorType: this.editorData.detector_types[1] || 'Normal',
+                            value: ''
+                        });
+                    });
+                    
+                    let nextIdNum = this.editorData.rows.length + 1;
+                    this.editorData.rows.push({
+                        groupId: `G-${String(nextIdNum).padStart(2, '0')}`,
+                        groupName: `Melderlinie ${nextIdNum}`,
+                        groupType: 'NAM',
+                        cells: cells
+                    });
+                },
+                
+                removeEditorRow(index) {
+                    this.editorData.rows.splice(index, 1);
+                },
+                
+                addEditorColumn() {
+                    let nextCol = (this.editorData.columns.length + 1).toString();
+                    this.editorData.columns.push(nextCol);
+                    
+                    this.editorData.rows.forEach(row => {
+                        row.cells.push({
+                            slotKey: nextCol,
+                            detectorType: this.editorData.detector_types[1] || 'Normal',
+                            value: ''
+                        });
+                    });
+                },
+                
+                removeEditorColumn() {
+                    if (this.editorData.columns.length <= 1) return;
+                    this.editorData.columns.pop();
+                    this.editorData.rows.forEach(row => {
+                        row.cells.pop();
+                    });
+                },
+                
+                paintCell(cell) {
+                    if (this.paintTool === 'type') {
+                        cell.detectorType = this.paintValue;
+                    } else if (this.paintTool === 'trigger') {
+                        cell.value = this.paintValue;
+                    }
+                },
+                
+                importProtocolFile(event) {
+                    let file = event.target.files[0];
+                    if (!file) return;
+                    
+                    let reader = new FileReader();
+                    reader.onload = (e) => {
+                        let content = e.target.result;
+                        fetch('/api/import', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                filename: file.name,
+                                content: content,
+                                importType: this.editorImportFileType
+                            })
+                        })
+                        .then(r => r.json())
+                        .then(data => {
+                            if (data.success) {
+                                this.triggerToast(data.message, 'success');
+                                let importedData = data.subSystems[0];
+                                this.editorData.rows = importedData.rows;
+                                
+                                // Reset columns mapping based on imported cells
+                                if (importedData.rows.length > 0) {
+                                    let maxCells = importedData.rows[0].cells.length;
+                                    this.editorData.columns = Array.from({length: maxCells}, (_, i) => (i+1).toString());
+                                }
+                            } else {
+                                this.triggerToast(data.error, 'warning');
+                            }
+                        });
+                    };
+                    reader.readAsDataURL(file);
+                },
+                
+                saveProtocolFromEditor() {
+                    fetch('/api/protocols/save', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(this.editorData)
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            this.triggerToast(data.message, 'success');
+                            this.isEditorOpen = false;
+                            this.loadProtocols();
+                            
+                            if (this.editorMode === 'edit') {
+                                this.viewProtocolDetails(data.id);
+                            }
+                        } else {
+                            this.triggerToast(data.error, 'warning');
+                        }
+                    });
+                }
+            }));
+        });
+    </script>
+</body>
+</html>

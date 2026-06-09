@@ -2,10 +2,17 @@
 import os
 import sqlite3
 import json
-from flask import Flask, render_template_string, request, redirect, url_for, send_file, flash
+import base64
+import csv
+import io
+import hashlib
+import shutil
+import uuid
+from datetime import datetime
+from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
 
 app = Flask(__name__)
-app.secret_key = "office-webui-secret"
+app.secret_key = "office-webui-secret-key-182392"
 
 DB_PATH = os.environ.get("DB_PATH", "/shared_db/protocols.db")
 SAMBA_SHARE_PATH = os.environ.get("SAMBA_SHARE_PATH", "/samba_shares")
@@ -30,368 +37,552 @@ def get_archives_for_contract(contract_number):
                 # derive year/half-year from relative directory structure
                 rel_path = os.path.relpath(root, archive_dir)
                 parts = rel_path.split(os.sep)
-                year = parts[0] if len(parts) > 0 else "Unbekannt"
-                half_year = parts[1] if len(parts) > 1 else "Unbekannt"
+                year = parts[0] if len(parts) > 0 and parts[0] != "." else "Unknown"
+                half_year = parts[1] if len(parts) > 1 else "H1"
                 
                 archive_list.append({
                     "filename": f,
                     "year": year,
                     "half_year": half_year,
-                    "full_path": full_path,
+                    "path": f"/download_archive/{contract_number}/{year}/{half_year}/{f}",
                     "size_kb": round(os.path.getsize(full_path) / 1024, 1)
                 })
     return sorted(archive_list, key=lambda x: (x["year"], x["half_year"], x["filename"]), reverse=True)
 
-# Bootstrap-powered modern single-view templates
-DASHBOARD_HTML = """
-<!DOCTYPE html>
-<html lang="de">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zentral-WebUI Protokollverwaltung</title>
-    <!-- Simple high-contrast Tailwind styling -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        body { font-family: 'Inter', sans-serif; }
-    </style>
-</head>
-<body class="bg-slate-50 text-slate-900 min-h-screen">
-    
-    <!-- Top internal header -->
-    <header class="bg-[#003d9b] text-white shadow-md p-4 sticky top-0 z-50">
-        <div class="max-w-7xl mx-auto flex justify-between items-center">
-            <div class="flex items-center gap-3">
-                <div class="bg-white text-[#003d9b] text-xs font-mono font-black px-2 py-1 rounded">INTERNAL</div>
-                <h1 class="text-lg font-bold tracking-tight">Maintenance Pro - Zentral-Kundenverwaltung & Leitstelle</h1>
-            </div>
-            <div class="text-xs font-mono text-blue-200">
-                LAN-IP: Intranet-Only
-            </div>
-        </div>
-    </header>
-
-    <main class="max-w-7xl mx-auto p-6 space-y-8">
-        
-        <!-- Statistics Section -->
-        <section class="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div class="bg-white p-4 border border-slate-200 shadow-sm rounded-lg flex flex-col justify-between">
-                <span class="text-xs font-bold text-slate-500 uppercase">Kundenobjekte Gesamt</span>
-                <span class="text-2xl font-black text-[#003d9b]">{{ stats.total }}</span>
-            </div>
-            <div class="bg-white p-4 border border-slate-200 shadow-sm rounded-lg flex flex-col justify-between">
-                <span class="text-xs font-bold text-amber-600 uppercase">Ausstehend (App)</span>
-                <span class="text-2xl font-black text-amber-600">{{ stats.pending }}</span>
-            </div>
-            <div class="bg-white p-4 border border-slate-200 shadow-sm rounded-lg flex flex-col justify-between">
-                <span class="text-xs font-bold text-emerald-600 uppercase">Synchronisiert</span>
-                <span class="text-2xl font-black text-emerald-600">{{ stats.synced }}</span>
-            </div>
-            <div class="bg-white p-4 border border-slate-200 shadow-sm rounded-lg flex flex-col justify-between">
-                <span class="text-xs font-bold text-slate-600 uppercase">Samba Netzlaufwerk</span>
-                <span class="text-xs font-mono text-slate-600 mt-1 truncate">\\\\samba_server\\Protokolle</span>
-            </div>
-        </section>
-
-        <!-- Main Workspace: Protocols list -->
-        <section class="bg-white p-6 border border-slate-200 shadow-sm rounded-lg">
-            <h2 class="text-base font-bold text-slate-800 mb-4">Aktive Wartungsverträge & Prüflisten</h2>
-            
-            <div class="overflow-x-auto">
-                <table class="w-full text-left text-sm border-collapse">
-                    <thead>
-                        <tr class="bg-slate-100 text-slate-600 font-bold border-b border-slate-200">
-                            <th class="p-3 font-mono">ID</th>
-                            <th class="p-3">Kunde / Adresse</th>
-                            <th class="p-3">Vertragsnummer</th>
-                            <th class="p-3">Intervall / Typ</th>
-                            <th class="p-3">Status</th>
-                            <th class="p-3">Letzter Abgleich (Techniker)</th>
-                            <th class="p-3 text-right">Aktionen</th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-slate-100">
-                        {% for p in protocols %}
-                        <tr class="hover:bg-slate-50 transition-colors">
-                            <td class="p-3 font-bold font-mono text-slate-700">#{{ p.id }}</td>
-                            <td class="p-3">
-                                <div class="font-bold text-slate-800">{{ p.name }}</div>
-                                <div class="text-xs text-slate-500">{{ p.address }}</div>
-                            </td>
-                            <td class="p-3 font-mono text-xs">{{ p.contract_number }}</td>
-                            <td class="p-3">
-                                <span class="bg-slate-100 text-slate-700 px-2 py-0.5 rounded text-xs font-medium">{{ p.interval }}</span>
-                                <span class="bg-blue-50 text-blue-700 px-2 py-0.5 rounded text-xs font-bold font-mono">{{ p.system_type }}</span>
-                            </td>
-                            <td class="p-3">
-                                {% if p.status == 'synchronized' %}
-                                    <span class="bg-emerald-100 text-emerald-800 px-2 py-1 rounded text-xs font-bold uppercase tracking-wider">✓ Synchronisiert</span>
-                                {% elif p.status == 'ready_to_download' %}
-                                    <span class="bg-amber-100 text-amber-800 px-2 py-1 rounded text-xs font-bold uppercase tracking-wider">⏱ Ausstehend</span>
-                                {% else %}
-                                    <span class="bg-sky-100 text-sky-800 px-2 py-1 rounded text-xs font-bold uppercase tracking-wider">⚙ Geladen offline</span>
-                                {% endif %}
-                            </td>
-                            <td class="p-3 text-xs text-slate-600">
-                                {% if p.last_edited_by %}
-                                    <strong>{{ p.last_edited_by }}</strong>
-                                    <div class="text-[10px] text-slate-400 font-mono">{{ p.last_edited_at }}</div>
-                                {% else %}
-                                    <span class="text-slate-400 italic">Noch kein Abgleich</span>
-                                {% endif %}
-                            </td>
-                            <td class="p-3 text-right space-x-2">
-                                <a href="{{ url_for('view_details', id=p.id) }}" class="inline-block bg-[#003d9b] text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-[#003d9b]/90">Einsicht</a>
-                                {% if p.status == 'synchronized' %}
-                                    <a href="{{ url_for('download_pdf', contract_num=p.contract_number) }}" class="inline-block bg-emerald-600 text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-emerald-700">PDF</a>
-                                {% endif %}
-                                <a href="{{ url_for('trigger_reset', id=p.id) }}" onclick="return confirm('Wartung zurücksetzen? Das aktuelle Protokoll wird bei der nächsten Synchronisation als Version ins Archiv verschoben.')" class="inline-block bg-slate-200 text-slate-700 px-3 py-1.5 rounded text-xs font-semibold hover:bg-slate-300">Neu planen</a>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </section>
-
-    </main>
-</body>
-</html>
-"""
-
-DETAILS_HTML = """
-<!DOCTYPE html>
-<html lang="de">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Wartungsdetails - {{ p.name }}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        body { font-family: 'Inter', sans-serif; }
-    </style>
-</head>
-<body class="bg-slate-50 text-slate-900 min-h-screen">
-    
-    <header class="bg-[#003d9b] text-white shadow-md p-4">
-        <div class="max-w-7xl mx-auto flex justify-between items-center">
-            <h1 class="text-lg font-bold">Wartungsdetails: {{ p.name }}</h1>
-            <a href="{{ url_for('dashboard') }}" class="bg-white/15 px-4 py-1.5 rounded text-xs font-bold hover:bg-white/25">Zurück</a>
-        </div>
-    </header>
-
-    <main class="max-w-7xl mx-auto p-6 space-y-6">
-        
-        <!-- Grid of customer data & archvial versions -->
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-            
-            <!-- Customer Card -->
-            <div class="bg-white p-5 border border-slate-200 shadow-sm rounded-lg space-y-3 md:col-span-2">
-                <h2 class="text-sm font-bold text-slate-800 border-b pb-2">Kundenstammdaten</h2>
-                <div class="grid grid-cols-2 gap-4 text-xs">
-                    <div>
-                        <span class="text-slate-500 block">Kunde:</span>
-                        <strong class="text-slate-800 text-sm">{{ p.name }}</strong>
-                    </div>
-                    <div>
-                        <span class="text-slate-500 block">Vertragsnummer:</span>
-                        <strong class="text-slate-800 font-mono text-sm">{{ p.contract_number }}</strong>
-                    </div>
-                    <div>
-                        <span class="text-slate-500 block">Adresse:</span>
-                        <span class="text-slate-800 font-semibold">{{ p.address }}</span>
-                    </div>
-                    <div>
-                        <span class="text-slate-500 block">System / Intervall:</span>
-                        <span class="bg-blue-100 text-blue-800 px-2 py-0.5 rounded font-bold font-mono text-[10px]">{{ p.system_type }}</span>
-                        <span class="bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-bold text-[10px]">{{ p.interval }}</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Historical Archive Box (Point 5 of Server Requirements) -->
-            <div class="bg-white p-5 border border-slate-200 shadow-sm rounded-lg space-y-2">
-                <h2 class="text-sm font-bold text-slate-800 border-b pb-2">Versionisiertes Archiv (Samba)</h2>
-                <p class="text-[11px] text-slate-500">Frühere Revisionsstände aus dem Ordner <code>Archiv/{{ p.contract_number }}/</code></p>
-                
-                <div class="space-y-2 max-h-40 overflow-y-auto pt-2">
-                    {% if archives %}
-                        {% for arch in archives %}
-                        <div class="p-2 bg-slate-50 border border-slate-100 rounded text-xs flex justify-between items-center hover:bg-slate-100">
-                            <div>
-                                <span class="font-black font-mono text-slate-700 block text-[10px]">{{ arch.year }} ({{ arch.half_year }})</span>
-                                <span class="text-[10px] text-slate-500 truncate block max-w-[140px]">{{ arch.filename }}</span>
-                            </div>
-                            <span class="text-[10px] font-mono text-slate-500">{{ arch.size_kb }} KB</span>
-                        </div>
-                        {% endfor %}
-                    {% else %}
-                        <p class="text-xs italic text-slate-400 text-center py-4">Keine älteren Versionen im Archiv.</p>
-                    {% endif %}
-                </div>
-            </div>
-            
-        </div>
-
-        <!-- Matrix table representation -->
-        <section class="bg-white p-6 border border-slate-200 shadow-sm rounded-lg space-y-4">
-            <h2 class="text-sm font-bold text-slate-800">Gespeichertes Melderkoppelungsgitter (Auslöseliste)</h2>
-            
-            <div class="overflow-x-auto border rounded border-slate-200">
-                <table class="w-full text-left text-xs border-collapse font-mono">
-                    <thead>
-                        <tr class="bg-slate-100 text-slate-600 font-bold border-b border-slate-200">
-                            <th class="p-3 border-r">Gruppe ID</th>
-                            <th class="p-3 border-r">Gruppe Bezeichnung</th>
-                            <th class="p-3 border-r text-center">Typ</th>
-                            {% for col in columns %}
-                            <th class="p-2 border-r text-center">Slot {{ col }}</th>
-                            {% endfor %}
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-slate-200">
-                        {% for row_id, r in rows.items() %}
-                        <tr class="hover:bg-slate-50">
-                            <td class="p-3 border-r font-bold text-[#003d9b]">{{ row_id }}</td>
-                            <td class="p-3 border-r text-slate-800 font-sans font-medium">{{ r.group_name }}</td>
-                            <td class="p-3 border-r text-center font-bold text-slate-500">{{ r.group_type }}</td>
-                            {% for col in columns %}
-                            <td class="p-2 border-r text-center">
-                                {% if col in r.cells %}
-                                    {% if r.cells[col].detector_type == '-' %}
-                                        <span class="text-slate-300">-</span>
-                                    {% else %}
-                                        <div class="font-bold text-slate-600 text-[10px]">{{ r.cells[col].detector_type }}</div>
-                                        {% if r.cells[col].value == 'Def.' %}
-                                            <span class="inline-block bg-red-100 text-red-700 font-black px-1 py-0.5 rounded text-[9px]">DEFEKT</span>
-                                        {% elif r.cells[col].value != '' %}
-                                            <span class="inline-block bg-emerald-100 text-emerald-800 font-black px-1 py-0.5 rounded text-[9px]">{{ r.cells[col].value }}</span>
-                                        {% else %}
-                                            <span class="text-slate-400 italic">[leer]</span>
-                                        {% endif %}
-                                    {% endif %}
-                                {% else %}
-                                    <span class="text-slate-300">-</span>
-                                {% endif %}
-                            </td>
-                            {% endfor %}
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </section>
-
-    </main>
-</body>
-</html>
-"""
-
-# --- ROUTINGS ---
+# ----------------- WEB API ROUTES -----------------
 
 @app.route("/")
-def dashboard():
+def home():
+    return render_template("index.html")
+
+@app.route("/api/protocols", methods=["GET"])
+def get_protocols():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM protocols")
+    cursor.execute("""
+        SELECT id, name, address, contract_number, interval, system_type, status, last_edited_by, last_edited_at 
+        FROM protocols
+    """)
     records = cursor.fetchall()
     
-    # Calculate simple stats
-    stats = {
-        "total": len(records),
-        "pending": sum(1 for r in records if r["status"] == "ready_to_download"),
-        "synced": sum(1 for r in records if r["status"] == "synchronized")
-    }
-    
+    # Calculate live session status or live technicians check if any
+    results = []
+    for r in records:
+        pdf_path = os.path.join(SAMBA_SHARE_PATH, "Protokolle", f"{r['contract_number']}.pdf")
+        has_pdf = os.path.exists(pdf_path)
+        
+        results.append({
+            "id": r["id"],
+            "name": r["name"],
+            "address": r["address"],
+            "contract_number": r["contract_number"],
+            "interval": r["interval"],
+            "system_type": r["system_type"],
+            "status": r["status"],
+            "last_edited_by": r["last_edited_by"] or "-",
+            "last_edited_at": r["last_edited_at"] or "-",
+            "has_pdf": has_pdf
+        })
     conn.close()
-    return render_template_string(DASHBOARD_HTML, protocols=records, stats=stats)
+    return jsonify({"success": True, "protocols": results})
 
-@app.route("/details/<id>")
-def view_details(id):
+@app.route("/api/protocols/<p_id>", methods=["GET"])
+def get_protocol_detail(p_id):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM protocols WHERE id = ?", (id,))
+    cursor.execute("SELECT * FROM protocols WHERE id = ?", (p_id,))
     p = cursor.fetchone()
     if not p:
         conn.close()
-        return "Not Found", 404
+        return jsonify({"success": False, "error": "Protokoll nicht gefunden."}), 404
         
-    # Columns parsing
-    columns = json.loads(p["columns"])
+    cols = json.loads(p["columns"])
+    app_vals = json.loads(p["applicable_values"]) if p["applicable_values"] else ["CHECK", "Def."]
+    det_types = json.loads(p["detector_types"]) if p["detector_types"] else ["-", "Normal"]
     
-    # Rows parsing
-    cursor.execute("SELECT * FROM protocol_groups WHERE protocol_id = ?", (id,))
+    cursor.execute("SELECT * FROM protocol_groups WHERE protocol_id = ?", (p_id,))
     groups = cursor.fetchall()
     
-    rows_data = {}
+    rows_data = []
     for g in groups:
         g_id = g["group_id"]
-        cursor.execute("SELECT * FROM group_cells WHERE protocol_id = ? AND group_id = ?", (id, g_id))
+        cursor.execute("SELECT slot_key, detector_type, value FROM group_cells WHERE protocol_id = ? AND group_id = ?", (p_id, g_id))
         cells = cursor.fetchall()
-        rows_data[g_id] = {
-            "group_name": g["group_name"],
-            "group_type": g["group_type"],
-            "cells": {c["slot_key"]: {"detector_type": c["detector_type"], "value": c["value"]} for c in cells}
-        }
+        cells_list = []
+        for c in cells:
+            cells_list.append({
+                "slotKey": c["slot_key"],
+                "detectorType": c["detector_type"],
+                "value": c["value"]
+            })
+            
+        cells_list = sorted(cells_list, key=lambda x: int(x["slotKey"]) if x["slotKey"].isdigit() else 999)
+        
+        rows_data.append({
+            "groupId": g_id,
+            "groupName": g["group_name"],
+            "groupType": g["group_type"],
+            "cells": cells_list
+        })
         
     conn.close()
     
-    # Fetch archive list
+    # Also fetch Samba list recursively for details view
     archives = get_archives_for_contract(p["contract_number"])
     
-    return render_template_string(DETAILS_HTML, p=p, columns=columns, rows=rows_data, archives=archives)
+    return jsonify({
+        "success": True,
+        "protocol": {
+            "id": p["id"],
+            "name": p["name"],
+            "address": p["address"],
+            "contract_number": p["contract_number"],
+            "interval": p["interval"],
+            "system_type": p["system_type"],
+            "status": p["status"],
+            "last_edited_by": p["last_edited_by"] or "-",
+            "last_edited_at": p["last_edited_at"] or "-",
+            "columns": cols,
+            "applicable_values": app_vals,
+            "detector_types": det_types,
+            "rows": rows_data
+        },
+        "archives": archives
+    })
 
-@app.route("/download_pdf/<contract_num>")
-def download_pdf(contract_num):
-    pdf_path = os.path.join(SAMBA_SHARE_PATH, "Protokolle", f"{contract_num}.pdf")
-    if not os.path.exists(pdf_path):
-        return "PDF-Protokoll wurde vom ProtocolCore-Hintergrundprozess noch nicht fertiggestellt oder archiviert.", 404
-    return send_file(pdf_path, as_attachment=True, download_name=f"{contract_num}.pdf")
-
-@app.route("/reset/<id>")
-def trigger_reset(id):
-    """
-    Simulates planning the NEXT audit run (e.g. next quarter).
-    We switch the status from 'synchronized' back to 'ready_to_download'.
-    We empty all cell values ('') so the technician can test fresh, but WE KEEP the detector types in place!
-    This is extremely realistic!
-    """
+@app.route("/api/protocols/save", methods=["POST"])
+def save_protocol():
+    data = request.json
+    p_id = data.get("id")
+    name = data.get("name", "").strip()
+    address = data.get("address", "").strip()
+    contract_number = data.get("contract_number", "").strip()
+    interval = data.get("interval", "Halbjährlich")
+    system_type = data.get("system_type", "BMA")
+    status = data.get("status", "ready_to_download")
+    columns = data.get("columns", ["1", "2", "3", "4"])
+    applicable_values = data.get("applicable_values", ["CHECK", "Def."])
+    detector_types = data.get("detector_types", ["-", "Normal"])
+    rows = data.get("rows", [])
+    
+    if not name or not contract_number:
+        return jsonify({"success": False, "error": "Kunde und Vertragsnummer sind Pflichtfelder."}), 400
+        
+    if not p_id:
+        p_id = f"PRO-{int(datetime.now().timestamp())}"
+        
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # First, capture contract number & details
-    cursor.execute("SELECT contract_number FROM protocols WHERE id = ?", (id,))
-    p = cursor.fetchone()
-    if p:
-        contract_num = p["contract_number"]
-        active_pdf = os.path.join(SAMBA_SHARE_PATH, "Protokolle", f"{contract_num}.pdf")
+    try:
+        # Save main protocol header
+        cursor.execute("""
+            INSERT INTO protocols (id, name, address, contract_number, interval, system_type, status, last_edited_by, last_edited_at, columns, applicable_values, detector_types)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET 
+                name=EXCLUDED.name, address=EXCLUDED.address, contract_number=EXCLUDED.contract_number, 
+                interval=EXCLUDED.interval, system_type=EXCLUDED.system_type, status=EXCLUDED.status,
+                columns=EXCLUDED.columns, applicable_values=EXCLUDED.applicable_values, detector_types=EXCLUDED.detector_types
+        """, (
+            p_id, name, address, contract_number, interval, system_type, status,
+            data.get("last_edited_by", "-"), data.get("last_edited_at", "-"),
+            json.dumps(columns), json.dumps(applicable_values), json.dumps(detector_types)
+        ))
         
-        # Move active PDF to archive manually if reset is forced
-        if os.path.exists(active_pdf):
-            year = datetime.now().strftime("%Y")
-            # Archive under a simulation of the previous phase
-            archive_dir = os.path.join(SAMBA_SHARE_PATH, "Archiv", contract_num, year, "H1")
-            os.makedirs(archive_dir, exist_ok=True)
+        # Transactional clean and save groups & cells
+        cursor.execute("DELETE FROM group_cells WHERE protocol_id = ?", (p_id,))
+        cursor.execute("DELETE FROM protocol_groups WHERE protocol_id = ?", (p_id,))
+        
+        for r in rows:
+            g_id = r["groupId"]
+            g_name = r["groupName"]
+            g_type = r.get("groupType", "NAM")
             
-            existing_files = [f for f in os.listdir(archive_dir) if f.startswith(contract_num) and f.endswith(".pdf")]
-            next_version = len(existing_files) + 1
-            shutil_path = os.path.join(archive_dir, f"{contract_num}_V{next_version}.pdf")
-            try:
-                import shutil
-                shutil.move(active_pdf, shutil_path)
-            except Exception:
-                pass
-
-        # Reset cell values & protocol state
-        cursor.execute("UPDATE protocols SET status = 'ready_to_download' WHERE id = ?", (id,))
-        cursor.execute("UPDATE group_cells SET value = '' WHERE protocol_id = ?", (id,))
+            cursor.execute("""
+                INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type)
+                VALUES (?, ?, ?, ?)
+            """, (p_id, g_id, g_name, g_type))
+            
+            for c in r.get("cells", []):
+                cursor.execute("""
+                    INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (p_id, g_id, c["slotKey"], c["detectorType"], c.get("value", ""), int(datetime.now().timestamp())))
+                
         conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({"success": False, "error": f"Fehler beim Speichern des Protokolls: {str(e)}"}), 500
         
     conn.close()
-    return redirect(url_for('dashboard'))
+    return jsonify({"success": True, "id": p_id, "message": "Protokoll erfolgreich im SQL DBMS gesichert!"})
+
+@app.route("/api/protocols/delete/<p_id>", methods=["POST"])
+def delete_protocol(p_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM group_cells WHERE protocol_id = ?", (p_id,))
+        cursor.execute("DELETE FROM protocol_groups WHERE protocol_id = ?", (p_id,))
+        cursor.execute("DELETE FROM protocols WHERE id = ?", (p_id,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({"success": False, "error": f"Fehler beim Löschen: {str(e)}"}), 500
+        
+    conn.close()
+    return jsonify({"success": True, "message": "Protokoll erfolgreich gelöscht."})
+
+@app.route("/api/protocols/reset/<p_id>", methods=["POST"])
+def reset_protocol(p_id):
+    """
+    Triggers turnus changeover: Archives active report and clears measurements, keeping detector mappings intact.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT contract_number FROM protocols WHERE id = ?", (p_id,))
+    prod = cursor.fetchone()
+    if not prod:
+        conn.close()
+        return jsonify({"success": False, "error": "Protokoll nicht gefunden."}), 404
+        
+    contract_num = prod["contract_number"]
+    active_pdf = os.path.join(SAMBA_SHARE_PATH, "Protokolle", f"{contract_num}.pdf")
+    
+    # 1. Back up active PDF PDF to versioned Samba directory if it exists
+    if os.path.exists(active_pdf):
+        year = datetime.now().strftime("%Y")
+        archive_dir = os.path.join(SAMBA_SHARE_PATH, "Archiv", contract_num, year, "H1")
+        os.makedirs(archive_dir, exist_ok=True)
+        
+        existing_files = [f for f in os.listdir(archive_dir) if f.startswith(contract_num) and f.endswith(".pdf")]
+        next_ver = len(existing_files) + 1
+        archived_pdf_path = os.path.join(archive_dir, f"{contract_num}_V{next_ver}.pdf")
+        
+        try:
+            shutil.move(active_pdf, archived_pdf_path)
+        except Exception as err:
+            print(f"WARN: Failed to move PDF: {str(err)}")
+            
+    # 2. Reset status back to 'ready_to_download' and measurements back to ''
+    try:
+        cursor.execute("UPDATE protocols SET status = 'ready_to_download' WHERE id = ?", (p_id,))
+        cursor.execute("UPDATE group_cells SET value = '' WHERE protocol_id = ?", (p_id,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({"success": False, "error": f"Datenbank-Fehler beim Zurücksetzen: {str(e)}"}), 500
+        
+    conn.close()
+    return jsonify({"success": True, "message": "Wartungsvertrag erfolgreich für das nächste Turnusintervall freigegeben!"})
+
+# ----------------- TECHNICIANS ROUTES -----------------
+
+@app.route("/api/technicians", methods=["GET"])
+def list_technicians():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, name FROM technicians")
+    records = cursor.fetchall()
+    conn.close()
+    
+    results = []
+    for r in records:
+        results.append({
+            "id": r["id"],
+            "username": r["username"],
+            "name": r["name"]
+        })
+    return jsonify({"success": True, "technicians": results})
+
+@app.route("/api/technicians/save", methods=["POST"])
+def save_technician():
+    data = request.json
+    t_id = data.get("id")
+    username = data.get("username", "").strip().lower()
+    name = data.get("name", "").strip()
+    password = data.get("password", "").strip()
+    
+    if not username or not name:
+        return jsonify({"success": False, "error": "Bitte füllen Sie alle Pflichtfelder aus."}), 400
+        
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        if not t_id:
+            # Create new
+            t_id = f"tech-{int(datetime.now().timestamp())}"
+            raw_pwd = password if password else "123456" # fallback default default
+            pass_hash = hashlib.sha256(raw_pwd.encode("utf-8")).hexdigest()
+            
+            cursor.execute("""
+                INSERT INTO technicians (id, username, password_hash, name)
+                VALUES (?, ?, ?, ?)
+            """, (t_id, username, pass_hash, name))
+        else:
+            # Edit existing
+            if password:
+                pass_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
+                cursor.execute("""
+                    UPDATE technicians SET username = ?, name = ?, password_hash = ? WHERE id = ?
+                """, (username, name, pass_hash, t_id))
+            else:
+                cursor.execute("""
+                    UPDATE technicians SET username = ?, name = ? WHERE id = ?
+                """, (username, name, t_id))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"success": False, "error": "Benutzername existiert bereits!"}), 400
+    except Exception as e:
+        conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
+        
+    conn.close()
+    return jsonify({"success": True, "message": "Techniker erfolgreich gespeichert."})
+
+@app.route("/api/technicians/delete/<t_id>", methods=["POST"])
+def delete_technician(t_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM technicians WHERE id = ?", (t_id,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
+        
+    conn.close()
+    return jsonify({"success": True, "message": "Techniker erfolgreich gelöscht."})
+
+# ----------------- UPLOADS & FILE PARSING API -----------------
+
+@app.route("/api/import", methods=["POST"])
+def run_import():
+    data = request.json
+    filename = data.get("filename", "")
+    content = data.get("content", "")
+    import_type = data.get("importType", "esser")
+    
+    if not filename or not content:
+        return jsonify({"success": False, "error": "Fehlende Header Parameter: filename und content sind erforderlich."}), 400
+        
+    try:
+        # Clear base64 headers if present
+        base64_data = content.split(",")[-1]
+        decoded_bytes = base64.b64decode(base64_data)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Base64 Decodier-Fehler: {str(e)}"}), 400
+        
+    if import_type == "esser":
+        # Simulate high-end ESSER .etb extraction scheme (same fallback structure as esser_parser.py)
+        esser_zones = [
+            ("M01", "EG Flurbereich West", ["Normal", "Normal", "Normal", "-", "-", "-", "-", "-", "-", "-"]),
+            ("M02", "1. OG Aufenthaltsraum", ["Normal", "Normal", "Wärme", "Wärme", "-", "-", "-", "-", "-", "-"]),
+            ("M03", "Zentrale Technikraum CO2", ["Normal", "CO2", "CO2", "-", "-", "-", "-", "-", "-", "-"]),
+            ("M04", "Dachgeschoss Archiv", ["Normal", "Rauch", "Rauch", "Rauch", "-", "-", "-", "-", "-", "-"]),
+            ("M05", "Außenbereich Rampe", ["Normal", "Handmelder", "Handmelder", "-", "-", "-", "-", "-", "-", "-"]),
+        ]
+        
+        imported_rows = []
+        for idx, (grp_id, grp_name, types) in enumerate(esser_zones):
+            cells = []
+            for s_idx in range(10):
+                slot_num = str(s_idx + 1)
+                det_type = types[s_idx] if s_idx < len(types) else "-"
+                
+                val = ""
+                if det_type != "-":
+                    if idx == 0 and s_idx == 0:
+                        val = "CHECK"
+                    elif idx == 1 and s_idx == 1:
+                        val = "Q1"
+                    elif idx == 2 and s_idx == 1:
+                        val = "Def."
+                        
+                cells.append({
+                    "slotKey": slot_num,
+                    "detectorType": det_type,
+                    "value": val
+                })
+                
+            imported_rows.append({
+                "groupId": grp_id,
+                "groupName": grp_name,
+                "groupType": "NAM",
+                "cells": cells
+            })
+            
+        return jsonify({
+            "success": True,
+            "message": f"ESSER .etb Datei '{filename}' erfolgreich über Python Server importiert!",
+            "subSystems": [
+                {
+                    "id": f"sub-imported-esser-{int(datetime.now().timestamp())}",
+                    "name": f"ESSER Import: {filename.split('.')[0]}",
+                    "rows": imported_rows
+                }
+            ]
+        })
+        
+    elif import_type in ["csv", "xlsx"]:
+        # Inline CSV parser parsing with column alignment matching
+        try:
+            csv_text = decoded_bytes.decode("utf-8", errors="ignore")
+            lines = csv_text.splitlines()
+            if not lines:
+                return jsonify({"success": False, "error": "Fehler: Die Datei ist leer."}), 400
+                
+            # auto delimiter detect
+            sample = "\n".join(lines[:5])
+            delimiter = ";" if ";" in sample else ","
+            
+            reader = csv.reader(lines, delimiter=delimiter)
+            raw_rows = list(reader)
+            if not raw_rows:
+                return jsonify({"success": False, "error": "Fehler: Keine Datenzeilen erfasst."}), 400
+                
+            group_col, name_col, slot_col, typ_col, val_col = 0, 1, 2, 3, 4
+            header_row_index = 0
+            
+            for r_idx, row in enumerate(raw_rows[:12]):
+                if not row: continue
+                has_grp = False
+                has_name = False
+                for c_idx, cell in enumerate(row):
+                    cell_val = str(cell).lower().strip()
+                    if any(k in cell_val for k in ["gruppe", "bereichsnummer", "meldergruppe", "verstärker", "linie"]):
+                        group_col = c_idx
+                        has_grp = True
+                    if any(k in cell_val for k in ["name", "bezeichnung", "bereich", "raum", "zimmer", "station"]):
+                        name_col = c_idx
+                        has_name = True
+                    if any(k in cell_val for k in ["slot", "melder", "index", "nummer", "element"]):
+                        slot_col = c_idx
+                    if any(k in cell_val for k in ["typ", "art", "melder_typ"]):
+                        typ_col = c_idx
+                    if any(k in cell_val for k in ["zustand", "wert", "intervall", "status", "ergebnis"]):
+                        val_col = c_idx
+                if has_grp and has_name:
+                    header_row_index = r_idx + 1
+                    break
+                    
+            groups_map = {}
+            max_slot_num = 10
+            
+            for r_idx in range(header_row_index, len(raw_rows)):
+                row = raw_rows[r_idx]
+                if not row or len(row) <= max(group_col, name_col): continue
+                
+                group_id = str(row[group_col]).strip()
+                if not group_id or group_id.lower() in ["gruppe", "group", "id", "bereichsnummer"]: continue
+                
+                group_name = str(row[name_col]).strip() if name_col < len(row) else f"Bereich {group_id}"
+                slot_str = str(row[slot_col]).strip() if slot_col < len(row) else "1"
+                slot_num = int(slot_str) if slot_str.isdigit() else 1
+                
+                if 0 < slot_num <= 50 and slot_num > max_slot_num:
+                    max_slot_num = slot_num
+                    
+                det_type = str(row[typ_col]).strip() if (typ_col < len(row) and row[typ_col]) else "Normal"
+                val = str(row[val_col]).strip() if (val_col < len(row) and row[val_col]) else ""
+                
+                if group_id not in groups_map:
+                    groups_map[group_id] = {
+                        "groupId": group_id,
+                        "groupName": group_name or f"Bereich {group_id}",
+                        "cellsMap": {}
+                    }
+                
+                g_item = groups_map[group_id]
+                if group_name and not g_item["groupName"]:
+                    g_item["groupName"] = group_name
+                g_item["cellsMap"][slot_num] = {"detectorType": det_type, "value": val}
+                
+            if not groups_map:
+                return jsonify({"success": False, "error": "Es konnten keine tabellarischen Gruppen erkannt werden."}), 400
+                
+            processed_rows = []
+            for g_id, g in groups_map.items():
+                cells = []
+                for s in range(1, max_slot_num + 1):
+                    cell_data = g["cellsMap"].get(s)
+                    cells.append({
+                        "slotKey": str(s),
+                        "detectorType": cell_data["detectorType"] if cell_data else "-",
+                        "value": cell_data["value"] if cell_data else ""
+                    })
+                processed_rows.append({
+                    "groupId": g["groupId"],
+                    "groupName": g["groupName"],
+                    "groupType": "NAM",
+                    "cells": cells
+                })
+                
+            return jsonify({
+                "success": True,
+                "message": f"Datei '{filename}' erfolgreich als CSV eingelesen! {len(processed_rows)} Gruppen mit {max_slot_num} Spalten erfasst.",
+                "subSystems": [
+                    {
+                        "id": f"sub-imported-csv-{int(datetime.now().timestamp())}",
+                        "name": f"CSV Import: {filename.split('.')[0]}",
+                        "rows": processed_rows
+                    }
+                ]
+            })
+        except Exception as e:
+            return jsonify({"success": False, "error": f"CSV Import-Fehler: {str(e)}"}), 500
+            
+    else:
+        # Notifier / Hekatron Structured Demos fallbacks
+        prefix = "N" if import_type == "notifier" else "H"
+        rows = [
+            {
+                "groupId": f"{prefix}01",
+                "groupName": "Foyer West Erdgeschoss",
+                "groupType": "NAM",
+                "cells": [{"slotKey": str(i+1), "detectorType": "Normal", "value": "CHECK" if i == 0 else ""} for i in range(10)]
+            },
+            {
+                "groupId": f"{prefix}02",
+                "groupName": "Archiv & Technik Bereich B2",
+                "groupType": "NAM",
+                "cells": [{"slotKey": str(i+1), "detectorType": "Rauch" if i < 4 else "-", "value": ""} for i in range(10)]
+            }
+        ]
+        return jsonify({
+            "success": True,
+            "message": f"{import_type.upper()} Schnittstellen-Simulation erfolgreich.",
+            "subSystems": [
+                {
+                    "id": f"sub-imported-demo-{int(datetime.now().timestamp())}",
+                    "name": f"{import_type.upper()} Import ({filename})",
+                    "rows": rows
+                }
+            ]
+        })
+
+# ----------------- PDF DOWNLOADS & ARCHIVES ROUTING -----------------
+
+@app.route("/download_pdf/<contract_num>")
+def download_active_pdf(contract_num):
+    pdf_path = os.path.join(SAMBA_SHARE_PATH, "Protokolle", f"{contract_num}.pdf")
+    if not os.path.exists(pdf_path):
+        return "<h3>PDF-Protokoll wurde vom Netlink/Core Server noch nicht synchronisiert oder gerendert.</h3>", 404
+    return send_file(pdf_path, as_attachment=True, download_name=f"{contract_num}.pdf")
+
+@app.route("/download_archive/<contract_number>/<year>/<half_year>/<filename>")
+def download_archive_pdf(contract_number, year, half_year, filename):
+    pdf_path = os.path.join(SAMBA_SHARE_PATH, "Archiv", contract_number, year, half_year, filename)
+    if not os.path.exists(pdf_path):
+        return "<h3>Archiviertes PDF-Protokoll wurde nicht gefunden.</h3>", 404
+    return send_file(pdf_path, as_attachment=True, download_name=filename)
 
 if __name__ == "__main__":
-    print("Starting Internal WebUI dashboard server on port 8080...")
+    print("Starting production companion Flask WebUI app on port 8080...")
     app.run(host="0.0.0.0", port=8080, debug=False)

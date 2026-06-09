@@ -12,7 +12,11 @@ services:
       - SAMBA_SHARE_PATH=/samba_shares
     volumes:
       - db_data:/shared_db:ro  # Database accesses via RO (read-only) or RW depending on needs
-      - samba_data:/samba_shares:rw # Direct write to Samba share for protocol storage
+      # --- SAMBA SHARES CONFIGURATION ---
+      # OPTION A: Use the shared docker volume (local or mapped to external NAS/Samba, see bottom 'volumes' section)
+      - samba_data:/samba_shares:rw
+      # OPTION B: Direct Host Binding (Uncomment below and comment out 'samba_data' above to map a local folder or pre-mounted NAS folder)
+      # - /mnt/nas/wartungsprojekt:/samba_shares:rw
     networks:
       - internal_lan
     ports:
@@ -56,11 +60,18 @@ services:
       - SAMBA_SHARE_PATH=/samba_shares
     volumes:
       - db_data:/shared_db:rw
+      # --- SAMBA SHARES CONFIGURATION ---
+      # OPTION A: Use the shared docker volume
       - samba_data:/samba_shares:rw
+      # OPTION B: Direct Host Binding (Matches Option B in webui)
+      # - /mnt/nas/wartungsprojekt:/samba_shares:rw
     networks:
       - internal_lan
 
   # 5. Samba Service - Exposes network shared folders
+  # ⚠️ OPTIONAL COMPONENT: If you have an existing NAS (like Synology, QNAP, TrueNAS),
+  # you can comment this entire service block out, make your NAS share accessible to
+  # the Docker host, and configure OPTION B (above) or the system volume driver (below).
   samba:
     build: ./server_stack/samba
     container_name: maintenance_samba
@@ -84,5 +95,20 @@ networks:
 volumes:
   # Shared sqlite/db storage directory (Strictly bridges Netlink & ProtocolDB)
   db_data:
+
   # Shared Samba folders volume
+  # Configure this volume based on whether you want an internal Samba helper container OR a physical NAS.
   samba_data:
+    # --- VOLUMES CONFIGURATION OPTION 1: Standalone Docker volume ---
+    # (Default: Docker handles local cache. Used directly when the 'samba' service is running)
+    
+    # --- VOLUMES CONFIGURATION OPTION 2: Mount External NAS directly via CIFS driver ---
+    # Uncomment lines below and adjust values if you wish to connect directly to your external Samba/NAS.
+    # If using this, you should completely delete or comment out the 'samba' service above!
+    #
+    # driver: local
+    # driver_opts:
+    #   type: "cifs"
+    #   device: "//192.168.1.100/my-wartung-share" # Replace with your NAS IP/Share Path
+    #   o: "username=nas_username,password=nas_password,vers=3.0,rw,uid=1000,gid=1000"
+
