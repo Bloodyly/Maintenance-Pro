@@ -32,7 +32,7 @@ import {
   Archive,
   RotateCcw
 } from "lucide-react";
-import CentralWebUI from "./components/CentralWebUI";
+import { PdfTemplate, PdfInstance, PdfFormField } from "./types";
 
 // Types for Simulator data structure
 interface SubSystem {
@@ -629,6 +629,174 @@ export default function App() {
   const [activePerspective, setActivePerspective] = useState<"technician" | "webui">("technician");
   const [isAndroidScannerOpen, setIsAndroidScannerOpen] = useState(false);
 
+  // WebUI Diagnostics State
+  const [webuiDiagnostics, setWebuiDiagnostics] = useState<{
+    status: "idle" | "loading" | "success" | "error";
+    statusCode: number | null;
+    htmlLength: number | null;
+    error: string | null;
+    contentPreview: string | null;
+  }>({
+    status: "idle",
+    statusCode: null,
+    htmlLength: null,
+    error: null,
+    contentPreview: null,
+  });
+
+  const runWebuiDiagnostics = async () => {
+    setWebuiDiagnostics(prev => ({ ...prev, status: "loading", error: null }));
+    try {
+      const res = await fetch("/webui");
+      const text = await res.text();
+      setWebuiDiagnostics({
+        status: "success",
+        statusCode: res.status,
+        htmlLength: text.length,
+        error: null,
+        contentPreview: text.substring(0, 1000),
+      });
+    } catch (err: any) {
+      setWebuiDiagnostics({
+        status: "error",
+        statusCode: null,
+        htmlLength: null,
+        error: err.message || String(err),
+        contentPreview: null,
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (activePerspective === "webui") {
+      runWebuiDiagnostics();
+    }
+  }, [activePerspective]);
+
+  // Technician mobile offline state for PDF Formulare
+  const [mobilePdfTemplates, setMobilePdfTemplates] = useState<PdfTemplate[]>([]);
+  const [mobilePdfInstances, setMobilePdfInstances] = useState<PdfInstance[]>([]);
+  const [activePdfInstance, setActivePdfInstance] = useState<PdfInstance | null>(null);
+  const [isSignaturePadOpen, setIsSignaturePadOpen] = useState(false);
+  const [activeSignatureFieldId, setActiveSignatureFieldId] = useState<string | null>(null);
+  const [mobileActiveTab, setMobileActiveTab] = useState<"matrix" | "pdf">("matrix");
+  const [isAssignContractOpen, setIsAssignContractOpen] = useState(false);
+
+  const fetchMobilePdfData = async () => {
+    try {
+      const resTpl = await fetch("/api/pdf_templates");
+      const dataTpl = await resTpl.json();
+      if (dataTpl.success) setMobilePdfTemplates(dataTpl.templates);
+
+      const resInst = await fetch("/api/pdf_instances");
+      const dataInst = await resInst.json();
+      if (dataInst.success) setMobilePdfInstances(dataInst.instances);
+    } catch (e) {
+      console.error("Error loading mobile PDF data:", e);
+    }
+  };
+
+  useEffect(() => {
+    fetchMobilePdfData();
+  }, []);
+
+  // Signature Pad Handlers
+  const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+
+  useEffect(() => {
+    if (isSignaturePadOpen && canvasRef.current) {
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.strokeStyle = "#000000";
+        ctx.lineWidth = 3;
+        ctx.lineCap = "round";
+      }
+    }
+  }, [isSignaturePadOpen]);
+
+  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    if (!canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const rect = canvas.getBoundingClientRect();
+    let clientX, clientY;
+
+    if ("touches" in e) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else {
+      clientX = e.clientX;
+      clientY = e.clientY;
+    }
+
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    setIsDrawing(true);
+  };
+
+  const draw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    if (!isDrawing || !canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const rect = canvas.getBoundingClientRect();
+    let clientX, clientY;
+
+    if ("touches" in e) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else {
+      clientX = e.clientX;
+      clientY = e.clientY;
+    }
+
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  };
+
+  const stopDrawing = () => {
+    setIsDrawing(false);
+  };
+
+  const clearCanvas = () => {
+    if (!canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+  };
+
+  const saveSignature = () => {
+    if (!canvasRef.current || !activeSignatureFieldId || !activePdfInstance) return;
+    const canvas = canvasRef.current;
+    const dataUrl = canvas.toDataURL("image/png");
+
+    const updatedFields = activePdfInstance.fields.map(f => 
+      f.id === activeSignatureFieldId ? { ...f, value: dataUrl } : f
+    );
+
+    setActivePdfInstance(prev => {
+      if (!prev) return null;
+      return { ...prev, fields: updatedFields };
+    });
+
+    setIsSignaturePadOpen(false);
+    setActiveSignatureFieldId(null);
+    triggerToast("Unterschrift erfolgreich übernommen!", "success");
+  };
+
   // Tenancy State
   const [activeTenantId, setActiveTenantId] = useState<string>("tenant-1");
   const [tenants, setTenants] = useState<Tenant[]>([
@@ -893,12 +1061,26 @@ export default function App() {
   const [isSyncingAll, setIsSyncingAll] = useState(false);
   const [pullDistance, setPullDistance] = useState(0);
 
-  const handleManualSyncAll = () => {
+  const handleManualSyncAll = async () => {
     if (isSyncingAll) return;
     setIsSyncingAll(true);
     triggerToast("Synchronisierung mit Server gestartet...", "info");
 
-    setTimeout(() => {
+    // Synchronize local filled PDF instances with server database
+    try {
+      const pendingSync = mobilePdfInstances.filter(inst => inst.status === "filled");
+      for (const inst of pendingSync) {
+        await fetch("/api/pdf_instances/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...inst, status: "synced" })
+        });
+      }
+    } catch (e) {
+      console.error("Error syncing mobile instances:", e);
+    }
+
+    setTimeout(async () => {
       setProtocols(prev => prev.map(p => {
         // any pending upload protocols get synced back
         if (p.status === "upload_pending") {
@@ -906,9 +1088,13 @@ export default function App() {
         }
         return p;
       }));
+
+      // reload PDF templates and instances after sync
+      await fetchMobilePdfData();
+
       setIsSyncingAll(false);
       setPullDistance(0);
-      triggerToast("SQLite-Datenbank erfolgreich abgeglichen: Alle Protokolle auf dem neuesten Stand!", "success");
+      triggerToast("SQLite-Datenbank erfolgreich abgeglichen: Alle Protokolle und PDF-Formulare synchronisiert!", "success");
     }, 1800);
   };
 
@@ -966,9 +1152,14 @@ export default function App() {
     }
   }, [selectedProtocolId, protocols]);
 
+  // Ref to prevent deep-linking infinite re-render loops
+  const deepLinkProcessedRef = React.useRef(false);
+
   // Deep linking helper (queries URL params & hash on mount and hash changed)
   useEffect(() => {
     const handleDeepLink = () => {
+      if (deepLinkProcessedRef.current) return;
+
       const params = new URLSearchParams(window.location.search);
       let targetId = params.get("id") || params.get("protocol");
 
@@ -993,14 +1184,24 @@ export default function App() {
         const found = protocols.find(p => p.id.toLowerCase() === cleanedId.toLowerCase() || p.contractNumber.toLowerCase() === cleanedId.toLowerCase());
         
         if (found) {
+          deepLinkProcessedRef.current = true;
           // If not downloaded, download it automatically
-          setProtocols(prev => prev.map(p => 
-            p.id === found.id && p.status === "ready_to_download"
-              ? { ...p, status: "synchronized" }
-              : p
-          ));
-          setSelectedProtocolId(found.id);
-          setCurrentScreen("inspection");
+          if (found.status === "ready_to_download") {
+            setProtocols(prev => {
+              const updated = prev.map(p => 
+                p.id === found.id
+                  ? { ...p, status: "synchronized" as const }
+                  : p
+              );
+              return updated;
+            });
+          }
+          if (selectedProtocolId !== found.id) {
+            setSelectedProtocolId(found.id);
+          }
+          if (currentScreen !== "inspection") {
+            setCurrentScreen("inspection");
+          }
           triggerToast(`Deep-Link erkannt: Protokoll "${found.name}" geladen und geöffnet!`, "success");
         }
       }
@@ -1011,7 +1212,7 @@ export default function App() {
 
     window.addEventListener("hashchange", handleDeepLink);
     return () => window.removeEventListener("hashchange", handleDeepLink);
-  }, [protocols]);
+  }, [protocols, selectedProtocolId, currentScreen]);
 
   // NEW Sorting and Filtering State for Search, Geladen & Archiv
   const [filterSystemType, setFilterSystemType] = useState<string>("all");
@@ -1667,6 +1868,7 @@ export default function App() {
           <button 
             onClick={() => setActivePerspective("technician")}
             className={`px-3 py-1.5 rounded text-xs font-bold font-mono uppercase tracking-wide flex items-center gap-1.5 transition-all ${activePerspective === "technician" ? "bg-[#003d9b] text-white shadow-md shadow-black/20" : "text-slate-400 hover:text-slate-200"}`}
+            id="btn-switch-technician"
           >
             <Smartphone size={14} /> Techniker-Perspektive (Android Emulator)
           </button>
@@ -1839,6 +2041,404 @@ export default function App() {
               {/* DYNAMIC SCREEN CONTENT DISPLAY */}
               <div className="flex-1 overflow-y-auto pb-4 relative">
                 
+                {/* 0. NEW MOBILE OVERLAYS FOR PDF FORMS */}
+                {activePdfInstance !== null && (
+                  <div className="absolute inset-0 bg-slate-50 z-[110] flex flex-col h-full overflow-hidden select-none animate-fadeIn">
+                    
+                    {/* Top Header Bar */}
+                    <div className="bg-[#003d9b] text-white px-4 py-3 flex justify-between items-center shrink-0 shadow">
+                      <button 
+                        onClick={() => {
+                          setActivePdfInstance(null);
+                          setIsAssignContractOpen(false);
+                          setIsSignaturePadOpen(false);
+                        }}
+                        className="text-xs font-bold font-mono uppercase bg-white/20 px-2.5 py-1.5 rounded hover:bg-white/30 transition-all flex items-center gap-1"
+                      >
+                        ← Zurück
+                      </button>
+                      <div className="text-center">
+                        <p className="font-bold text-xs truncate max-w-[180px]">{activePdfInstance.templateName}</p>
+                        <p className="text-[9px] font-mono opacity-85">Modus: {activePdfInstance.status === "synced" ? "Nur Lese-Ansicht" : "Bearbeitbar"}</p>
+                      </div>
+                      <span className="bg-amber-500 text-slate-900 font-mono font-black text-[9px] px-1.5 py-0.5 rounded shadow-sm">
+                        {activePdfInstance.systemType}
+                      </span>
+                    </div>
+
+                    {/* PDF Document Viewer Container */}
+                    <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+                      
+                      {/* Interactive PDF Sheet (Aspect Ratio-based simulation) */}
+                      <div className="bg-white border border-slate-300 shadow-md p-4 rounded-lg relative aspect-[1/1.41] w-full max-w-[400px] mx-auto overflow-hidden">
+                        
+                        {/* Simulation watermark / background pattern */}
+                        <div className="absolute inset-0 opacity-5 pointer-events-none border-4 border-slate-800 flex items-center justify-center select-none">
+                          <FileText size={180} />
+                        </div>
+                        <div className="absolute inset-x-0 top-3 text-center pointer-events-none select-none">
+                          <span className="text-[7px] font-bold font-mono tracking-widest text-slate-400">PRÜFPROTOKOLL • FACHQUALIFIKATION DEUTSCHLAND</span>
+                        </div>
+
+                        {/* Visual Form Fields Plotted inside Canvas */}
+                        {activePdfInstance.fields.map((field) => {
+                          const isChecked = field.value === "X" || field.value === "✓";
+                          const isSignature = field.type === "unterschriftfeld";
+                          const isFilled = !!field.value;
+
+                          return (
+                            <div
+                              key={field.id}
+                              style={{
+                                left: `${field.x}%`,
+                                top: `${field.y}%`,
+                                width: `${field.w}%`,
+                                height: `${field.h}%`,
+                              }}
+                              onClick={() => {
+                                if (activePdfInstance.status === "synced") {
+                                  triggerToast("Protokoll ist bereits synchronisiert und kann nicht mehr geändert werden.", "warning");
+                                  return;
+                                }
+
+                                if (field.type === "zeichenfeld") {
+                                  // toggle checkmark instantly
+                                  const newVal = isChecked ? "" : "X";
+                                  const updated = activePdfInstance.fields.map(f => f.id === field.id ? { ...f, value: newVal } : f);
+                                  setActivePdfInstance(prev => prev ? { ...prev, fields: updated } : null);
+                                  triggerToast(`Feld "${field.name}" umgeschaltet!`, "success");
+                                } else if (isSignature) {
+                                  setActiveSignatureFieldId(field.id);
+                                  setIsSignaturePadOpen(true);
+                                } else {
+                                  // text / number field -> prompt for input
+                                  const promptVal = window.prompt(`Geben Sie einen Wert für "${field.name}" ein:`, field.value || "");
+                                  if (promptVal !== null) {
+                                    const updated = activePdfInstance.fields.map(f => f.id === field.id ? { ...f, value: promptVal } : f);
+                                    setActivePdfInstance(prev => prev ? { ...prev, fields: updated } : null);
+                                  }
+                                }
+                              }}
+                              className={`absolute border border-dotted cursor-pointer flex items-center justify-center transition-all select-none overflow-hidden text-[9px] ${
+                                isSignature 
+                                  ? "bg-amber-50 hover:bg-amber-100 border-amber-400 text-amber-900" 
+                                  : isChecked 
+                                    ? "bg-emerald-100 hover:bg-emerald-200 border-emerald-400 text-emerald-900 font-bold" 
+                                    : isFilled 
+                                      ? "bg-blue-100 hover:bg-blue-200 border-blue-400 text-blue-900" 
+                                      : "bg-slate-100/70 hover:bg-slate-200 border-slate-300 text-slate-500"
+                              }`}
+                              title={`${field.name} (${field.type})`}
+                            >
+                              {isSignature ? (
+                                field.value ? (
+                                  <img src={field.value} alt="Signature" className="max-h-full max-w-full object-contain pointer-events-none select-none" />
+                                ) : (
+                                  <span className="text-[7px] font-mono font-bold leading-none scale-90">Sign</span>
+                                )
+                              ) : isChecked ? (
+                                "✓"
+                              ) : (
+                                <span className="truncate px-0.5">{field.value || field.name}</span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Info message */}
+                      <p className="text-[10px] text-slate-500 text-center font-mono font-medium">
+                        Tippen Sie oben direkt auf ein farbiges Feld oder nutzen Sie das folgende Formular:
+                      </p>
+
+                      {/* Dual-Mode Checklist Fields Form List */}
+                      <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-sm flex flex-col gap-3">
+                        <h4 className="font-bold text-xs font-mono text-slate-700 uppercase border-b border-slate-100 pb-1 flex justify-between items-center">
+                          <span>Formular-Feldeditor</span>
+                          <span className="text-[10px] text-slate-400 font-normal">({activePdfInstance.fields.length} Felder)</span>
+                        </h4>
+
+                        <div className="space-y-3.5">
+                          {activePdfInstance.fields.map((field) => {
+                            const isSignature = field.type === "unterschriftfeld";
+                            const isCheck = field.type === "zeichenfeld";
+
+                            return (
+                              <div key={field.id} className="flex flex-col gap-1.5 border-b border-dashed border-slate-100 pb-2.5">
+                                <label className="text-xs font-bold text-slate-700 flex justify-between items-center">
+                                  <span>{field.name}</span>
+                                  <span className="text-[9px] font-mono text-slate-400 font-normal uppercase">{field.type}</span>
+                                </label>
+
+                                {activePdfInstance.status === "synced" ? (
+                                  // Read-only view
+                                  <div className="bg-slate-50 p-2 border border-slate-200 rounded font-mono text-xs text-slate-600">
+                                    {isSignature ? (
+                                      field.value ? <img src={field.value} alt="Sig" className="h-8 object-contain" /> : "Nicht unterschrieben"
+                                    ) : (
+                                      field.value || "— Leer —"
+                                    )}
+                                  </div>
+                                ) : isCheck ? (
+                                  // Interactive Checkbox
+                                  <button
+                                    onClick={() => {
+                                      const newVal = field.value === "X" ? "" : "X";
+                                      const updated = activePdfInstance.fields.map(f => f.id === field.id ? { ...f, value: newVal } : f);
+                                      setActivePdfInstance(prev => prev ? { ...prev, fields: updated } : null);
+                                    }}
+                                    className={`w-full text-left p-2 border rounded text-xs font-bold transition-all flex items-center gap-2 ${
+                                      field.value === "X" 
+                                        ? "bg-emerald-50 border-emerald-300 text-emerald-800" 
+                                        : "bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100"
+                                    }`}
+                                  >
+                                    <span className="w-4 h-4 rounded border border-current flex items-center justify-center text-xs">
+                                      {field.value === "X" ? "✓" : ""}
+                                    </span>
+                                    {field.value === "X" ? "Ja / Ausgewählt" : "Nein / Nicht ausgewählt"}
+                                  </button>
+                                ) : isSignature ? (
+                                  // Interactive Signature trigger
+                                  <div className="flex gap-2 items-center">
+                                    {field.value ? (
+                                      <div className="flex-1 h-12 bg-slate-50 rounded border border-slate-200 flex items-center justify-center p-1">
+                                        <img src={field.value} alt="Sig" className="max-h-full object-contain pointer-events-none" />
+                                      </div>
+                                    ) : (
+                                      <div className="flex-1 h-12 bg-slate-50 rounded border border-slate-200 flex items-center justify-center text-xs text-slate-400 font-mono italic">
+                                        Keine Unterschrift
+                                      </div>
+                                    )}
+                                    <button
+                                      onClick={() => {
+                                        setActiveSignatureFieldId(field.id);
+                                        setIsSignaturePadOpen(true);
+                                      }}
+                                      className="h-10 px-3 bg-amber-500 hover:bg-amber-600 text-slate-900 font-bold rounded text-xs transition-all flex items-center gap-1 shadow-sm"
+                                    >
+                                      <Edit3 size={12} />
+                                      {field.value ? "Ändern" : "Zeichnen"}
+                                    </button>
+                                  </div>
+                                ) : (
+                                  // Standard Text / Numbers Inputs
+                                  <input
+                                    type={field.type === "zahlen" ? "number" : "text"}
+                                    value={field.value || ""}
+                                    onChange={(e) => {
+                                      const updated = activePdfInstance.fields.map(f => f.id === field.id ? { ...f, value: e.target.value } : f);
+                                      setActivePdfInstance(prev => prev ? { ...prev, fields: updated } : null);
+                                    }}
+                                    placeholder={`${field.name} eingeben...`}
+                                    className="w-full bg-slate-50 border border-slate-200 rounded p-2 text-xs text-slate-800 focus:outline-none focus:bg-white focus:border-[#003d9b] transition-all"
+                                  />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                    </div>
+
+                    {/* Bottom Sticky Action Bar */}
+                    <div className="bg-white border-t border-slate-200 p-3 flex gap-2 shrink-0 shadow-lg">
+                      {activePdfInstance.status !== "synced" ? (
+                        <>
+                          <button
+                            onClick={() => {
+                              // Save as Draft
+                              setMobilePdfInstances(prev => prev.map(inst => inst.id === activePdfInstance.id ? activePdfInstance : inst));
+                              triggerToast("Entwurf erfolgreich in SQLite gespeichert!", "success");
+                            }}
+                            className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 h-10 rounded font-bold text-xs border border-slate-300 transition-all"
+                          >
+                            Entwurf sichern
+                          </button>
+
+                          <button
+                            onClick={() => {
+                              // Finalize Locally (status -> filled)
+                              const finalized = { ...activePdfInstance, status: "filled" as const };
+                              setMobilePdfInstances(prev => prev.map(inst => inst.id === activePdfInstance.id ? finalized : inst));
+                              setActivePdfInstance(null);
+                              triggerToast("Formular fertiggestellt! Bereit zur Server-Synchronisierung.", "success");
+                            }}
+                            className="flex-1 bg-amber-500 hover:bg-amber-600 text-slate-900 h-10 rounded font-black text-xs transition-all shadow-md"
+                          >
+                            Lokal fertigstellen
+                          </button>
+
+                          {!deviceOffline && (
+                            <button
+                              onClick={async () => {
+                                // Direct Online Sync
+                                try {
+                                  const synced = { ...activePdfInstance, status: "synced" as const };
+                                  const res = await fetch("/api/pdf_instances/save", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify(synced)
+                                  });
+                                  const data = await res.json();
+                                  if (data.success) {
+                                    setMobilePdfInstances(prev => prev.map(inst => inst.id === activePdfInstance.id ? synced : inst));
+                                    setActivePdfInstance(null);
+                                    triggerToast("Formular erfolgreich auf Server synchronisiert!", "success");
+                                  } else {
+                                    triggerToast("Fehler beim Synchronisieren.", "warning");
+                                  }
+                                } catch (e) {
+                                  console.error(e);
+                                  triggerToast("Verbindungsproblem beim Sync.", "warning");
+                                }
+                              }}
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white h-10 px-3 rounded font-bold text-xs transition-all flex items-center justify-center shadow-md"
+                              title="Direkt online synchronisieren"
+                            >
+                              <RefreshCw size={14} />
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <button
+                          onClick={async () => {
+                            // Synchronized item can download PDF representation!
+                            window.open(`/api/pdf_instances/download/${activePdfInstance.id}`, "_blank");
+                            triggerToast("Simuliertes PDF-Dokument wird exportiert...", "success");
+                          }}
+                          className="w-full bg-[#003d9b] hover:bg-[#003d9b]/90 text-white h-11 rounded font-black text-xs transition-all flex items-center justify-center gap-1.5 shadow"
+                        >
+                          <Download size={15} />
+                          Endgültiges PDF exportieren / drucken
+                        </button>
+                      )}
+                    </div>
+
+                    {/* INTERN SIGNATURE PAD FULL SCREEN OVERLAY DRAWING PAD */}
+                    {isSignaturePadOpen && (
+                      <div className="absolute inset-0 bg-slate-950/90 z-[150] flex items-center justify-center p-4">
+                        <div className="bg-white rounded-2xl border-2 border-slate-700 shadow-2xl p-4 w-full max-w-[340px] flex flex-col gap-3 animate-scaleUp">
+                          <div className="flex justify-between items-center border-b border-slate-100 pb-2">
+                            <h5 className="font-bold text-xs font-mono uppercase text-slate-800">Unterschrift zeichnen</h5>
+                            <button 
+                              onClick={() => {
+                                setIsSignaturePadOpen(false);
+                                setActiveSignatureFieldId(null);
+                              }}
+                              className="text-slate-400 hover:text-slate-600"
+                            >
+                              <X size={16} />
+                            </button>
+                          </div>
+
+                          {/* Interactive Canvas */}
+                          <canvas
+                            ref={canvasRef}
+                            width={300}
+                            height={150}
+                            onMouseDown={startDrawing}
+                            onMouseMove={draw}
+                            onMouseUp={stopDrawing}
+                            onMouseLeave={stopDrawing}
+                            onTouchStart={startDrawing}
+                            onTouchMove={draw}
+                            onTouchEnd={stopDrawing}
+                            className="bg-slate-100 border border-slate-300 rounded-lg touch-none w-full h-[150px] cursor-crosshair"
+                          />
+
+                          <p className="text-[9px] text-slate-400 font-mono italic text-center">
+                            Verwenden Sie Ihren Zeiger oder Finger, um im Feld oben zu signieren.
+                          </p>
+
+                          <div className="flex gap-2">
+                            <button
+                              onClick={clearCanvas}
+                              className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded font-bold text-xs text-slate-700 transition-all"
+                            >
+                              Löschen
+                            </button>
+                            <button
+                              onClick={saveSignature}
+                              className="flex-1 py-2 bg-amber-500 hover:bg-amber-600 text-slate-900 font-black rounded text-xs transition-all shadow"
+                            >
+                              Übernehmen
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                  </div>
+                )}
+
+                {/* MODAL: ASSIGN CONTRACT FOR UNASSIGNED PDF FORMS */}
+                {isAssignContractOpen && activePdfInstance !== null && (
+                  <div className="absolute inset-0 bg-slate-950/80 z-[140] flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl p-4 w-full max-w-[340px] flex flex-col gap-3 animate-scaleUp text-[#191b23]">
+                      <div className="flex justify-between items-center border-b border-slate-100 pb-2">
+                        <h5 className="font-bold text-xs font-mono uppercase text-[#003d9b]">Vertrag zuordnen</h5>
+                        <button 
+                          onClick={() => {
+                            setIsAssignContractOpen(false);
+                            setActivePdfInstance(null);
+                          }}
+                          className="text-slate-400 hover:text-slate-600"
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+
+                      <p className="text-[11px] text-slate-500 leading-normal">
+                        Ordnen Sie dieses ungebundene PDF-Prüfprotokoll einem Ihrer aktiven Serviceverträge im System zu:
+                      </p>
+
+                      <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                        {protocols.map(p => (
+                          <button
+                            key={p.id}
+                            onClick={() => {
+                              // Assign contract properties to current active instance
+                              const updatedInst: PdfInstance = {
+                                ...activePdfInstance,
+                                contractNumber: p.contractNumber,
+                                objectName: p.name
+                              };
+                              setMobilePdfInstances(prev => prev.map(inst => inst.id === activePdfInstance.id ? updatedInst : inst));
+                              setActivePdfInstance(null);
+                              setIsAssignContractOpen(false);
+                              triggerToast(`Formular erfolgreich dem Vertrag "${p.contractNumber}" zugeordnet!`, "success");
+                            }}
+                            className="w-full text-left p-2.5 bg-slate-50 hover:bg-[#f3f3fd] rounded border border-slate-200 hover:border-[#003d9b] transition-all flex justify-between items-center text-xs"
+                          >
+                            <div>
+                              <p className="font-bold text-slate-800">{p.name}</p>
+                              <p className="text-[10px] text-slate-500 font-mono mt-0.5">Vertrag: {p.contractNumber}</p>
+                            </div>
+                            <span className="text-[10px] text-[#003d9b] font-bold">Wählen ▼</span>
+                          </button>
+                        ))}
+                        {protocols.length === 0 && (
+                          <div className="text-center py-4 text-xs text-slate-400 italic">
+                            Keine aktiven Verträge auf dem Mobilgerät geladen.
+                          </div>
+                        )}
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          setIsAssignContractOpen(false);
+                          setActivePdfInstance(null);
+                        }}
+                        className="w-full py-2 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded font-bold text-xs text-slate-700 transition-all text-center"
+                      >
+                        Abbrechen
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {/* 1. SCREEN: SETTINGS (Systemkonfiguration) */}
                 {currentScreen === "settings" && (
                   <div className="p-4 flex flex-col gap-5">
@@ -2260,131 +2860,296 @@ export default function App() {
                       </p>
                     </div>
 
-                    <div className="flex flex-col gap-4">
-                      {filteredProtocols.map(p => {
-                        let badgeLabel = "Offline-Bereit";
-                        let badgeStyle = "text-blue-700 bg-blue-50 border-blue-200";
-
-                        if (p.status === "synchronized") {
-                          badgeLabel = "Synchronisiert";
-                          badgeStyle = "text-emerald-700 bg-emerald-50 border-emerald-200";
-                        } else if (p.status === "upload_pending") {
-                          badgeLabel = "Warte auf Sync (Geändert)";
-                          badgeStyle = "text-amber-700 bg-amber-50 border-amber-200";
-                        }
-
-                        return (
-                          <div key={p.id} className="relative rounded-lg overflow-hidden border border-slate-200 shadow-sm bg-transparent">
-                            {/* Drag action backdrop background */}
-                            <div className="absolute inset-0 flex justify-between items-center rounded-lg text-white font-mono text-xs select-none pointer-events-none">
-                              {/* Left background -> exposing on drag right -> green archive */}
-                              <div className={`absolute inset-y-0 left-0 bg-emerald-600 w-1/2 flex items-center pl-6 gap-2 transition-opacity duration-150 ${(dragDirections[p.id] || "none") === "right" ? "opacity-100" : "opacity-0"}`}>
-                                <Archive size={16} className="animate-pulse" />
-                                <span className="font-bold uppercase tracking-wider">Archivieren</span>
-                              </div>
-                              {/* Right background -> exposing on drag left -> red delete */}
-                              <div className={`absolute inset-y-0 right-0 bg-red-600 w-1/2 flex items-center justify-end pr-6 gap-2 transition-opacity duration-150 ${(dragDirections[p.id] || "none") === "left" ? "opacity-100" : "opacity-0"}`}>
-                                <span className="font-bold uppercase tracking-wider">Löschen</span>
-                                <Trash2 size={16} className="animate-pulse" />
-                              </div>
-                            </div>
-
-                            {/* Actual Draggable Motion container */}
-                            <motion.div
-                              drag="x"
-                              dragConstraints={{ left: -140, right: 140 }}
-                              dragElastic={0.5}
-                              dragSnapToOrigin
-                              onDrag={(event, info) => {
-                                const dir = info.offset.x > 8 ? "right" : info.offset.x < -8 ? "left" : "none";
-                                if (dragDirections[p.id] !== dir) {
-                                  setDragDirections(prev => ({ ...prev, [p.id]: dir }));
-                                }
-                              }}
-                              onDragEnd={(event, info) => {
-                                setDragDirections(prev => ({ ...prev, [p.id]: "none" }));
-                                const threshold = 85;
-                                if (info.offset.x < -threshold) {
-                                  // Swiped Left -> Löschen (Confirm)
-                                  setConfirmModal({
-                                    isOpen: true,
-                                    title: "Vom Mobilgerät entfernen?",
-                                    message: `Möchten Sie das Protokoll "${p.name}" wirklich von diesem Gerät entladen? Ungespeicherte Änderungen gehen dauerhaft verloren.`,
-                                    confirmLabel: "Protokoll löschen",
-                                    isDestructive: true,
-                                    onConfirm: () => {
-                                      setProtocols(prev => prev.map(item => item.id === p.id ? { ...item, status: "ready_to_download", isArchived: false } : item));
-                                      setConfirmModal(prev => ({ ...prev, isOpen: false }));
-                                    }
-                                  });
-                                } else if (info.offset.x > threshold) {
-                                  // Swiped Right -> Archivieren (Confirm)
-                                  setConfirmModal({
-                                    isOpen: true,
-                                    title: "In das Archiv verschieben?",
-                                    message: `Möchten Sie das Protokoll "${p.name}" manuell ins Archiv verschieben? Die Bearbeitung wird danach gesperrt.`,
-                                    confirmLabel: "Archivieren",
-                                    isDestructive: false,
-                                    onConfirm: () => {
-                                      setProtocols(prev => prev.map(item => item.id === p.id ? { ...item, isArchived: true } : item));
-                                      setConfirmModal(prev => ({ ...prev, isOpen: false }));
-                                    }
-                                  });
-                                }
-                              }}
-                              className="relative bg-white p-4 flex flex-col gap-3 cursor-grab active:cursor-grabbing border-b border-slate-100 touch-pan-y"
-                            >
-                              <div className="flex justify-between items-start">
-                                <div>
-                                  <h3 className="font-bold text-slate-900 leading-tight">{p.name}</h3>
-                                  <p className="text-xs font-mono text-slate-500 mt-0.5">{p.address}</p>
-                                </div>
-                                {renderSystemTypeBadge(p.systemType)}
-                              </div>
-
-                              <div className="flex justify-between items-center border-t border-[#ededf8] pt-3 mt-1">
-                                <div className={`text-[11px] font-mono font-bold flex items-center gap-1 px-2.5 py-1.5 rounded border ${badgeStyle}`}>
-                                  <Database size={12} /> {badgeLabel}
-                                </div>
-
-                                <div className="flex gap-1.5">
-                                  <button 
-                                    onClick={() => setActiveModalProtocol(p)}
-                                    className="h-10 w-10 border border-[#c3c6d6] rounded flex items-center justify-center bg-white hover:bg-[#f3f3fd] text-[#191b23]"
-                                    title="Details anzeigen"
-                                  >
-                                    <Info size={16} />
-                                  </button>
-                                  <button 
-                                    onClick={() => {
-                                      setSelectedProtocolId(p.id);
-                                      setCurrentScreen("inspection");
-                                    }}
-                                    className="h-10 w-10 bg-[#003d9b] text-white rounded flex items-center justify-center hover:bg-[#003d9b]/90"
-                                    title="Bearbeiten"
-                                  >
-                                    <Edit3 size={16} />
-                                  </button>
-                                </div>
-                              </div>
-
-                              {/* Manual Helper Info Lines */}
-                              <div className="flex justify-between text-[9px] font-semibold font-mono text-slate-400 mt-1 border-t border-dotted border-slate-100 pt-1 select-none pointer-events-none">
-                                <span>← Links: Löschen</span>
-                                <span>Rechts: Archivieren →</span>
-                              </div>
-                            </motion.div>
-                          </div>
-                        );
-                      })}
-
-                      {filteredProtocols.length === 0 && (
-                        <div className="p-8 border border-dashed border-[#c3c6d6] text-center bg-white flex flex-col items-center gap-3">
-                          <AlertTriangle size={24} className="text-slate-400" />
-                          <p className="text-xs text-[#737685] font-mono">Keine passenden lokalen Protokolle geladen.</p>
-                        </div>
-                      )}
+                    {/* Switcher for Matrix vs PDF */}
+                    <div className="flex bg-slate-200/80 p-1 rounded-lg mb-4 text-xs font-semibold shadow-inner">
+                      <button 
+                        onClick={() => setMobileActiveTab("matrix")}
+                        className={`flex-1 py-1.5 rounded-md transition-all ${mobileActiveTab === "matrix" ? "bg-white text-[#003d9b] shadow font-bold" : "text-[#434654]"}`}
+                      >
+                        Wartungs-Matrizen
+                      </button>
+                      <button 
+                        onClick={() => setMobileActiveTab("pdf")}
+                        className={`flex-1 py-1.5 rounded-md transition-all flex items-center justify-center gap-1.5 ${mobileActiveTab === "pdf" ? "bg-white text-[#003d9b] shadow font-bold" : "text-[#434654]"}`}
+                      >
+                        <FileText size={13} />
+                        PDF-Prüfprotokolle
+                        {mobilePdfInstances.filter(i => i.status !== "synced").length > 0 && (
+                          <span className="bg-amber-500 text-white rounded-full text-[9px] w-4.5 h-4.5 flex items-center justify-center font-bold animate-pulse">
+                            {mobilePdfInstances.filter(i => i.status !== "synced").length}
+                          </span>
+                        )}
+                      </button>
                     </div>
+
+                    {mobileActiveTab === "matrix" && (
+                      <div className="flex flex-col gap-4">
+                        {filteredProtocols.map(p => {
+                          let badgeLabel = "Offline-Bereit";
+                          let badgeStyle = "text-blue-700 bg-blue-50 border-blue-200";
+
+                          if (p.status === "synchronized") {
+                            badgeLabel = "Synchronisiert";
+                            badgeStyle = "text-emerald-700 bg-emerald-50 border-emerald-200";
+                          } else if (p.status === "upload_pending") {
+                            badgeLabel = "Warte auf Sync (Geändert)";
+                            badgeStyle = "text-amber-700 bg-amber-50 border-amber-200";
+                          }
+
+                          return (
+                            <div key={p.id} className="relative rounded-lg overflow-hidden border border-slate-200 shadow-sm bg-transparent">
+                              {/* Drag action backdrop background */}
+                              <div className="absolute inset-0 flex justify-between items-center rounded-lg text-white font-mono text-xs select-none pointer-events-none">
+                                {/* Left background -> exposing on drag right -> green archive */}
+                                <div className={`absolute inset-y-0 left-0 bg-emerald-600 w-1/2 flex items-center pl-6 gap-2 transition-opacity duration-150 ${(dragDirections[p.id] || "none") === "right" ? "opacity-100" : "opacity-0"}`}>
+                                  <Archive size={16} className="animate-pulse" />
+                                  <span className="font-bold uppercase tracking-wider">Archivieren</span>
+                                </div>
+                                {/* Right background -> exposing on drag left -> red delete */}
+                                <div className={`absolute inset-y-0 right-0 bg-red-600 w-1/2 flex items-center justify-end pr-6 gap-2 transition-opacity duration-150 ${(dragDirections[p.id] || "none") === "left" ? "opacity-100" : "opacity-0"}`}>
+                                  <span className="font-bold uppercase tracking-wider">Löschen</span>
+                                  <Trash2 size={16} className="animate-pulse" />
+                                </div>
+                              </div>
+
+                              {/* Actual Draggable Motion container */}
+                              <motion.div
+                                drag="x"
+                                dragConstraints={{ left: -140, right: 140 }}
+                                dragElastic={0.5}
+                                dragSnapToOrigin
+                                onDrag={(event, info) => {
+                                  const dir = info.offset.x > 8 ? "right" : info.offset.x < -8 ? "left" : "none";
+                                  if (dragDirections[p.id] !== dir) {
+                                    setDragDirections(prev => ({ ...prev, [p.id]: dir }));
+                                  }
+                                }}
+                                onDragEnd={(event, info) => {
+                                  setDragDirections(prev => ({ ...prev, [p.id]: "none" }));
+                                  const threshold = 85;
+                                  if (info.offset.x < -threshold) {
+                                    // Swiped Left -> Löschen (Confirm)
+                                    setConfirmModal({
+                                      isOpen: true,
+                                      title: "Vom Mobilgerät entfernen?",
+                                      message: `Möchten Sie das Protokoll "${p.name}" wirklich von diesem Gerät entladen? Ungespeicherte Änderungen gehen dauerhaft verloren.`,
+                                      confirmLabel: "Protokoll löschen",
+                                      isDestructive: true,
+                                      onConfirm: () => {
+                                        setProtocols(prev => prev.map(item => item.id === p.id ? { ...item, status: "ready_to_download", isArchived: false } : item));
+                                        setConfirmModal(prev => ({ ...prev, isOpen: false }));
+                                      }
+                                    });
+                                  } else if (info.offset.x > threshold) {
+                                    // Swiped Right -> Archivieren (Confirm)
+                                    setConfirmModal({
+                                      isOpen: true,
+                                      title: "In das Archiv verschieben?",
+                                      message: `Möchten Sie das Protokoll "${p.name}" manuell ins Archiv verschieben? Die Bearbeitung wird danach gesperrt.`,
+                                      confirmLabel: "Archivieren",
+                                      isDestructive: false,
+                                      onConfirm: () => {
+                                        setProtocols(prev => prev.map(item => item.id === p.id ? { ...item, isArchived: true } : item));
+                                        setConfirmModal(prev => ({ ...prev, isOpen: false }));
+                                      }
+                                    });
+                                  }
+                                }}
+                                className="relative bg-white p-4 flex flex-col gap-3 cursor-grab active:cursor-grabbing border-b border-slate-100 touch-pan-y"
+                              >
+                                <div className="flex justify-between items-start">
+                                  <div>
+                                    <h3 className="font-bold text-slate-900 leading-tight">{p.name}</h3>
+                                    <p className="text-xs font-mono text-slate-500 mt-0.5">{p.address}</p>
+                                  </div>
+                                  {renderSystemTypeBadge(p.systemType)}
+                                </div>
+
+                                <div className="flex justify-between items-center border-t border-[#ededf8] pt-3 mt-1">
+                                  <div className={`text-[11px] font-mono font-bold flex items-center gap-1 px-2.5 py-1.5 rounded border ${badgeStyle}`}>
+                                    <Database size={12} /> {badgeLabel}
+                                  </div>
+
+                                  <div className="flex gap-1.5">
+                                    <button 
+                                      onClick={() => setActiveModalProtocol(p)}
+                                      className="h-10 w-10 border border-[#c3c6d6] rounded flex items-center justify-center bg-white hover:bg-[#f3f3fd] text-[#191b23]"
+                                      title="Details anzeigen"
+                                    >
+                                      <Info size={16} />
+                                    </button>
+                                    <button 
+                                      onClick={() => {
+                                        setSelectedProtocolId(p.id);
+                                        setCurrentScreen("inspection");
+                                      }}
+                                      className="h-10 w-10 bg-[#003d9b] text-white rounded flex items-center justify-center hover:bg-[#003d9b]/90"
+                                      title="Bearbeiten"
+                                    >
+                                      <Edit3 size={16} />
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {/* Manual Helper Info Lines */}
+                                <div className="flex justify-between text-[9px] font-semibold font-mono text-slate-400 mt-1 border-t border-dotted border-slate-100 pt-1 select-none pointer-events-none">
+                                  <span>← Links: Löschen</span>
+                                  <span>Rechts: Archivieren →</span>
+                                </div>
+                              </motion.div>
+                            </div>
+                          );
+                        })}
+
+                        {filteredProtocols.length === 0 && (
+                          <div className="p-8 border border-dashed border-[#c3c6d6] text-center bg-white flex flex-col items-center gap-3">
+                            <AlertTriangle size={24} className="text-slate-400" />
+                            <p className="text-xs text-[#737685] font-mono">Keine passenden lokalen Protokolle geladen.</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {mobileActiveTab === "pdf" && (
+                      <div className="flex flex-col gap-4 animate-fadeIn">
+                        {/* A. Create Blanko-Protokolle */}
+                        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-2">
+                          <h3 className="font-bold text-slate-800 text-xs font-mono uppercase tracking-wider flex items-center gap-1.5 text-[#003d9b]">
+                            <Plus size={14} /> Blanko-Formular erstellen (Offline)
+                          </h3>
+                          <p className="text-[11px] text-slate-500 leading-normal">
+                            Erstellen Sie jederzeit Blanko-Formulare ohne bestehenden Vertrag. Diese können später zugeordnet werden.
+                          </p>
+                          <div className="grid grid-cols-1 gap-1.5 mt-1">
+                            {mobilePdfTemplates.map(tpl => (
+                              <button
+                                key={tpl.id}
+                                onClick={() => {
+                                  // Instantiate a fresh instance offline
+                                  const newInst: PdfInstance = {
+                                    id: `inst-${Date.now()}-${Math.round(Math.random()*1000)}`,
+                                    templateId: tpl.id,
+                                    templateName: tpl.name,
+                                    systemType: tpl.systemType,
+                                    contractNumber: "",
+                                    objectName: "",
+                                    technicianName: "Thomas Prantl",
+                                    filledValues: {},
+                                    signatureData: "",
+                                    status: "pending",
+                                    createdAt: new Date().toISOString(),
+                                    fields: JSON.parse(JSON.stringify(tpl.fields))
+                                  };
+                                  setMobilePdfInstances(prev => [newInst, ...prev]);
+                                  setActivePdfInstance(newInst);
+                                  triggerToast(`Formular "${tpl.name}" offline erstellt!`, "success");
+                                }}
+                                className="text-left px-3 py-2.5 bg-slate-50 hover:bg-slate-100 rounded border border-slate-200 text-xs font-semibold text-slate-700 transition-all flex justify-between items-center"
+                              >
+                                <span>{tpl.name}</span>
+                                <span className="bg-slate-200/80 text-slate-600 px-1.5 py-0.5 rounded text-[9px] font-mono font-bold">{tpl.systemType}</span>
+                              </button>
+                            ))}
+                            {mobilePdfTemplates.length === 0 && (
+                              <div className="text-center py-2 text-xs text-slate-400 italic">
+                                Keine Templates auf Server definiert.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* B. List of Offline PDF Instances */}
+                        <div className="flex flex-col gap-3">
+                          <h3 className="font-bold text-slate-800 text-xs font-mono uppercase tracking-wider">
+                            Aktive PDF-Formulare ({mobilePdfInstances.length})
+                          </h3>
+                          {mobilePdfInstances.map(inst => {
+                            let badgeLbl = "In Bearbeitung";
+                            let badgeSty = "text-slate-700 bg-slate-100 border-slate-300";
+                            if (inst.status === "filled") {
+                              badgeLbl = "Fertiggestellt (Warte auf Sync)";
+                              badgeSty = "text-amber-700 bg-amber-50 border-amber-200";
+                            } else if (inst.status === "synced") {
+                              badgeLbl = "Synchronisiert";
+                              badgeSty = "text-emerald-700 bg-emerald-50 border-emerald-200";
+                            }
+
+                            return (
+                              <div key={inst.id} className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-2">
+                                <div className="flex justify-between items-start">
+                                  <div>
+                                    <h4 className="font-bold text-slate-900 leading-snug">{inst.templateName}</h4>
+                                    <p className="text-[10px] font-mono text-slate-500 mt-0.5">
+                                      Erstellt: {new Date(inst.createdAt).toLocaleString("de-DE")}
+                                    </p>
+                                  </div>
+                                  <span className="bg-slate-100 text-slate-700 text-[10px] font-mono font-bold px-1.5 border border-slate-200 rounded">
+                                    {inst.systemType}
+                                  </span>
+                                </div>
+
+                                <div className="bg-slate-50 p-2 rounded border border-slate-100 text-xs flex flex-col gap-1">
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 font-medium">Zugeordneter Vertrag:</span>
+                                    {inst.contractNumber ? (
+                                      <span className="font-bold text-[#003d9b]">{inst.contractNumber} • {inst.objectName}</span>
+                                    ) : (
+                                      <span className="text-red-500 font-bold flex items-center gap-1 text-[10px]">
+                                        🔴 Unzugeordnet
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex justify-between items-center text-[10px]">
+                                    <span className="text-slate-400">Techniker:</span>
+                                    <span className="font-mono font-bold text-slate-600">{inst.technicianName}</span>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center justify-between mt-1">
+                                  <div className={`text-[10px] font-mono font-bold border rounded px-1.5 py-0.5 ${badgeSty}`}>
+                                    {badgeLbl}
+                                  </div>
+
+                                  <div className="flex gap-1.5">
+                                    {/* Assign Contract button */}
+                                    {!inst.contractNumber && (
+                                      <button
+                                        onClick={() => {
+                                          setActivePdfInstance(inst);
+                                          setIsAssignContractOpen(true);
+                                        }}
+                                        className="h-8 px-2.5 border border-slate-200 rounded text-xs font-semibold bg-slate-50 text-slate-600 hover:bg-slate-100 flex items-center gap-1"
+                                      >
+                                        <Network size={12} />
+                                        Vertrag
+                                      </button>
+                                    )}
+
+                                    {/* Action button */}
+                                    <button
+                                      onClick={() => {
+                                        setActivePdfInstance(inst);
+                                      }}
+                                      className="h-8 px-3 bg-[#003d9b] text-white font-semibold rounded text-xs hover:bg-[#003d9b]/90 flex items-center gap-1.5"
+                                    >
+                                      <Edit3 size={13} />
+                                      {inst.status === "synced" ? "Ansehen" : "Bearbeiten"}
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+
+                          {mobilePdfInstances.length === 0 && (
+                            <div className="text-center p-6 border border-dashed border-slate-300 rounded-lg bg-white">
+                              <FileText size={24} className="text-slate-300 mx-auto mb-2" />
+                              <p className="text-xs text-slate-400 italic">Keine PDF-Formulare vorhanden. Erstellen Sie oben ein Blanko-Formular.</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </motion.div>
                 </div>
               )}
@@ -3146,25 +3911,107 @@ export default function App() {
 
       </div>
       ) : (
-        <CentralWebUI 
-          protocols={protocols}
-          setProtocols={setProtocols}
-          simulatedArchives={simulatedArchives}
-          setSimulatedArchives={setSimulatedArchives}
-          triggerToast={triggerToast}
-          systemTypeSettings={systemTypeSettings}
-          setSystemTypeSettings={setSystemTypeSettings}
-          systemTypeHardwareConfigs={systemTypeHardwareConfigs}
-          setSystemTypeHardwareConfigs={setSystemTypeHardwareConfigs}
-          systemTypeMetadata={systemTypeMetadata}
-          setSystemTypeMetadata={setSystemTypeMetadata}
-          activeTenantId={activeTenantId}
-          tenants={tenants}
-          setTenants={setTenants}
-          handleSwapTenant={handleSwapTenant}
-          globalMainkey={globalMainkey}
-          setGlobalMainkey={setGlobalMainkey}
-        />
+        <div className="flex-1 w-full bg-slate-900 flex flex-col overflow-hidden">
+          {/* Header Controls for WebUI perspective with inline Diagnostics */}
+          <div className="bg-slate-950 border-b border-slate-800 px-6 py-3 flex flex-col sm:flex-row justify-between items-center gap-3 shrink-0">
+            <div className="flex items-center gap-2">
+              <div className="bg-[#003D9B] text-white text-[10px] font-extrabold px-2 py-1 rounded">
+                LIVE
+              </div>
+              <div>
+                <h3 className="text-xs font-bold font-mono uppercase tracking-wider text-slate-200">
+                  Intranet Büro-Leitstelle (Echte Code-Basis)
+                </h3>
+                <p className="text-[10px] text-slate-400 font-mono flex items-center gap-1.5 flex-wrap">
+                  Rendert direkt die Quellcodedatei: <code className="text-amber-400 font-bold">server_stack/webui/templates/index.html</code>
+                </p>
+              </div>
+            </div>
+
+            {/* Live Connection Diagnostics bar */}
+            <div className="flex items-center gap-2 px-3 py-1 bg-slate-900 border border-slate-800 rounded-lg max-w-full overflow-hidden">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse shrink-0"></span>
+              <span className="text-[10px] font-mono text-slate-400 shrink-0 uppercase font-semibold">Server-Status:</span>
+              {webuiDiagnostics.status === "loading" && (
+                <span className="text-amber-400 text-[10px] font-mono animate-pulse">Testen...</span>
+              )}
+              {webuiDiagnostics.status === "error" && (
+                <span className="text-rose-400 text-[10px] font-mono font-bold truncate max-w-[200px]" title={webuiDiagnostics.error || ""}>
+                  Fehler: {webuiDiagnostics.error}
+                </span>
+              )}
+              {webuiDiagnostics.status === "success" && (
+                <span className="text-emerald-400 text-[10px] font-mono font-bold flex items-center gap-1">
+                  HTTP {webuiDiagnostics.statusCode} OK ({Math.round((webuiDiagnostics.htmlLength || 0) / 102) / 10} KB)
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  runWebuiDiagnostics();
+                  const iframe = document.getElementById("webui-iframe") as HTMLIFrameElement;
+                  if (iframe) {
+                    iframe.src = iframe.src; // Trigger reload
+                    triggerToast("Büro-Leitstelle WebUI neu geladen & diagnostiziert!", "info");
+                  }
+                }}
+                className="bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+                title="Aktualisiert die iframe-Vorschau der Leitstelle"
+              >
+                <RotateCcw size={13} /> Aktualisieren & Diagnostizieren
+              </button>
+
+              <a
+                href="/webui"
+                target="_blank"
+                rel="noreferrer"
+                className="bg-[#003d9b] hover:bg-[#002f78] text-white px-3 py-1.5 rounded text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 shadow-lg shadow-blue-900/20"
+                title="Öffnet die Leitstelle in einem vollwertigen, neuen Browser-Tab"
+              >
+                <Maximize2 size={13} /> In neuem Tab öffnen
+              </a>
+            </div>
+          </div>
+
+          {/* Real Iframe wrapper rendering index.html of webui */}
+          <div className="flex-1 w-full bg-white relative flex flex-col">
+            {/* If diagnostics detected an error, show helper instructions */}
+            {webuiDiagnostics.status === "error" && (
+              <div className="bg-rose-50 border-b border-rose-100 px-6 py-3 text-xs text-rose-800 font-medium shrink-0 flex items-center justify-between">
+                <span>⚠️ Hinweis: Der Server-Dienst konnte nicht direkt erreicht werden ({webuiDiagnostics.error}). Bitte starten Sie den Server neu oder öffnen Sie das Interface direkt in einem neuen Tab.</span>
+                <button 
+                  onClick={() => runWebuiDiagnostics()} 
+                  className="bg-rose-100 hover:bg-rose-200 text-rose-900 px-2 py-0.5 rounded font-bold uppercase tracking-wider text-[10px]"
+                >
+                  Erneut testen
+                </button>
+              </div>
+            )}
+
+            {/* Sandbox safety instructions */}
+            <div className="bg-amber-50 border-b border-amber-100 px-6 py-2 text-[11px] text-amber-800 font-medium shrink-0 flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+              <span>💡 <strong>Sandbox-Hinweis:</strong> Falls der Vorschau-Player hier weiß/blank bleibt, blockiert Ihr Browser das Rendern von ungesicherten iFrames in Drittanbieter-Schnittstellen. Klicken Sie oben rechts auf <strong>"In neuem Tab öffnen"</strong>!</span>
+              <a 
+                href="/webui" 
+                target="_blank" 
+                rel="noreferrer" 
+                className="text-amber-950 underline font-bold hover:text-amber-900 shrink-0"
+              >
+                Hier direkt öffnen →
+              </a>
+            </div>
+
+            <iframe
+              id="webui-iframe"
+              src="/webui"
+              className="w-full h-full border-0 absolute inset-0 bg-white"
+              style={{ top: "35px" }} // offset below the sandbox notice
+              title="Büro-Leitstelle Intranet WebUI"
+            />
+          </div>
+        </div>
       )}
 
       {/* Object details modal popup representation */}
