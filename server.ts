@@ -64,6 +64,9 @@ async function startServer() {
       try {
         db.exec("ALTER TABLE protocol_groups ADD COLUMN anlage_type VARCHAR(50) DEFAULT 'BMA'");
       } catch (err) {}
+      try {
+        db.exec("ALTER TABLE protocol_groups ADD COLUMN anlage_address VARCHAR(255) DEFAULT ''");
+      } catch (err) {}
     } catch (err) {
       console.error("Error executing schema.sql bootstrapping script:", err);
     }
@@ -465,6 +468,26 @@ async function startServer() {
         return availableDetectors[1] || "Normal";
       };
 
+      const buildTaifunAddress = (xml: string): string => {
+        const mt3 = getTagValue(xml, "MtName3");
+        const mt2 = getTagValue(xml, "MtName2");
+        const mt1 = getTagValue(xml, "MtName1");
+        const str = getTagValue(xml, "Strasse") || getTagValue(xml, "Straße");
+        const plz = getTagValue(xml, "Plz") || getTagValue(xml, "PLZ");
+        const ort = getTagValue(xml, "Ort");
+
+        const parts: string[] = [];
+        if (mt3) parts.push(mt3);
+        if (mt2) parts.push(mt2);
+        if (mt1) parts.push(mt1);
+        if (str) parts.push(str);
+        
+        const city = [plz, ort].filter(Boolean).join(" ");
+        if (city) parts.push(city);
+
+        return parts.filter(Boolean).join(", ");
+      };
+
       // Detect format: Either new TAIFUN <WtVt> format or old fallback <Vertrag>
       let contractBlocks = extractTagsContent(content, "WtVt");
       let isTaifunFormat = true;
@@ -496,6 +519,7 @@ async function startServer() {
           name: string;
           system_type: string;
           interval: string;
+          address: string;
           devices: { name: string; info: string }[];
         }[] = [];
 
@@ -510,6 +534,7 @@ async function startServer() {
           if (!name) name = `Vertrag ${contract_number}`;
 
           pId = `PRO-${contract_number}`;
+          address = buildTaifunAddress(block) || "Aus TAIFUN importiert";
 
           // Parse WtAgList
           const wtagListBlock = extractTagContent(block, "WtAgList");
@@ -531,6 +556,7 @@ async function startServer() {
             // Extract WtAg Info (avoiding child WtGrt info blocks by splitting on WtGrtList/WtVLLIST if present)
             const wtagHeader = wtag.split(/<WtGrtList>|<WtVLLIST>/i)[0];
             const wtagInfo = getTagValue(wtagHeader, "Info") || `Anlage ${wtAgIndex}`;
+            const anlageAddress = buildTaifunAddress(wtagHeader) || buildTaifunAddress(wtag);
 
             // Extract interval from WtVLLIST -> WtVl -> WtIntervall
             const wtvlListBlock = extractTagContent(wtag, "WtVLLIST");
@@ -588,6 +614,7 @@ async function startServer() {
                 name: subName,
                 system_type: system_type,
                 interval: wtAgInterval,
+                address: anlageAddress,
                 devices: devicesRows
               });
             }
@@ -600,6 +627,7 @@ async function startServer() {
               name: `Hauptanlage`,
               system_type: "BMA",
               interval: "Halbjährlich",
+              address: "",
               devices: [
                 { name: "Zentrale", info: "Zentrale" },
                 { name: "Meldergruppe 1", info: "Linie 1" }
@@ -644,6 +672,7 @@ async function startServer() {
             name: `Hauptanlage`,
             system_type: defaultSystemType,
             interval: interval,
+            address: "",
             devices: devicesList as any
           });
         }
@@ -719,9 +748,9 @@ async function startServer() {
 
               // Insert group
               await dbRun(`
-                INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type, anlage_id, anlage_name, anlage_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-              `, [pId, groupId, groupName, 'NAM', sub.id, sub.name, sub.system_type]);
+                INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type, anlage_id, anlage_name, anlage_type, anlage_address)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              `, [pId, groupId, groupName, 'NAM', sub.id, sub.name, sub.system_type, sub.address || ""]);
 
               // Insert cells
               for (let cIdx = 0; cIdx < activeCols.length; cIdx++) {
@@ -765,9 +794,9 @@ async function startServer() {
 
             for (const [groupId, gData] of Object.entries(groupsMap)) {
               await dbRun(`
-                INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type, anlage_id, anlage_name, anlage_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-              `, [pId, groupId, gData.name, gData.type, sub.id, sub.name, sub.system_type]);
+                INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type, anlage_id, anlage_name, anlage_type, anlage_address)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              `, [pId, groupId, gData.name, gData.type, sub.id, sub.name, sub.system_type, sub.address || ""]);
 
               for (const cell of gData.cells) {
                 await dbRun(`
@@ -866,7 +895,7 @@ async function startServer() {
       const groups = await dbAll("SELECT * FROM protocol_groups WHERE protocol_id = ?", [pId]);
       
       const rowsData = [];
-      const subSystemsMap: Record<string, { id: string; name: string; system_type: string; columns: string[]; rows: any[] }> = {};
+      const subSystemsMap: Record<string, { id: string; name: string; address: string; system_type: string; columns: string[]; rows: any[] }> = {};
 
       for (const g of groups) {
         const cells = await dbAll(
@@ -899,11 +928,13 @@ async function startServer() {
         const aId = g.anlage_id || "default";
         const aName = g.anlage_name || `Hauptanlage`;
         const aType = g.anlage_type || g.group_type || p.system_type || "BMA";
+        const aAddress = g.anlage_address || "";
 
         if (!subSystemsMap[aId]) {
           subSystemsMap[aId] = {
             id: aId,
             name: aName,
+            address: aAddress,
             system_type: aType,
             columns: [],
             rows: [],
@@ -1019,9 +1050,9 @@ async function startServer() {
             const gName = r.groupName;
 
             await dbRun(`
-              INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type, anlage_id, anlage_name, anlage_type)
-              VALUES (?, ?, ?, ?, ?, ?, ?)
-            `, [pId, gId, gName, aType, aId, aName, aType]);
+              INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type, anlage_id, anlage_name, anlage_type, anlage_address)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `, [pId, gId, gName, aType, aId, aName, aType, sub.address || ""]);
 
             for (const c of (r.cells || [])) {
               await dbRun(`
@@ -1039,9 +1070,9 @@ async function startServer() {
           const gType = r.groupType || systemType;
 
           await dbRun(`
-            INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type, anlage_id, anlage_name, anlage_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-          `, [pId, gId, gName, gType, "default", `Hauptanlage (${gType})`, gType]);
+            INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type, anlage_id, anlage_name, anlage_type, anlage_address)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `, [pId, gId, gName, gType, "default", `Hauptanlage (${gType})`, gType, ""]);
 
           for (const c of (r.cells || [])) {
             await dbRun(`
