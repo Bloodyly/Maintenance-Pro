@@ -76,6 +76,10 @@ def init_db():
         group_id VARCHAR(50) NOT NULL,
         group_name VARCHAR(255) NOT NULL,
         group_type VARCHAR(50) DEFAULT 'NAM',
+        anlage_id VARCHAR(100) DEFAULT 'default',
+        anlage_name VARCHAR(255) DEFAULT 'Hauptanlage',
+        anlage_type VARCHAR(50) DEFAULT 'BMA',
+        anlage_address VARCHAR(255) DEFAULT '',
         FOREIGN KEY (protocol_id) REFERENCES protocols(id) ON DELETE CASCADE,
         UNIQUE(protocol_id, group_id)
     );
@@ -95,6 +99,26 @@ def init_db():
     """)
     try:
         cursor.execute("ALTER TABLE group_cells ADD COLUMN updated_at INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE protocol_groups ADD COLUMN anlage_id VARCHAR(100) DEFAULT 'default'")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE protocol_groups ADD COLUMN anlage_name VARCHAR(255) DEFAULT 'Hauptanlage'")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE protocol_groups ADD COLUMN anlage_type VARCHAR(50) DEFAULT 'BMA'")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE protocol_groups ADD COLUMN anlage_address VARCHAR(255) DEFAULT ''")
     except sqlite3.OperationalError:
         pass
 

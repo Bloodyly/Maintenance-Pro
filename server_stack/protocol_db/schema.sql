@@ -31,6 +31,10 @@ CREATE TABLE IF NOT EXISTS protocol_groups (
     group_id VARCHAR(50) NOT NULL, -- e.g. "GRP 01"
     group_name VARCHAR(255) NOT NULL,
     group_type VARCHAR(50) DEFAULT 'NAM', -- 'NAM' / 'VS' / 'TECH'
+    anlage_id VARCHAR(100) DEFAULT 'default',
+    anlage_name VARCHAR(255) DEFAULT 'Hauptanlage',
+    anlage_type VARCHAR(50) DEFAULT 'BMA',
+    anlage_address VARCHAR(255) DEFAULT '',
     FOREIGN KEY (protocol_id) REFERENCES protocols(id) ON DELETE CASCADE,
     UNIQUE(protocol_id, group_id)
 );

@@ -4,12 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Maintenance Pro - Zentral-Kundenverwaltung & Leitstelle</title>
-    <!-- AlpineJS for reactive frontend states -->
-    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
+    <!-- AlpineJS Collapse Plugin FIRST (served locally) -->
+    <script src="/static/collapse.min.js" defer></script>
+    <!-- AlpineJS Main library SECOND (served locally) -->
+    <script src="/static/alpine.min.js" defer></script>
     <!-- Tailwind CSS for modern aesthetics -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Lucide CDN for beautiful iconography -->
-    <script src="https://cdn.jsdelivr.net/npm/lucide@0.435.0/dist/umd/lucide.min.js"></script>
+    <!-- Lucide Icon Library (served locally) -->
+    <script src="/static/lucide.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
         body {
@@ -1798,32 +1800,44 @@
                     let file = event.target.files[0];
                     if (!file) return;
                     
-                    let reader = new FileReader();
-                    reader.onload = (e) => {
-                        let xmlContent = e.target.result;
-                        fetch('/api/import-taifun', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                filename: file.name,
-                                content: xmlContent
+                    let tempReader = new FileReader();
+                    tempReader.onload = (tempEvent) => {
+                        let header = tempEvent.target.result || "";
+                        let encoding = "utf-8";
+                        let match = header.match(/encoding="([^"]+)"/i) || header.match(/encoding='([^']+)'/i);
+                        if (match) {
+                            encoding = match[1];
+                        }
+                        console.log("Detected XML encoding:", encoding);
+                        
+                        let reader = new FileReader();
+                        reader.onload = (e) => {
+                            let xmlContent = e.target.result;
+                            fetch('/api/import-taifun', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    filename: file.name,
+                                    content: xmlContent
+                                })
                             })
-                        })
-                        .then(r => r.json())
-                        .then(data => {
-                            if (data.success) {
-                                this.triggerToast(data.message || 'TAIFUN XML erfolgreich importiert!', 'success');
-                                this.loadProtocols();
-                                setTimeout(() => { this.safeCreateIcons(); }, 300);
-                            } else {
-                                this.triggerToast(data.error || 'Fehler beim XML-Import', 'warning');
-                            }
-                        })
-                        .catch(err => {
-                            this.triggerToast('Netzwerkfehler: ' + err.message, 'warning');
-                        });
+                            .then(r => r.json())
+                            .then(data => {
+                                if (data.success) {
+                                    this.triggerToast(data.message || 'TAIFUN XML erfolgreich importiert!', 'success');
+                                    this.loadProtocols();
+                                    setTimeout(() => { this.safeCreateIcons(); }, 300);
+                                } else {
+                                    this.triggerToast(data.error || 'Fehler beim XML-Import', 'warning');
+                                }
+                            })
+                            .catch(err => {
+                                this.triggerToast('Netzwerkfehler: ' + err.message, 'warning');
+                            });
+                        };
+                        reader.readAsText(file, encoding);
                     };
-                    reader.readAsText(file);
+                    tempReader.readAsText(file.slice(0, 1000), "utf-8");
                 }
             }));
         });
