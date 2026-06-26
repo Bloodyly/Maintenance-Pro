@@ -11,7 +11,7 @@ services:
       - DB_PATH=/shared_db/protocols.db
       - SAMBA_SHARE_PATH=/samba_shares
     volumes:
-      - db_data:/shared_db:ro  # Database accesses via RO (read-only) or RW depending on needs
+      - db_data:/shared_db:rw  # Database accesses via RO (read-only) or RW depending on needs
       # --- SAMBA SHARES CONFIGURATION ---
       # OPTION A: Use the shared docker volume (local or mapped to external NAS/Samba, see bottom 'volumes' section)
       - samba_data:/samba_shares:rw
