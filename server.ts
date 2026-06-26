@@ -419,59 +419,265 @@ async function startServer() {
       // Save content back to central wartungVT.xml file
       fs.writeFileSync(taifunXmlPath, content, "utf8");
 
-      // Parse XML
-      const contractsMatch = content.match(/<Vertrag>([\s\S]*?)<\/Vertrag>/g);
-      if (!contractsMatch) {
-        return res.status(400).json({ success: false, error: "Keine <Vertrag> Elemente im XML gefunden." });
-      }
-
-      const getTag = (block: string, tag: string) => {
-        const match = block.match(new RegExp(`<${tag}>([\\s\\S]*?)<\/${tag}>`));
+      // Custom XML tag extraction helpers
+      const extractTagContent = (xml: string, tag: string): string => {
+        const regex = new RegExp(`<${tag}(?:\\s+[^>]*)?>([\\s\\S]*?)<\/${tag}>`, 'i');
+        const match = xml.match(regex);
         return match ? match[1].trim() : "";
       };
 
-      const defaultColumns: Record<string, string[]> = {
-        "BMA": ["1", "2", "3", "4", "5", "6", "7", "8"],
-        "EMA": ["1", "2", "3", "4"],
-        "ELA": ["1", "2"],
-        "Lichtruf": ["1", "2", "3", "4"],
-        "SLA": ["1", "2"]
+      const extractTagsContent = (xml: string, tag: string): string[] => {
+        const regex = new RegExp(`<${tag}(?:\\s+[^>]*)?>([\\s\\S]*?)<\/${tag}>`, 'gi');
+        const results: string[] = [];
+        let match;
+        while ((match = regex.exec(xml)) !== null) {
+          results.push(match[1].trim());
+        }
+        return results;
       };
 
-      const defaultValues: Record<string, string[]> = {
-        "BMA": ["CHECK", "Def."],
-        "EMA": ["OK", "Fehler"],
-        "ELA": ["OK", "Fehler"],
-        "Lichtruf": ["OK", "Fehler"],
-        "SLA": ["OK", "Fehler"]
+      const getTagValue = (xml: string, tag: string, defaultValue: string = ""): string => {
+        const closingRegex = new RegExp(`<${tag}(?:\\s+[^>]*)?>([\\s\\S]*?)<\/${tag}>`, 'i');
+        const match = xml.match(closingRegex);
+        if (match) return match[1].trim();
+        const selfClosingRegex = new RegExp(`<${tag}(?:\\s+[^>]*)?\\/>`, 'i');
+        if (selfClosingRegex.test(xml)) return "";
+        return defaultValue;
       };
 
-      const defaultDetectorTypes: Record<string, string[]> = {
-        "BMA": ["-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR"],
-        "EMA": ["-", "Normal", "BWM", "RSK", "IR", "GLAS"],
-        "ELA": ["-", "Normal", "LSP", "AMP", "MIC"],
-        "Lichtruf": ["-", "Normal", "ZUG", "RUF", "WC"],
-        "SLA": ["-", "Normal", "SLA"]
+      const matchDetectorType = (infoStr: string, nameStr: string, availableDetectors: string[]): string => {
+        const combined = (infoStr + " " + nameStr).toLowerCase();
+        for (const det of availableDetectors) {
+          if (det === "-" || det === "Normal") continue;
+          if (combined.includes(det.toLowerCase())) {
+            return det;
+          }
+        }
+        // Common German keywords to detector types mapping
+        if (combined.includes("zwischendecke") || combined.includes("zd")) return "ZD";
+        if (combined.includes("ansaug") || combined.includes("ras")) return "RAS";
+        if (combined.includes("linear") || combined.includes("fireray")) return "LINEAR";
+        if (combined.includes("differenz") || combined.includes("tdiff")) return "TDIFF";
+        if (combined.includes("maximal") || combined.includes("tmax")) return "TMAX";
+        if (combined.includes("bewegung") || combined.includes("bwm")) return "BWM";
+        if (combined.includes("riegel") || combined.includes("rsk")) return "RSK";
+        if (combined.includes("glas") || combined.includes("gb")) return "Glasbruch";
+        return availableDetectors[1] || "Normal";
       };
 
+      // Detect format: Either new TAIFUN <WtVt> format or old fallback <Vertrag>
+      let contractBlocks = extractTagsContent(content, "WtVt");
+      let isTaifunFormat = true;
+      if (contractBlocks.length === 0) {
+        contractBlocks = extractTagsContent(content, "Vertrag");
+        isTaifunFormat = false;
+      }
+
+      if (contractBlocks.length === 0) {
+        return res.status(400).json({ 
+          success: false, 
+          error: "Keine gültigen Verträge (<WtVt> oder <Vertrag>) im XML gefunden." 
+        });
+      }
+
+      const settings = loadSettings();
       let importedCount = 0;
 
-      for (const contract of contractsMatch) {
-        const id = getTag(contract, "ID");
-        const contract_number = getTag(contract, "Vertragsnummer");
-        const name = getTag(contract, "Kunde");
-        const address = getTag(contract, "Adresse");
-        const interval = getTag(contract, "Intervall") || "Halbjährlich";
-        const system_type = getTag(contract, "Anlagentyp") || "BMA";
+      for (const block of contractBlocks) {
+        let contract_number = "";
+        let name = "";
+        let address = "Aus TAIFUN importiert";
+        let interval = "Halbjährlich";
+        let defaultSystemType = "BMA";
+        let pId = "";
 
-        if (!contract_number || !name) continue;
+        const subSystemsToImport: {
+          id: string;
+          name: string;
+          system_type: string;
+          interval: string;
+          devices: { name: string; info: string }[];
+        }[] = [];
 
-        const pId = id || `${contract_number}-${system_type}`;
-        const cols = JSON.stringify(defaultColumns[system_type] || ["1", "2", "3", "4"]);
-        const appVals = JSON.stringify(defaultValues[system_type] || ["CHECK", "Def."]);
-        const detTypes = JSON.stringify(defaultDetectorTypes[system_type] || ["-", "Normal"]);
+        if (isTaifunFormat) {
+          contract_number = getTagValue(block, "Nr");
+          const info = getTagValue(block, "Info");
+          const kdMatch = getTagValue(block, "KdMatch");
+          
+          if (!contract_number) continue;
 
-        // Insert or update protocol
+          name = kdMatch ? `${kdMatch} (${info})` : info;
+          if (!name) name = `Vertrag ${contract_number}`;
+
+          pId = `PRO-${contract_number}`;
+
+          // Parse WtAgList
+          const wtagListBlock = extractTagContent(block, "WtAgList");
+          const wtagBlocks = extractTagsContent(wtagListBlock, "WtAg");
+
+          const getCleanType = (rawName: string): string => {
+            let cleaned = rawName.replace(/[\[\]]/g, "").trim();
+            if (cleaned.toLowerCase().includes("bma")) return "BMA";
+            if (cleaned.toLowerCase().includes("ema")) return "EMA";
+            if (cleaned.toLowerCase().includes("ela")) return "ELA";
+            if (cleaned.toLowerCase().includes("lichtruf") || cleaned.toLowerCase().includes("ruf")) return "Lichtruf";
+            if (cleaned.toLowerCase().includes("sla")) return "SLA";
+            return cleaned.toUpperCase() || "BMA";
+          };
+
+          let wtAgIndex = 0;
+          for (const wtag of wtagBlocks) {
+            wtAgIndex++;
+            // Extract WtAg Info (avoiding child WtGrt info blocks by splitting on WtGrtList/WtVLLIST if present)
+            const wtagHeader = wtag.split(/<WtGrtList>|<WtVLLIST>/i)[0];
+            const wtagInfo = getTagValue(wtagHeader, "Info") || `Anlage ${wtAgIndex}`;
+
+            // Extract interval from WtVLLIST -> WtVl -> WtIntervall
+            const wtvlListBlock = extractTagContent(wtag, "WtVLLIST");
+            const wtvlBlocks = extractTagsContent(wtvlListBlock, "WtVl");
+            let wtAgInterval = "Halbjährlich";
+            for (const wtvl of wtvlBlocks) {
+              const wtIntervall = getTagValue(wtvl, "WtIntervall");
+              if (wtIntervall === "3") {
+                wtAgInterval = "Quartalsweise";
+              } else if (wtIntervall === "6") {
+                wtAgInterval = "Halbjährlich";
+              } else if (wtIntervall === "12") {
+                wtAgInterval = "Jährlich";
+              } else if (wtIntervall === "1") {
+                wtAgInterval = "Monatlich";
+              }
+            }
+
+            // Extract WtGrtList -> WtGrt (devices represent individual sheets/systems)
+            const wtgrtListBlock = extractTagContent(wtag, "WtGrtList");
+            const wtgrtBlocks = extractTagsContent(wtgrtListBlock, "WtGrt");
+
+            let wtGrtIndex = 0;
+            for (const wtgrt of wtgrtBlocks) {
+              wtGrtIndex++;
+              const devName = getTagValue(wtgrt, "Name") || "Gerät"; // e.g. "[BMA]"
+              const devInfo = getTagValue(wtgrt, "Info") || "Zentrale";
+
+              const system_type = getCleanType(devName);
+
+              // Set default protocol interval and type to match the first device
+              if (wtAgIndex === 1 && wtGrtIndex === 1) {
+                interval = wtAgInterval;
+                defaultSystemType = system_type;
+              }
+
+              const subId = `sub-taifun-${contract_number}-${wtAgIndex}-${wtGrtIndex}`;
+
+              let subName = "";
+              if (devInfo && devInfo !== devName) {
+                subName = `${wtagInfo} - ${devInfo}`;
+              } else {
+                subName = `${wtagInfo} - ${devName}`;
+              }
+
+              // Pre-initialize template groups/rows for this device check sheet
+              const devicesRows = [
+                { name: devInfo || "Zentrale", info: "Zentrale" },
+                { name: "Meldergruppe 1", info: "Linie 1" },
+                { name: "Meldergruppe 2", info: "Linie 2" }
+              ];
+
+              subSystemsToImport.push({
+                id: subId,
+                name: subName,
+                system_type: system_type,
+                interval: wtAgInterval,
+                devices: devicesRows
+              });
+            }
+          }
+
+          // If no devices were extracted, add a fallback default one
+          if (subSystemsToImport.length === 0) {
+            subSystemsToImport.push({
+              id: `sub-taifun-${contract_number}-default`,
+              name: `Hauptanlage`,
+              system_type: "BMA",
+              interval: "Halbjährlich",
+              devices: [
+                { name: "Zentrale", info: "Zentrale" },
+                { name: "Meldergruppe 1", info: "Linie 1" }
+              ]
+            });
+          }
+
+        } else {
+          // Fallback legacy parser
+          const id = getTagValue(block, "ID");
+          contract_number = getTagValue(block, "Vertragsnummer");
+          name = getTagValue(block, "Kunde");
+          address = getTagValue(block, "Adresse") || "Aus TAIFUN importiert";
+          interval = getTagValue(block, "Intervall") || "Halbjährlich";
+          defaultSystemType = getTagValue(block, "Anlagentyp") || "BMA";
+
+          if (!contract_number || !name) continue;
+          pId = id || `${contract_number}-${defaultSystemType}`;
+
+          const geraeteBlock = extractTagContent(block, "Geraete");
+          const geraeteMatch = extractTagsContent(geraeteBlock, "Geraet");
+          const devicesList: { name: string; info: string; group?: string; melderTyp?: string; anzahl?: number }[] = [];
+
+          for (const gBlock of geraeteMatch) {
+            const devName = getTagValue(gBlock, "Name") || "Gerät";
+            const devInfo = getTagValue(gBlock, "Bereich") || devName;
+            const gruppe = getTagValue(gBlock, "Gruppe") || "GRP 01";
+            const melderTyp = getTagValue(gBlock, "MelderTyp") || "Normal";
+            const anzahl = parseInt(getTagValue(gBlock, "Anzahl")) || 1;
+
+            devicesList.push({
+              name: devName,
+              info: devInfo,
+              group: gruppe,
+              melderTyp: melderTyp,
+              anzahl: anzahl
+            });
+          }
+
+          subSystemsToImport.push({
+            id: `sub-legacy-${pId}`,
+            name: `Hauptanlage`,
+            system_type: defaultSystemType,
+            interval: interval,
+            devices: devicesList as any
+          });
+        }
+
+        // Determine columns, detector types, and applicable values configurations
+        const defaultColumns: Record<string, string[]> = {
+          "BMA": ["1", "2", "3", "4", "5", "6", "7", "8"],
+          "EMA": ["1", "2", "3", "4"],
+          "ELA": ["1", "2"],
+          "Lichtruf": ["1", "2", "3", "4"],
+          "SLA": ["1", "2"]
+        };
+
+        const defaultValues: Record<string, string[]> = {
+          "BMA": ["CHECK", "Def."],
+          "EMA": ["OK", "Fehler"],
+          "ELA": ["OK", "Fehler"],
+          "Lichtruf": ["OK", "Fehler"],
+          "SLA": ["OK", "Fehler"]
+        };
+
+        const defaultDetectorTypes: Record<string, string[]> = {
+          "BMA": ["-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR"],
+          "EMA": ["-", "Normal", "BWM", "RSK", "IR", "GLAS"],
+          "ELA": ["-", "Normal", "LSP", "AMP", "MIC"],
+          "Lichtruf": ["-", "Normal", "ZUG", "RUF", "WC"],
+          "SLA": ["-", "Normal", "SLA"]
+        };
+
+        const cols = JSON.stringify(defaultColumns[defaultSystemType] || ["1", "2", "3", "4"]);
+        const appVals = JSON.stringify(defaultValues[defaultSystemType] || ["CHECK", "Def."]);
+        const detTypes = JSON.stringify(defaultDetectorTypes[defaultSystemType] || ["-", "Normal"]);
+
+        // Insert or update protocol header
         await dbRun(`
           INSERT INTO protocols (id, name, address, contract_number, interval, system_type, status, columns, applicable_values, detector_types)
           VALUES (?, ?, ?, ?, ?, ?, 'ready_to_download', ?, ?, ?)
@@ -481,70 +687,107 @@ async function startServer() {
             interval=excluded.interval, 
             system_type=excluded.system_type, 
             contract_number=excluded.contract_number
-        `, [pId, name, address, contract_number, interval, system_type, cols, appVals, detTypes]);
+        `, [pId, name, address, contract_number, interval, defaultSystemType, cols, appVals, detTypes]);
 
         // Clean up existing protocol groups and cells to re-populate
         await dbRun("DELETE FROM group_cells WHERE protocol_id = ?", [pId]);
         await dbRun("DELETE FROM protocol_groups WHERE protocol_id = ?", [pId]);
 
-        // Extract devices (Geraete)
-        const geraeteBlock = getTag(contract, "Geraete");
-        const geraeteMatch = geraeteBlock ? (geraeteBlock.match(/<Geraet>([\s\S]*?)<\/Geraet>/g) || []) : [];
-        
-        const groupsMap: Record<string, { name: string, type: string, cells: { slotKey: string, detectorType: string, value: string }[] }> = {};
+        let grpCounter = 1;
 
-        for (const gBlock of geraeteMatch) {
-          const type = getTag(gBlock, "Typ") || system_type;
-          const devName = getTag(gBlock, "Name") || "Gerät";
-          const gruppe = getTag(gBlock, "Gruppe") || "GRP 01";
-          const bereich = getTag(gBlock, "Bereich") || devName;
-          const melderTyp = getTag(gBlock, "MelderTyp") || "Normal";
-          const anzahl = parseInt(getTag(gBlock, "Anzahl")) || 1;
+        for (const sub of subSystemsToImport) {
+          const systemSet = settings.system_settings[sub.system_type] || settings.system_settings["BMA"] || {
+            detectors: ["-", "Normal"],
+            values: ["CHECK", "Def."]
+          };
+          const availableDetectors = systemSet.detectors || ["-", "Normal"];
 
-          if (!groupsMap[gruppe]) {
-            groupsMap[gruppe] = {
-              name: bereich,
-              type: type === "BMA" ? "TECH" : "NAM",
-              cells: []
-            };
+          // For the columns list of this subsystem
+          let activeCols = defaultColumns[sub.system_type] || ["1", "2", "3", "4"];
+          if (settings.system_settings[sub.system_type] && settings.system_settings[sub.system_type].columns) {
+            activeCols = settings.system_settings[sub.system_type].columns;
           }
 
-          const startIdx = groupsMap[gruppe].cells.length + 1;
-          for (let i = 0; i < anzahl; i++) {
-            groupsMap[gruppe].cells.push({
-              slotKey: (startIdx + i).toString(),
-              detectorType: melderTyp,
-              value: ""
-            });
-          }
-        }
+          if (isTaifunFormat) {
+            // Build groups from TAIFUN devices
+            for (const dev of sub.devices) {
+              const groupId = `G-${String(grpCounter).padStart(2, '0')}`;
+              grpCounter++;
 
-        // Insert parsed groups and cells
-        for (const [groupId, gData] of Object.entries(groupsMap)) {
-          await dbRun(`
-            INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(protocol_id, group_id) DO UPDATE SET 
-              group_name=excluded.group_name, 
-              group_type=excluded.group_type
-          `, [pId, groupId, gData.name, gData.type]);
+              const groupName = dev.info || `${sub.system_type} Komponente`;
+              const matchedDetType = matchDetectorType(dev.info, dev.name, availableDetectors);
 
-          for (const cell of gData.cells) {
-            await dbRun(`
-              INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value)
-              VALUES (?, ?, ?, ?, ?)
-              ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET 
-                detector_type=excluded.detector_type, 
-                value=excluded.value
-            `, [pId, groupId, cell.slotKey, cell.detectorType, cell.value]);
+              // Insert group
+              await dbRun(`
+                INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type, anlage_id, anlage_name, anlage_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+              `, [pId, groupId, groupName, 'NAM', sub.id, sub.name, sub.system_type]);
+
+              // Insert cells
+              for (let cIdx = 0; cIdx < activeCols.length; cIdx++) {
+                const slotKey = activeCols[cIdx];
+                const detectorType = (cIdx === 0) ? matchedDetType : (availableDetectors[1] || "Normal");
+                
+                await dbRun(`
+                  INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value)
+                  VALUES (?, ?, ?, ?, '')
+                `, [pId, groupId, slotKey, detectorType]);
+              }
+            }
+          } else {
+            // Build groups from legacy format
+            const groupsMap: Record<string, { name: string, type: string, cells: { slotKey: string, detectorType: string, value: string }[] }> = {};
+
+            for (const dev of (sub.devices as any[])) {
+              const gruppe = dev.group || "GRP 01";
+              const devName = dev.name;
+              const bereich = dev.info;
+              const melderTyp = dev.melderTyp || "Normal";
+              const anzahl = dev.anzahl || 1;
+
+              if (!groupsMap[gruppe]) {
+                groupsMap[gruppe] = {
+                  name: bereich,
+                  type: sub.system_type === "BMA" ? "TECH" : "NAM",
+                  cells: []
+                };
+              }
+
+              const startIdx = groupsMap[gruppe].cells.length + 1;
+              for (let i = 0; i < anzahl; i++) {
+                groupsMap[gruppe].cells.push({
+                  slotKey: (startIdx + i).toString(),
+                  detectorType: melderTyp,
+                  value: ""
+                });
+              }
+            }
+
+            for (const [groupId, gData] of Object.entries(groupsMap)) {
+              await dbRun(`
+                INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type, anlage_id, anlage_name, anlage_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+              `, [pId, groupId, gData.name, gData.type, sub.id, sub.name, sub.system_type]);
+
+              for (const cell of gData.cells) {
+                await dbRun(`
+                  INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value)
+                  VALUES (?, ?, ?, ?, ?)
+                `, [pId, groupId, cell.slotKey, cell.detectorType, cell.value]);
+              }
+            }
           }
         }
 
         importedCount++;
       }
 
-      res.json({ success: true, message: `${importedCount} Wartungsverträge erfolgreich aus TAIFUN-XML importiert und verknüpft.` });
+      res.json({ 
+        success: true, 
+        message: `${importedCount} Wartungsverträge inklusive aller Anlagen und Messpunkte erfolgreich aus TAIFUN-XML importiert und verknüpft.` 
+      });
     } catch (e: any) {
+      console.error("Error during XML import:", e);
       res.status(500).json({ success: false, error: e.message });
     }
   });
