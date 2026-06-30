@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import sys
 import re
 import sqlite3
 import json
@@ -10,8 +11,19 @@ import hashlib
 import html as html_module
 import shutil
 import uuid
+import tempfile
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
+
+# Make project root importable so esser_etb_parser.py can be found
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+try:
+    import esser_etb_parser as _etb
+    _ETB_AVAILABLE = True
+except ImportError:
+    _ETB_AVAILABLE = False
 
 app = Flask(__name__)
 app.secret_key = "office-webui-secret-key-182392"
@@ -915,49 +927,26 @@ def save_cells(protocol_id, group_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-def parse_etb_to_grid(file_bytes, filename):
-    """Parse ESSER ETB or CSV export to grid format."""
-    groups = []
+def _etb_anlage_to_grid(anlage):
+    """Convert one parsed Anlage dict from esser_etb_parser to grid JSON."""
+    groups_raw = anlage.get("groups", [])
+    grid_groups = []
     types_dict = {}
-
-    try:
-        text = file_bytes.decode("utf-8", errors="ignore")
-        lines = [l.strip() for l in text.splitlines() if l.strip() and not l.startswith("#")]
-
-        delimiter = ";" if any(";" in l for l in lines[:5]) else ","
-
-        for row_idx, line in enumerate(lines):
-            parts = [p.strip() for p in line.split(delimiter)]
-            if len(parts) < 2:
-                continue
-
-            grp_num = parts[0]
-            grp_name = parts[1]
-            groups.append([grp_num, grp_name])
-
-            for col_idx, det_type in enumerate(parts[2:], start=1):
-                if det_type and det_type != "-":
-                    types_dict[f"{row_idx + 1}_{col_idx}"] = det_type
-    except Exception:
-        pass
-
-    if not groups:
-        # Binary ETB: scan for ASCII strings that look like group records
-        text_fallback = file_bytes.decode("latin-1", errors="replace")
-        matches = re.findall(r'([0-9]{1,3})\x00+([A-Za-z\xc0-\xfe][^\x00]{2,40})', text_fallback)
-        for idx, (grp_num, grp_name) in enumerate(matches[:60]):
-            clean_name = ''.join(c for c in grp_name if c.isprintable()).strip()
-            if clean_name:
-                groups.append([grp_num.zfill(2), clean_name])
-
-    n_groups = len(groups)
-    n_cols = max((int(k.split("_")[1]) for k in types_dict), default=8) if types_dict else 8
-
+    n_cols = 0
+    for row_idx, g in enumerate(groups_raw, 1):
+        grp_num = str(g["grpnum"]) if g.get("grpnum") is not None else str(row_idx)
+        grid_groups.append([grp_num, g.get("text") or ""])
+        dets = g.get("detectors") or []
+        n_cols = max(n_cols, len(dets))
+        for col_idx, det in enumerate(dets, 1):
+            t = det.get("type_name", "")
+            if t and t != "-":
+                types_dict[f"{row_idx}_{col_idx}"] = t
     return {
         "v": 1,
-        "n_groups": n_groups or 5,
-        "n_cols": n_cols,
-        "groups": groups or [[str(i + 1), f"Meldegruppe {i + 1}"] for i in range(5)],
+        "n_groups": len(grid_groups),
+        "n_cols": n_cols or 8,
+        "groups": grid_groups,
         "types": types_dict,
         "values": {}
     }
@@ -972,8 +961,58 @@ def import_etb_cells(protocol_id, group_id):
         return jsonify({"success": False, "error": "Dateiname fehlt."}), 400
     try:
         file_bytes = f.read()
-        grid = parse_etb_to_grid(file_bytes, f.filename)
-        return jsonify({"success": True, "grid": grid})
+        fname = f.filename.lower()
+
+        # Use the real ESSER binary parser for .etb files
+        if _ETB_AVAILABLE and fname.endswith(".etb"):
+            suffix = os.path.splitext(f.filename)[1]
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(file_bytes)
+                tmp_path = tmp.name
+            try:
+                all_anlagen = _etb.parse_etb_all(tmp_path)
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+            if not all_anlagen:
+                return jsonify({"success": False, "error": "Keine Gruppen in ETB-Datei gefunden."}), 400
+
+            if len(all_anlagen) == 1:
+                # Single Anlage — return grid directly
+                grid = _etb_anlage_to_grid(all_anlagen[0])
+                return jsonify({"success": True, "grid": grid, "anlage_count": 1})
+            else:
+                # Multiple Anlagen — let the frontend pick
+                options = [
+                    {"name": a["name"], "group_count": len(a["groups"]),
+                     "grid": _etb_anlage_to_grid(a)}
+                    for a in all_anlagen
+                ]
+                return jsonify({"success": True, "anlage_count": len(options), "anlagen": options})
+
+        # CSV/text fallback
+        text = file_bytes.decode("utf-8", errors="ignore")
+        lines = [l.strip() for l in text.splitlines() if l.strip() and not l.startswith("#")]
+        delimiter = ";" if any(";" in l for l in lines[:5]) else ","
+        grid_groups, types_dict = [], {}
+        for row_idx, line in enumerate(lines, 1):
+            parts = [p.strip() for p in line.split(delimiter)]
+            if len(parts) < 2:
+                continue
+            grid_groups.append([parts[0], parts[1]])
+            for col_idx, det_type in enumerate(parts[2:], 1):
+                if det_type and det_type != "-":
+                    types_dict[f"{row_idx}_{col_idx}"] = det_type
+        if not grid_groups:
+            return jsonify({"success": False, "error": "Datei konnte nicht gelesen werden."}), 400
+        n_cols = max((int(k.split("_")[1]) for k in types_dict), default=8) if types_dict else 8
+        grid = {"v": 1, "n_groups": len(grid_groups), "n_cols": n_cols,
+                "groups": grid_groups, "types": types_dict, "values": {}}
+        return jsonify({"success": True, "grid": grid, "anlage_count": 1})
+
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

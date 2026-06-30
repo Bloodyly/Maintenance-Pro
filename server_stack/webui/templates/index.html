@@ -1382,8 +1382,36 @@
                 Laden...
             </div>
 
+            <!-- ETB MULTI-ANLAGE SELECTION OVERLAY -->
+            <template x-if="etbShowSelection">
+                <div class="flex flex-col items-center justify-center h-full p-8 gap-6">
+                    <div class="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-lg p-6 space-y-4">
+                        <div class="flex items-center justify-between">
+                            <h4 class="text-sm font-bold text-slate-900">Anlage aus ETB-Datei wählen</h4>
+                            <button @click="etbShowSelection = false; etbAnlagenOptions = []"
+                                class="text-slate-400 hover:text-slate-700 p-1 rounded">
+                                <i data-lucide="x" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                        <p class="text-xs text-slate-500">Die ETB-Datei enthält mehrere Anlagen. Wähle die Anlage, die in die aktuelle Liste importiert werden soll.</p>
+                        <div class="space-y-2">
+                            <template x-for="(opt, idx) in etbAnlagenOptions" :key="idx">
+                                <button type="button" @click="applyEtbAnlage(opt)"
+                                    class="w-full text-left px-4 py-3 rounded-xl border border-slate-200 hover:border-blue-400 hover:bg-blue-50 transition group flex items-center justify-between">
+                                    <div>
+                                        <div class="text-xs font-bold text-slate-800" x-text="opt.name || ('Anlage ' + (idx+1))"></div>
+                                        <div class="text-[10px] text-slate-400 mt-0.5" x-text="opt.group_count + ' Gruppen'"></div>
+                                    </div>
+                                    <i data-lucide="chevron-right" class="w-4 h-4 text-slate-300 group-hover:text-blue-500"></i>
+                                </button>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+            </template>
+
             <!-- GRID MODE -->
-            <template x-if="!cellsEditorLoading && gridFormat === 'grid'">
+            <template x-if="!cellsEditorLoading && gridFormat === 'grid' && !etbShowSelection">
                 <div class="p-0 select-none" style="overflow: auto; max-height: calc(100vh - 140px);">
                     <table class="border-collapse text-xs" style="table-layout: fixed; min-width: max-content;">
                         <colgroup>
@@ -1406,24 +1434,22 @@
                             <template x-for="(grp, rIdx) in gridGroups" :key="rIdx">
                                 <tr class="group/row hover:bg-blue-50/30">
                                     <!-- Group number -->
-                                    <td class="sticky left-0 z-10 bg-slate-50 border border-slate-200 text-center p-0">
+                                    <td class="sticky left-0 z-10 bg-slate-50 border border-slate-400 text-center p-0">
                                         <input type="text" x-model="grp.grp_num"
                                             class="w-full text-center font-mono font-bold text-[11px] bg-transparent border-0 outline-none px-1 py-1.5"
                                             :readonly="cellsEditorReadOnly">
                                     </td>
                                     <!-- Bezeichnung -->
-                                    <td class="sticky z-10 bg-white border border-slate-200 p-0" style="left:52px;">
+                                    <td class="sticky z-10 bg-white border border-slate-400 p-0" style="left:52px;">
                                         <input type="text" x-model="grp.name" placeholder="Bezeichnung..."
                                             class="w-full text-[11px] bg-transparent border-0 outline-none px-2 py-1.5"
                                             :readonly="cellsEditorReadOnly">
                                     </td>
                                     <!-- Detector cells -->
                                     <template x-for="c in gridConfig.n_cols" :key="c">
-                                        <td class="border border-slate-200 p-0 text-center relative"
-                                            :class="[
-                                                gridInSelection(rIdx+1, c) ? 'ring-2 ring-inset ring-blue-500' : '',
-                                                cellsEditorReadOnly ? 'cursor-default' : 'cursor-crosshair'
-                                            ]"
+                                        <td class="border border-slate-400 p-0 text-center relative"
+                                            :class="cellsEditorReadOnly ? 'cursor-default' : 'cursor-crosshair'"
+                                            :style="gridCellStyle(rIdx+1, c)"
                                             @mousedown.prevent="if(!cellsEditorReadOnly) gridStartPaint(rIdx+1, c)"
                                             @mouseenter="if(!cellsEditorReadOnly) gridMovePaint(rIdx+1, c)">
                                             <div class="w-full h-7 flex items-center justify-center text-[9px] font-bold transition"
@@ -1442,7 +1468,7 @@
             </template>
 
             <!-- FLAT MODE (fallback for non-grid device types) -->
-            <template x-if="!cellsEditorLoading && gridFormat === 'flat'">
+            <template x-if="!cellsEditorLoading && gridFormat === 'flat' && !etbShowSelection">
                 <div class="p-6 space-y-4">
                     <div class="flex justify-between items-center">
                         <span class="text-xs text-slate-500" x-text="cellsEditorRows.length + ' Meldepunkte'"></span>
@@ -1613,6 +1639,9 @@
                 gridPaintStart: null,
                 gridPaintEnd: null,
                 gridShowValues: false,
+                // ETB multi-Anlage selection
+                etbAnlagenOptions: [],
+                etbShowSelection: false,
 
                 // System Settings Default Template Lookups
                 systemSettings: {
@@ -2357,6 +2386,20 @@
                     const [minC, maxC] = [Math.min(this.gridPaintStart.c, this.gridPaintEnd.c), Math.max(this.gridPaintStart.c, this.gridPaintEnd.c)];
                     return r >= minR && r <= maxR && c >= minC && c <= maxC;
                 },
+                gridCellStyle(r, c) {
+                    if (!this.gridPainting || !this.gridPaintStart || !this.gridPaintEnd) return '';
+                    const minR = Math.min(this.gridPaintStart.r, this.gridPaintEnd.r);
+                    const maxR = Math.max(this.gridPaintStart.r, this.gridPaintEnd.r);
+                    const minC = Math.min(this.gridPaintStart.c, this.gridPaintEnd.c);
+                    const maxC = Math.max(this.gridPaintStart.c, this.gridPaintEnd.c);
+                    if (r < minR || r > maxR || c < minC || c > maxC) return '';
+                    let s = 'background:rgba(59,130,246,0.10);';
+                    if (r === minR) s += 'border-top:2px dashed #3b82f6;';
+                    if (r === maxR) s += 'border-bottom:2px dashed #3b82f6;';
+                    if (c === minC) s += 'border-left:2px dashed #3b82f6;';
+                    if (c === maxC) s += 'border-right:2px dashed #3b82f6;';
+                    return s;
+                },
                 gridStartPaint(r, c) {
                     this.gridPainting = true;
                     this.gridPaintStart = { r, c };
@@ -2509,13 +2552,29 @@
                     })
                     .then(r => r.json())
                     .then(data => {
-                        if (data.success) {
+                        if (!data.success) {
+                            this.triggerToast('Import-Fehler: ' + data.error, 'warning');
+                            return;
+                        }
+                        if (data.anlage_count > 1) {
+                            // Let user pick which Anlage to import
+                            this.etbAnlagenOptions = data.anlagen;
+                            this.etbShowSelection = true;
+                        } else {
                             this.gridFormat = 'grid';
                             this.gridFromJson(data.grid);
                             this.triggerToast('ETB-Datei importiert', 'success');
-                        } else { this.triggerToast('Import-Fehler: ' + data.error, 'warning'); }
-                    });
+                        }
+                    })
+                    .catch(() => this.triggerToast('Verbindungsfehler beim ETB-Import', 'warning'));
                     event.target.value = '';
+                },
+                applyEtbAnlage(anlageOpt) {
+                    this.gridFormat = 'grid';
+                    this.gridFromJson(anlageOpt.grid);
+                    this.etbShowSelection = false;
+                    this.etbAnlagenOptions = [];
+                    this.triggerToast('Anlage "' + anlageOpt.name + '" importiert', 'success');
                 },
 
                 importCellsCsv(event) {
