@@ -12,6 +12,9 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 app = Flask(__name__)
 
+SERVER_VERSION = "1.3.0"
+SERVER_START_TIME = datetime.utcnow()
+
 # Load config from env
 PORT = int(os.environ.get("PORT", 3000))
 DB_PATH = os.environ.get("DB_PATH", "/shared_db/protocols.db")
@@ -599,6 +602,38 @@ def protocols_live_sync(id):
     return encrypted_resp, 200
 
 # --- SHUTDOWN & HEALTH CHECKS ---
+
+@app.route("/init", methods=["GET"])
+def init_status():
+    uptime_seconds = int((datetime.utcnow() - SERVER_START_TIME).total_seconds())
+    uptime_str = f"{uptime_seconds // 3600}h {(uptime_seconds % 3600) // 60}m {uptime_seconds % 60}s"
+
+    db_ok = os.path.exists(DB_PATH)
+    protocol_count = 0
+    technician_count = 0
+    if db_ok:
+        try:
+            conn = get_db_connection()
+            protocol_count = conn.execute("SELECT COUNT(*) FROM protocols").fetchone()[0]
+            technician_count = conn.execute("SELECT COUNT(*) FROM technicians").fetchone()[0]
+            conn.close()
+        except Exception:
+            db_ok = False
+
+    return jsonify({
+        "service": "Maintenance Pro — Netlink Gateway",
+        "version": SERVER_VERSION,
+        "status": "online",
+        "uptime": uptime_str,
+        "timestamp_utc": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "database": {
+            "connected": db_ok,
+            "protocols": protocol_count,
+            "technicians": technician_count,
+        },
+        "active_live_sessions": len(active_live_sessions),
+    })
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "running", "database": os.path.exists(DB_PATH)})
