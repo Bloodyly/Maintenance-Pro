@@ -12,18 +12,12 @@ import html as html_module
 import shutil
 import uuid
 import tempfile
+import subprocess
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
 
-# Make project root importable so esser_etb_parser.py can be found
+# Project root — where esser_etb_parser.py lives
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
-try:
-    import esser_etb_parser as _etb
-    _ETB_AVAILABLE = True
-except ImportError:
-    _ETB_AVAILABLE = False
 
 app = Flask(__name__)
 app.secret_key = "office-webui-secret-key-182392"
@@ -927,21 +921,26 @@ def save_cells(protocol_id, group_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-def _etb_anlage_to_grid(anlage):
-    """Convert one parsed Anlage dict from esser_etb_parser to grid JSON."""
-    groups_raw = anlage.get("groups", [])
+def _json_anlage_to_grid(anlage_json):
+    """Convert one Anlage from esser_etb_parser JSON output to grid format.
+
+    JSON keys: anlage (name), gruppen (list), each Gruppe has:
+      gruppe (int), name (str), melder (list of {nr, typ}), unresolved (bool)
+    """
+    gruppen = anlage_json.get("gruppen", [])
     grid_groups = []
     types_dict = {}
     n_cols = 0
-    for row_idx, g in enumerate(groups_raw, 1):
-        grp_num = str(g["grpnum"]) if g.get("grpnum") is not None else str(row_idx)
-        grid_groups.append([grp_num, g.get("text") or ""])
-        dets = g.get("detectors") or []
-        n_cols = max(n_cols, len(dets))
-        for col_idx, det in enumerate(dets, 1):
-            t = det.get("type_name", "")
-            if t and t != "-":
-                types_dict[f"{row_idx}_{col_idx}"] = t
+    for row_idx, g in enumerate(gruppen, 1):
+        grp_num = str(g["gruppe"]) if g.get("gruppe") is not None else str(row_idx)
+        grid_groups.append([grp_num, g.get("name") or ""])
+        melder = g.get("melder") or []
+        n_cols = max(n_cols, len(melder))
+        for m in melder:
+            col_idx = m["nr"]          # 1-based position within Gruppe
+            typ = m.get("typ", "")
+            if typ and typ != "-":
+                types_dict[f"{row_idx}_{col_idx}"] = typ
     return {
         "v": 1,
         "n_groups": len(grid_groups),
@@ -963,37 +962,65 @@ def import_etb_cells(protocol_id, group_id):
         file_bytes = f.read()
         fname = f.filename.lower()
 
-        # Use the real ESSER binary parser for .etb files
-        if _ETB_AVAILABLE and fname.endswith(".etb"):
-            suffix = os.path.splitext(f.filename)[1]
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(file_bytes)
-                tmp_path = tmp.name
-            try:
-                all_anlagen = _etb.parse_etb_all(tmp_path)
-            finally:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
+        if fname.endswith(".etb"):
+            parser_path = os.path.join(_PROJECT_ROOT, "esser_etb_parser.py")
+            if not os.path.isfile(parser_path):
+                return jsonify({"success": False,
+                                "error": f"esser_etb_parser.py nicht gefunden ({parser_path})"}), 500
 
-            if not all_anlagen:
+            suffix = os.path.splitext(f.filename)[1] or ".etb"
+            tmp_etb = tmp_json = None
+            try:
+                # Write uploaded ETB to temp file
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as fh:
+                    fh.write(file_bytes)
+                    tmp_etb = fh.name
+                # Temp path for JSON output
+                with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as fh:
+                    tmp_json = fh.name
+
+                proc = subprocess.run(
+                    [sys.executable, parser_path, "--json-out", tmp_json, tmp_etb],
+                    capture_output=True, text=True, timeout=30
+                )
+                if proc.returncode != 0:
+                    err = proc.stderr.strip() or "ETB-Parser fehlgeschlagen"
+                    return jsonify({"success": False, "error": err}), 400
+
+                with open(tmp_json, "r", encoding="utf-8") as jf:
+                    parsed = json.load(jf)
+            finally:
+                for p in (tmp_etb, tmp_json):
+                    if p:
+                        try:
+                            os.unlink(p)
+                        except OSError:
+                            pass
+
+            # to_json() returns {"anlage":..,"gruppen":..} for single, {"anlagen":[..]} for multi
+            if "anlagen" in parsed:
+                anlagen_json = parsed["anlagen"]
+            else:
+                anlagen_json = [parsed]
+
+            if not anlagen_json:
                 return jsonify({"success": False, "error": "Keine Gruppen in ETB-Datei gefunden."}), 400
 
-            if len(all_anlagen) == 1:
-                # Single Anlage — return grid directly
-                grid = _etb_anlage_to_grid(all_anlagen[0])
+            if len(anlagen_json) == 1:
+                grid = _json_anlage_to_grid(anlagen_json[0])
                 return jsonify({"success": True, "grid": grid, "anlage_count": 1})
-            else:
-                # Multiple Anlagen — let the frontend pick
-                options = [
-                    {"name": a["name"], "group_count": len(a["groups"]),
-                     "grid": _etb_anlage_to_grid(a)}
-                    for a in all_anlagen
-                ]
-                return jsonify({"success": True, "anlage_count": len(options), "anlagen": options})
 
-        # CSV/text fallback
+            options = [
+                {
+                    "name": a.get("anlage", f"Anlage {i + 1}"),
+                    "group_count": len(a.get("gruppen", [])),
+                    "grid": _json_anlage_to_grid(a)
+                }
+                for i, a in enumerate(anlagen_json)
+            ]
+            return jsonify({"success": True, "anlage_count": len(options), "anlagen": options})
+
+        # CSV/text fallback for non-.etb files
         text = file_bytes.decode("utf-8", errors="ignore")
         lines = [l.strip() for l in text.splitlines() if l.strip() and not l.startswith("#")]
         delimiter = ";" if any(";" in l for l in lines[:5]) else ","
