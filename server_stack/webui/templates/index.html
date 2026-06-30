@@ -381,43 +381,66 @@
 
                                             <div class="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                                             <template x-for="dev in (expandedProtocolDetails.devices || [])" :key="dev.id">
-                                                <div class="bg-white border border-slate-200/80 rounded-xl p-3.5 shadow-sm hover:border-slate-300 hover:shadow-md transition flex items-start gap-3">
+                                                <div class="bg-white border border-slate-200/80 rounded-xl p-3.5 shadow-sm hover:border-slate-300 hover:shadow-md transition flex flex-col gap-2.5">
 
-                                                    <!-- Type Badge (left column) -->
-                                                    <span class="mt-0.5 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase shrink-0 tracking-wider"
-                                                          :class="dev.type === 'BMA'     ? 'bg-red-50 text-red-800 border border-red-200' :
-                                                                  dev.type === 'EMA'     ? 'bg-amber-50 text-amber-800 border border-amber-200' :
-                                                                  dev.type === 'ELA'     ? 'bg-blue-50 text-blue-800 border border-blue-200' :
-                                                                  dev.type === 'Lichtruf'? 'bg-emerald-50 text-emerald-800 border border-emerald-200' :
-                                                                  dev.type === 'SLA'     ? 'bg-purple-50 text-purple-800 border border-purple-200' :
-                                                                  dev.type === 'RWA'     ? 'bg-orange-50 text-orange-800 border border-orange-200' :
-                                                                                           'bg-slate-100 text-slate-600 border border-slate-200'"
-                                                          x-text="dev.type || '?'">
-                                                    </span>
+                                                    <!-- Top row: badge + info -->
+                                                    <div class="flex items-start gap-3">
+                                                        <!-- Type Badge (left column) -->
+                                                        <span class="mt-0.5 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase shrink-0 tracking-wider"
+                                                              :class="dev.type === 'BMA'     ? 'bg-red-50 text-red-800 border border-red-200' :
+                                                                      dev.type === 'EMA'     ? 'bg-amber-50 text-amber-800 border border-amber-200' :
+                                                                      dev.type === 'ELA'     ? 'bg-blue-50 text-blue-800 border border-blue-200' :
+                                                                      dev.type === 'Lichtruf'? 'bg-emerald-50 text-emerald-800 border border-emerald-200' :
+                                                                      dev.type === 'SLA'     ? 'bg-purple-50 text-purple-800 border border-purple-200' :
+                                                                      dev.type === 'RWA'     ? 'bg-orange-50 text-orange-800 border border-orange-200' :
+                                                                                               'bg-slate-100 text-slate-600 border border-slate-200'"
+                                                              x-text="dev.type || '?'">
+                                                        </span>
 
-                                                    <!-- Info (right column) -->
-                                                    <div class="min-w-0 flex-1">
-                                                        <p class="font-bold text-slate-900 text-sm leading-snug truncate" x-text="dev.name"></p>
-                                                        <div class="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-500">
-                                                            <template x-if="dev.anlage_name">
-                                                                <span class="flex items-center gap-1">
-                                                                    <i data-lucide="building-2" class="w-3 h-3 text-slate-400 shrink-0"></i>
-                                                                    <span x-text="dev.anlage_name"></span>
-                                                                </span>
-                                                            </template>
-                                                            <template x-if="dev.anlage_interval">
-                                                                <span class="flex items-center gap-1 text-slate-400">
-                                                                    <i data-lucide="clock" class="w-3 h-3 shrink-0"></i>
-                                                                    <span x-text="dev.anlage_interval"></span>
-                                                                </span>
-                                                            </template>
-                                                            <template x-if="dev.anlage_address && dev.anlage_address !== expandedProtocolDetails.address">
-                                                                <span class="flex items-center gap-1 text-slate-400">
-                                                                    <i data-lucide="user" class="w-3 h-3 shrink-0"></i>
-                                                                    <span class="truncate" x-text="dev.anlage_address"></span>
-                                                                </span>
-                                                            </template>
+                                                        <!-- Info (right column) -->
+                                                        <div class="min-w-0 flex-1">
+                                                            <p class="font-bold text-slate-900 text-sm leading-snug truncate" x-text="dev.name"></p>
+                                                            <div class="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-500">
+                                                                <template x-if="dev.anlage_name">
+                                                                    <span class="flex items-center gap-1">
+                                                                        <i data-lucide="building-2" class="w-3 h-3 text-slate-400 shrink-0"></i>
+                                                                        <span x-text="dev.anlage_name"></span>
+                                                                    </span>
+                                                                </template>
+                                                                <template x-if="dev.anlage_interval">
+                                                                    <span class="flex items-center gap-1 text-slate-400">
+                                                                        <i data-lucide="clock" class="w-3 h-3 shrink-0"></i>
+                                                                        <span x-text="dev.anlage_interval"></span>
+                                                                    </span>
+                                                                </template>
+                                                                <template x-if="dev.anlage_address && dev.anlage_address !== expandedProtocolDetails.address">
+                                                                    <span class="flex items-center gap-1 text-slate-400">
+                                                                        <i data-lucide="user" class="w-3 h-3 shrink-0"></i>
+                                                                        <span class="truncate" x-text="dev.anlage_address"></span>
+                                                                    </span>
+                                                                </template>
+                                                            </div>
                                                         </div>
+                                                    </div>
+
+                                                    <!-- Action button row -->
+                                                    <div class="flex items-center gap-1.5 border-t border-slate-100 pt-2">
+                                                        <button
+                                                            @click="openCellsViewer(expandedProtocolDetails.id, dev)"
+                                                            :disabled="!dev.has_cells"
+                                                            :class="!dev.has_cells ? 'opacity-40 cursor-not-allowed' : 'hover:bg-slate-100 hover:text-slate-800'"
+                                                            class="px-2.5 py-1.5 bg-slate-50 border border-slate-200 text-slate-600 text-[10px] font-semibold rounded-lg flex items-center gap-1 transition"
+                                                        >
+                                                            <i data-lucide="eye" class="w-3 h-3"></i>
+                                                            <span>Ansehen</span>
+                                                        </button>
+                                                        <button
+                                                            @click="openCellsEditor(expandedProtocolDetails.id, dev)"
+                                                            class="px-2.5 py-1.5 bg-[#003D9B] hover:bg-blue-800 text-white text-[10px] font-bold rounded-lg flex items-center gap-1 transition"
+                                                        >
+                                                            <i data-lucide="list-checks" class="w-3 h-3"></i>
+                                                            <span>Auslöseliste bearbeiten</span>
+                                                        </button>
                                                     </div>
                                                 </div>
                                             </template>
@@ -959,11 +982,46 @@
                     </div>
 
                     <!-- ── ALLGEMEIN ── -->
-                    <div x-show="settingsSection==='allgemein'" class="bg-white border border-slate-200 rounded-2xl shadow-sm p-6">
-                        <h3 class="text-base font-bold text-slate-950 mb-2">Allgemeine Einstellungen</h3>
-                        <p class="text-xs text-slate-500">System-Konfiguration und globale Standardwerte.</p>
-                        <div class="mt-6 text-center text-slate-400 text-sm py-8 border border-dashed border-slate-200 rounded-xl">
-                            Noch nicht implementiert.
+                    <div x-show="settingsSection==='allgemein'" class="space-y-4">
+                        <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-6">
+                            <h3 class="text-base font-bold text-slate-950 mb-2">Allgemeine Einstellungen</h3>
+                            <p class="text-xs text-slate-500">System-Konfiguration und globale Standardwerte.</p>
+                        </div>
+
+                        <!-- Danger Zone -->
+                        <div class="bg-white border border-red-200 rounded-2xl shadow-sm p-6 space-y-4">
+                            <div class="flex items-center gap-2 pb-3 border-b border-red-100">
+                                <i data-lucide="alert-triangle" class="w-4 h-4 text-red-500 shrink-0"></i>
+                                <h4 class="text-sm font-bold text-red-700">Gefahrenzone – Destruktive Aktionen</h4>
+                            </div>
+
+                            <div class="flex items-center justify-between gap-4 py-3 border-b border-slate-100">
+                                <div>
+                                    <p class="text-xs font-bold text-slate-800">Alle Auslöselisten löschen</p>
+                                    <p class="text-[11px] text-slate-500 mt-0.5">Löscht alle Meldepunkte (group_cells) aus der Datenbank. Verträge und Geräte bleiben erhalten.</p>
+                                </div>
+                                <button
+                                    @click="deleteAllCells()"
+                                    class="shrink-0 px-4 py-2 bg-red-50 hover:bg-red-100 border border-red-300 text-red-700 text-xs font-bold rounded-lg flex items-center gap-1.5 transition"
+                                >
+                                    <i data-lucide="list-x" class="w-3.5 h-3.5"></i>
+                                    <span>Alle Listen löschen</span>
+                                </button>
+                            </div>
+
+                            <div class="flex items-center justify-between gap-4 py-3">
+                                <div>
+                                    <p class="text-xs font-bold text-slate-800">Alle Verträge unwiderruflich löschen</p>
+                                    <p class="text-[11px] text-slate-500 mt-0.5">Löscht ALLE Verträge, Geräte und Auslöselisten. Diese Aktion kann nicht rückgängig gemacht werden.</p>
+                                </div>
+                                <button
+                                    @click="deleteAllContracts()"
+                                    class="shrink-0 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition shadow-sm"
+                                >
+                                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                                    <span>Alle Verträge löschen</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
 
@@ -1256,7 +1314,143 @@
         </div>
     </div>
 
-    <!-- 6. Footer -->
+    <!-- 6. MODAL: CELLS EDITOR (Auslöselisten) -->
+    <div x-show="isCellsEditorOpen" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex flex-col" style="display:none;">
+
+        <!-- Header bar -->
+        <div class="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shrink-0">
+            <div class="flex items-center gap-3">
+                <span class="px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider"
+                      :class="cellsEditorDevice?.type === 'BMA'     ? 'bg-red-50 text-red-800 border border-red-200' :
+                              cellsEditorDevice?.type === 'EMA'     ? 'bg-amber-50 text-amber-800 border border-amber-200' :
+                              cellsEditorDevice?.type === 'ELA'     ? 'bg-blue-50 text-blue-800 border border-blue-200' :
+                              cellsEditorDevice?.type === 'Lichtruf'? 'bg-emerald-50 text-emerald-800 border border-emerald-200' :
+                              cellsEditorDevice?.type === 'SLA'     ? 'bg-purple-50 text-purple-800 border border-purple-200' :
+                                                                       'bg-slate-100 text-slate-600 border border-slate-200'"
+                      x-text="cellsEditorDevice?.type || ''"></span>
+                <div>
+                    <h3 class="text-base font-bold text-slate-900" x-text="cellsEditorDevice?.name || ''"></h3>
+                    <p class="text-xs text-slate-500" x-text="cellsEditorReadOnly ? 'Auslöseliste (Ansehen)' : 'Auslöseliste bearbeiten'"></p>
+                </div>
+            </div>
+            <div class="flex items-center gap-2">
+                <template x-if="!cellsEditorReadOnly">
+                    <label class="inline-flex items-center gap-2 px-3 py-1.5 border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg cursor-pointer hover:bg-slate-50 transition">
+                        <i data-lucide="file-up" class="w-3.5 h-3.5"></i>
+                        <span>CSV importieren</span>
+                        <input type="file" accept=".csv,.txt" @change="importCellsCsv($event)" class="hidden">
+                    </label>
+                </template>
+                <button @click="isCellsEditorOpen = false" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg border border-slate-200 flex items-center gap-1.5 transition">
+                    <i data-lucide="x" class="w-3.5 h-3.5"></i>
+                    <span>Schließen</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Body -->
+        <div class="flex-1 overflow-y-auto p-6 bg-slate-50/50">
+
+            <!-- Loading state -->
+            <div x-show="cellsEditorLoading" class="flex justify-center items-center py-16 text-slate-400 text-xs gap-2">
+                <svg class="animate-spin h-4 w-4 text-[#003D9B]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>Laden...</span>
+            </div>
+
+            <template x-if="!cellsEditorLoading">
+                <div class="space-y-4 max-w-3xl">
+
+                    <!-- Row count + add button -->
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs text-slate-500" x-text="cellsEditorRows.length + ' Meldepunkte'"></span>
+                        <button x-show="!cellsEditorReadOnly" type="button" @click="addCellsRow()"
+                            class="px-3 py-1.5 bg-[#003D9B] hover:bg-blue-800 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition">
+                            <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                            <span>Zeile hinzufügen</span>
+                        </button>
+                    </div>
+
+                    <!-- Table -->
+                    <div class="rounded-xl border border-slate-200 overflow-hidden bg-white shadow-sm">
+                        <table class="w-full text-xs">
+                            <thead class="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wide border-b border-slate-200">
+                                <tr>
+                                    <th class="px-3 py-2.5 text-center w-12 font-semibold">Nr.</th>
+                                    <th class="px-3 py-2.5 text-left font-semibold">Meldertyp</th>
+                                    <th class="px-3 py-2.5 text-left font-semibold">Prüfwert</th>
+                                    <th x-show="!cellsEditorReadOnly" class="px-3 py-2.5 w-10"></th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                <template x-for="(row, idx) in cellsEditorRows" :key="idx">
+                                    <tr class="hover:bg-slate-50/50 transition">
+                                        <td class="px-3 py-2 text-center font-mono text-slate-400" x-text="row.slot_key"></td>
+                                        <td class="px-3 py-2">
+                                            <template x-if="cellsEditorReadOnly">
+                                                <span class="font-semibold text-slate-700" x-text="row.detector_type"></span>
+                                            </template>
+                                            <template x-if="!cellsEditorReadOnly">
+                                                <select x-model="row.detector_type" class="border border-slate-200 rounded px-2 py-1 text-xs w-full bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-400">
+                                                    <template x-for="dt in (cellsEditorDef?.detectors || ['-', 'Normal'])" :key="dt">
+                                                        <option :value="dt" x-text="dt"></option>
+                                                    </template>
+                                                </select>
+                                            </template>
+                                        </td>
+                                        <td class="px-3 py-2">
+                                            <template x-if="cellsEditorReadOnly">
+                                                <span :class="row.value === 'Def.' ? 'text-red-600 font-bold' : (row.value ? 'text-emerald-700 font-semibold' : 'text-slate-400')"
+                                                      x-text="row.value || '—'"></span>
+                                            </template>
+                                            <template x-if="!cellsEditorReadOnly">
+                                                <select x-model="row.value" class="border border-slate-200 rounded px-2 py-1 text-xs w-full bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-400">
+                                                    <option value="">—</option>
+                                                    <template x-for="v in (cellsEditorDef?.values || ['CHECK', 'Def.'])" :key="v">
+                                                        <option :value="v" x-text="v"></option>
+                                                    </template>
+                                                </select>
+                                            </template>
+                                        </td>
+                                        <td x-show="!cellsEditorReadOnly" class="px-3 py-2 text-center">
+                                            <button type="button" @click="removeCellsRow(idx)" class="text-slate-300 hover:text-red-500 transition">
+                                                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                </template>
+                                <tr x-show="cellsEditorRows.length === 0">
+                                    <td colspan="4" class="px-4 py-10 text-center text-slate-400 text-xs">
+                                        Noch keine Meldepunkte vorhanden.
+                                        <template x-if="!cellsEditorReadOnly">
+                                            <span> Zeile hinzufügen oder CSV importieren.</span>
+                                        </template>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <!-- Footer save bar (only for edit mode) -->
+        <template x-if="!cellsEditorReadOnly">
+            <div class="border-t border-slate-200 bg-white px-6 py-4 flex justify-end gap-3 shrink-0">
+                <button @click="isCellsEditorOpen = false" class="px-4 py-2 border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg hover:bg-slate-50 transition">
+                    Abbrechen
+                </button>
+                <button @click="saveCells()" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition">
+                    <i data-lucide="save" class="w-3.5 h-3.5"></i>
+                    <span>Auslöseliste speichern</span>
+                </button>
+            </div>
+        </template>
+    </div>
+
+    <!-- 7. Footer -->
     <footer class="bg-white border-t border-slate-200 text-xs text-slate-400 py-6 mt-12">
         <div class="max-w-7xl mx-auto px-6 flex justify-between items-center">
             <span>Maintenance Pro Office-WebUI Version 4.1.2</span>
@@ -1331,6 +1525,15 @@
                 expandedProtocolDetails: null,
                 expandedProtocolArchives: [],
                 activeSubViews: {},
+
+                // Cells editor (Auslöselisten)
+                isCellsEditorOpen: false,
+                cellsEditorReadOnly: false,
+                cellsEditorProtocolId: null,
+                cellsEditorDevice: null,
+                cellsEditorRows: [],
+                cellsEditorDef: null,
+                cellsEditorLoading: false,
                 activeEditorSubIndex: 0,
                 
                 // System Settings Default Template Lookups
@@ -2051,6 +2254,124 @@
                         this.activeSystemTypes = this.activeSystemTypes.filter(t => t !== key);
                         this.triggerToast(`Anlagentyp '${key}' wurde entfernt! Bitte speichern Sie die Einstellungen.`, "success");
                     }
+                },
+
+                // ── CELLS EDITOR (Auslöselisten) ──
+                openCellsViewer(protocol_id, dev) {
+                    this.cellsEditorReadOnly = true;
+                    this.openCellsEditorInner(protocol_id, dev);
+                },
+
+                openCellsEditor(protocol_id, dev) {
+                    this.cellsEditorReadOnly = false;
+                    this.openCellsEditorInner(protocol_id, dev);
+                },
+
+                openCellsEditorInner(protocol_id, dev) {
+                    this.cellsEditorProtocolId = protocol_id;
+                    this.cellsEditorDevice = dev;
+                    this.cellsEditorRows = [];
+                    this.cellsEditorDef = null;
+                    this.cellsEditorLoading = true;
+                    this.isCellsEditorOpen = true;
+                    fetch(`/api/cells/${protocol_id}/${dev.id}`)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            this.cellsEditorRows = data.cells;
+                            this.cellsEditorDef = data.meldepunkt_definitionen;
+                        }
+                        this.cellsEditorLoading = false;
+                        setTimeout(() => { this.safeCreateIcons(); }, 100);
+                    });
+                },
+
+                addCellsRow() {
+                    const nextSlot = (this.cellsEditorRows.length + 1).toString();
+                    const defDetectors = this.cellsEditorDef?.detectors || ['-', 'Normal'];
+                    this.cellsEditorRows.push({ slot_key: nextSlot, detector_type: defDetectors[1] || 'Normal', value: '' });
+                },
+
+                removeCellsRow(idx) {
+                    this.cellsEditorRows.splice(idx, 1);
+                    this.cellsEditorRows.forEach((r, i) => { r.slot_key = (i + 1).toString(); });
+                },
+
+                saveCells() {
+                    fetch(`/api/cells/${this.cellsEditorProtocolId}/${this.cellsEditorDevice.id}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ cells: this.cellsEditorRows })
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            this.triggerToast('Auslöseliste gespeichert', 'success');
+                            this.isCellsEditorOpen = false;
+                            if (this.expandedContractId) {
+                                const eid = this.expandedContractId;
+                                this.toggleContractExpand(eid);
+                                setTimeout(() => { this.toggleContractExpand(eid); }, 50);
+                            }
+                            this.loadProtocols(this.currentPage);
+                        } else {
+                            this.triggerToast('Fehler: ' + data.error, 'warning');
+                        }
+                    });
+                },
+
+                importCellsCsv(event) {
+                    const file = event.target.files[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        const lines = e.target.result.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+                        this.cellsEditorRows = [];
+                        lines.forEach((line, idx) => {
+                            const parts = line.split(',').map(p => p.trim());
+                            const defDet = this.cellsEditorDef?.detectors?.[1] || 'Normal';
+                            if (parts.length >= 3) {
+                                this.cellsEditorRows.push({ slot_key: parts[0], detector_type: parts[1], value: parts[2] });
+                            } else if (parts.length === 2) {
+                                this.cellsEditorRows.push({ slot_key: (idx + 1).toString(), detector_type: parts[0], value: parts[1] });
+                            } else {
+                                this.cellsEditorRows.push({ slot_key: (idx + 1).toString(), detector_type: parts[0] || defDet, value: '' });
+                            }
+                        });
+                        this.triggerToast(`${this.cellsEditorRows.length} Zeilen aus CSV importiert`, 'success');
+                    };
+                    reader.readAsText(file);
+                    event.target.value = '';
+                },
+
+                deleteAllCells() {
+                    if (!confirm('Alle Auslöselisten unwiderruflich löschen? Vertragsdaten bleiben erhalten.')) return;
+                    if (!confirm('Sicher? Dieser Vorgang kann nicht rückgängig gemacht werden!')) return;
+                    fetch('/api/admin/delete-all-cells', { method: 'POST' })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            this.triggerToast(`Alle Auslöselisten gelöscht (${data.count} Einträge).`, 'success');
+                            this.loadProtocols(1);
+                        } else {
+                            this.triggerToast('Fehler: ' + data.error, 'warning');
+                        }
+                    });
+                },
+
+                deleteAllContracts() {
+                    if (!confirm('ALLE Verträge und Auslöselisten unwiderruflich löschen?')) return;
+                    if (!confirm('Wirklich alle ' + this.totalCount + ' Verträge löschen? Dieser Vorgang kann nicht rückgängig gemacht werden!')) return;
+                    fetch('/api/admin/delete-all-contracts', { method: 'POST' })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            this.triggerToast(`Alle Verträge gelöscht (${data.count}).`, 'success');
+                            this.loadProtocols(1);
+                        } else {
+                            this.triggerToast('Fehler: ' + data.error, 'warning');
+                        }
+                    });
                 },
 
                 importTaifunXml(event) {

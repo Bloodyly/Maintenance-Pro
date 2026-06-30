@@ -377,7 +377,11 @@ def get_protocol_detail(p_id):
     
     cursor.execute("SELECT * FROM protocol_groups WHERE protocol_id = ?", (p_id,))
     groups = cursor.fetchall()
-    
+
+    # Pre-fetch which groups have cells for has_cells flag
+    cursor.execute("SELECT DISTINCT group_id FROM group_cells WHERE protocol_id = ?", (p_id,))
+    groups_with_cells = {row["group_id"] for row in cursor.fetchall()}
+
     rows_data = []
     sub_systems_map = {}
     
@@ -457,6 +461,7 @@ def get_protocol_detail(p_id):
             "anlage_name": (g["anlage_name"] if "anlage_name" in g.keys() else "") or "",
             "anlage_address": (g["anlage_address"] if "anlage_address" in g.keys() else "") or "",
             "anlage_interval": a_interval,
+            "has_cells": g["group_id"] in groups_with_cells,
         })
 
     for sub in sub_systems_map.values():
@@ -801,6 +806,111 @@ def api_delete_anlagentyp(type_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+# ----------------- CELLS (AUSLÖSELISTEN) API -----------------
+
+@app.route("/api/cells/<protocol_id>/<group_id>", methods=["GET"])
+def get_cells(protocol_id, group_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT group_name, anlage_type, anlage_interval FROM protocol_groups WHERE protocol_id = ? AND group_id = ?",
+        (protocol_id, group_id)
+    )
+    dev = cursor.fetchone()
+    if not dev:
+        conn.close()
+        return jsonify({"success": False, "error": "Gerät nicht gefunden."}), 404
+
+    cursor.execute(
+        "SELECT slot_key, detector_type, value FROM group_cells WHERE protocol_id = ? AND group_id = ? ORDER BY CAST(slot_key AS INTEGER)",
+        (protocol_id, group_id)
+    )
+    cells = []
+    for c in cursor.fetchall():
+        cells.append({"slot_key": c["slot_key"], "detector_type": c["detector_type"], "value": c["value"] or ""})
+    conn.close()
+
+    anlage_type = dev["anlage_type"] or "BMA"
+    settings = load_settings()
+    anlagentypen = settings.get("anlagentypen", DEFAULT_ANLAGENTYPEN)
+    mp_def = None
+    for at in anlagentypen:
+        if at["type_id"] == anlage_type:
+            mp_def = at.get("meldepunkt_definitionen")
+            break
+    if mp_def is None:
+        for at in DEFAULT_ANLAGENTYPEN:
+            if at["type_id"] == anlage_type:
+                mp_def = at.get("meldepunkt_definitionen")
+                break
+
+    return jsonify({
+        "success": True,
+        "cells": cells,
+        "group_name": dev["group_name"],
+        "anlage_type": anlage_type,
+        "anlage_interval": dev["anlage_interval"] or "Halbjährlich",
+        "meldepunkt_definitionen": mp_def
+    })
+
+
+@app.route("/api/cells/<protocol_id>/<group_id>", methods=["POST"])
+def save_cells(protocol_id, group_id):
+    data = request.json
+    cells = data.get("cells", [])
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ?", (protocol_id, group_id))
+        for c in cells:
+            cursor.execute("""
+                INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (protocol_id, group_id, c["slot_key"], c["detector_type"], c.get("value", ""),
+                  int(datetime.now().timestamp())))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
+    conn.close()
+    return jsonify({"success": True, "count": len(cells)})
+
+
+@app.route("/api/admin/delete-all-cells", methods=["POST"])
+def delete_all_cells():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        count = cursor.execute("SELECT COUNT(*) FROM group_cells").fetchone()[0]
+        cursor.execute("DELETE FROM group_cells")
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
+    conn.close()
+    return jsonify({"success": True, "count": count})
+
+
+@app.route("/api/admin/delete-all-contracts", methods=["POST"])
+def delete_all_contracts():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        count = cursor.execute("SELECT COUNT(*) FROM protocols").fetchone()[0]
+        cursor.execute("DELETE FROM group_cells")
+        cursor.execute("DELETE FROM protocol_groups")
+        cursor.execute("DELETE FROM protocols")
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
+    conn.close()
+    return jsonify({"success": True, "count": count})
+
+
 # ----------------- UPLOADS & FILE PARSING API -----------------
 
 def extract_tag_content(xml, tag):
@@ -1089,9 +1199,6 @@ def import_taifun():
                         contract_number=EXCLUDED.contract_number
                 """, (p_id, name, address, contract_number, interval, default_system_type, cols, app_vals, det_types))
 
-                cursor.execute("DELETE FROM group_cells WHERE protocol_id = ?", (p_id,))
-                cursor.execute("DELETE FROM protocol_groups WHERE protocol_id = ?", (p_id,))
-
                 if is_taifun_format:
                     # One protocol_group row per WtGrt — no cells created
                     for dev in devices_to_import:
@@ -1113,6 +1220,9 @@ def import_taifun():
                               dev["anlage_address"], dev["anlage_interval"]))
                 else:
                     # Legacy format: build groups + cells from sub_systems_to_import
+                    # Delete existing data before re-importing (safe for legacy format; TAIFUN uses ON CONFLICT DO UPDATE)
+                    cursor.execute("DELETE FROM group_cells WHERE protocol_id = ?", (p_id,))
+                    cursor.execute("DELETE FROM protocol_groups WHERE protocol_id = ?", (p_id,))
                     for sub in sub_systems_to_import:
                         groups_map = {}
                         for dev in sub["devices"]:
