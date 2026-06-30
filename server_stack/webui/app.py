@@ -7,6 +7,7 @@ import base64
 import csv
 import io
 import hashlib
+import html as html_module
 import shutil
 import uuid
 from datetime import datetime
@@ -18,7 +19,10 @@ app.secret_key = "office-webui-secret-key-182392"
 DB_PATH = os.environ.get("DB_PATH", "/shared_db/protocols.db")
 SAMBA_SHARE_PATH = os.environ.get("SAMBA_SHARE_PATH", "/samba_shares")
 
+_entities_migrated = False
+
 def get_db_connection():
+    global _entities_migrated
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     # Ensure subsystem columns exist dynamically
@@ -38,6 +42,34 @@ def get_db_connection():
         conn.commit()
     except Exception:
         pass
+
+    # One-time migration: decode HTML entities (&#228; → ä etc.) stored by the regex XML parser
+    if not _entities_migrated:
+        try:
+            cursor = conn.cursor()
+            for row in cursor.execute("SELECT id, name, address, contract_number FROM protocols").fetchall():
+                new_name = html_module.unescape(row["name"])
+                new_addr = html_module.unescape(row["address"])
+                new_cn   = html_module.unescape(row["contract_number"])
+                if new_name != row["name"] or new_addr != row["address"] or new_cn != row["contract_number"]:
+                    cursor.execute(
+                        "UPDATE protocols SET name=?, address=?, contract_number=? WHERE id=?",
+                        (new_name, new_addr, new_cn, row["id"])
+                    )
+            for row in cursor.execute("SELECT id, group_name, anlage_name, anlage_address FROM protocol_groups").fetchall():
+                new_gn = html_module.unescape(row["group_name"])
+                new_an = html_module.unescape(row["anlage_name"])
+                new_aa = html_module.unescape(row["anlage_address"])
+                if new_gn != row["group_name"] or new_an != row["anlage_name"] or new_aa != row["anlage_address"]:
+                    cursor.execute(
+                        "UPDATE protocol_groups SET group_name=?, anlage_name=?, anlage_address=? WHERE id=?",
+                        (new_gn, new_an, new_aa, row["id"])
+                    )
+            conn.commit()
+            _entities_migrated = True
+        except Exception:
+            pass
+
     return conn
 
 DEFAULT_ANLAGENTYPEN = [
@@ -774,17 +806,17 @@ def api_delete_anlagentyp(type_id):
 def extract_tag_content(xml, tag):
     pattern = rf"<{tag}(?:\s+[^>]*)?>([\s\S]*?)</{tag}>"
     match = re.search(pattern, xml, re.IGNORECASE)
-    return match.group(1).strip() if match else ""
+    return html_module.unescape(match.group(1).strip()) if match else ""
 
 def extract_tags_content(xml, tag):
     pattern = rf"<{tag}(?:\s+[^>]*)?>([\s\S]*?)</{tag}>"
-    return [m.strip() for m in re.findall(pattern, xml, re.IGNORECASE)]
+    return [html_module.unescape(m.strip()) for m in re.findall(pattern, xml, re.IGNORECASE)]
 
 def get_tag_value(xml, tag, default_value=""):
     closing_pattern = rf"<{tag}(?:\s+[^>]*)?>([\s\S]*?)</{tag}>"
     match = re.search(closing_pattern, xml, re.IGNORECASE)
     if match:
-        return match.group(1).strip()
+        return html_module.unescape(match.group(1).strip())
     self_closing_pattern = rf"<{tag}(?:\s+[^>]*)?/>"
     if re.search(self_closing_pattern, xml, re.IGNORECASE):
         return ""
