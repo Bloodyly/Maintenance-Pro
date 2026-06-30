@@ -75,7 +75,7 @@
                     :class="activeTab === 'settings' ? 'bg-slate-100 text-slate-950 font-semibold' : 'text-slate-600 hover:text-slate-950 hover:bg-slate-50'"
                 >
                     <i data-lucide="settings" class="w-4.5 h-4.5"></i>
-                    <span>System-Definitionen</span>
+                    <span>Einstellungen</span>
                 </button>
             </div>
             <div>
@@ -138,35 +138,81 @@
                     </div>
                 </div>
 
+                <!-- Type filter chips & Ohne-Listen toggle -->
+                <div class="px-6 py-3 border-b border-slate-100 flex flex-wrap gap-2 items-center bg-white">
+                    <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wide shrink-0">Filter:</span>
+                    <template x-for="t in anlagentypen.filter(x => x.active)" :key="t.type_id">
+                        <button
+                            type="button"
+                            @click="toggleTypeFilter(t.type_id)"
+                            class="px-2.5 py-1 rounded-full text-[10px] font-bold border transition"
+                            :class="activeTypeFilter.includes(t.type_id)
+                                ? 'bg-[#003D9B] text-white border-[#003D9B]'
+                                : 'bg-white text-slate-600 border-slate-300 hover:border-slate-500'"
+                            x-text="t.badge || t.type_id"
+                        ></button>
+                    </template>
+                    <div class="h-4 w-px bg-slate-200 mx-1 shrink-0"></div>
+                    <button
+                        type="button"
+                        @click="toggleOhneListen()"
+                        class="px-2.5 py-1 rounded-full text-[10px] font-bold border transition flex items-center gap-1"
+                        :class="ohneListenMode
+                            ? 'bg-amber-500 text-white border-amber-500'
+                            : 'bg-white text-slate-600 border-slate-300 hover:border-amber-400 hover:text-amber-600'"
+                    >
+                        <i data-lucide="clipboard-x" class="w-3 h-3"></i>
+                        <span>Ohne Listen</span>
+                        <span class="ml-0.5 opacity-80" x-text="'(' + (tabCounts.ohne_liste ?? 0) + ')'"></span>
+                    </button>
+                    <button
+                        x-show="activeTypeFilter.length > 0 || ohneListenMode"
+                        type="button"
+                        @click="activeTypeFilter = []; ohneListenMode = false; loadProtocols(1);"
+                        class="px-2 py-1 rounded text-[10px] text-slate-400 hover:text-slate-700 underline transition"
+                    >Filter zurücksetzen</button>
+                </div>
+
                 <!-- Tabs filtering system -->
                 <div class="flex border-b border-slate-200 bg-slate-50/80">
-                    <button
-                        @click="activeFilterTab = 'offen'; expandedContractId = null; loadProtocols(1);"
-                        class="py-3 px-6 text-xs font-bold border-b-2 transition-all flex items-center gap-2"
-                        :class="activeFilterTab === 'offen' ? 'border-[#003D9B] text-[#003D9B] bg-white font-extrabold' : 'border-transparent text-slate-500 hover:text-slate-800'"
-                    >
-                        <i data-lucide="circle-dot" class="w-4 h-4"></i>
-                        <span>Offen</span>
-                        <span class="bg-slate-200/80 text-slate-700 px-2 py-0.5 rounded-full text-[10px] font-semibold" x-text="tabCounts.offen"></span>
-                    </button>
-                    <button
-                        @click="activeFilterTab = 'erledigt'; expandedContractId = null; loadProtocols(1);"
-                        class="py-3 px-6 text-xs font-bold border-b-2 transition-all flex items-center gap-2"
-                        :class="activeFilterTab === 'erledigt' ? 'border-[#003D9B] text-[#003D9B] bg-white font-extrabold' : 'border-transparent text-slate-500 hover:text-slate-800'"
-                    >
-                        <i data-lucide="check-circle-2" class="w-4 h-4"></i>
-                        <span>Erledigt</span>
-                        <span class="bg-slate-200/80 text-slate-700 px-2 py-0.5 rounded-full text-[10px] font-semibold" x-text="tabCounts.erledigt"></span>
-                    </button>
-                    <button
-                        @click="activeFilterTab = 'defekte'; expandedContractId = null; loadProtocols(1);"
-                        class="py-3 px-6 text-xs font-bold border-b-2 transition-all flex items-center gap-2"
-                        :class="activeFilterTab === 'defekte' ? 'border-red-600 text-red-600 bg-white font-extrabold' : 'border-transparent text-slate-500 hover:text-red-600'"
-                    >
-                        <i data-lucide="alert-triangle" class="w-4 h-4"></i>
-                        <span>Defekte</span>
-                        <span class="bg-red-50 text-red-700 px-2 py-0.5 rounded-full text-[10px] font-semibold" x-text="tabCounts.defekte"></span>
-                    </button>
+                    <template x-if="!ohneListenMode">
+                        <div class="flex">
+                            <button
+                                @click="activeFilterTab = 'offen'; expandedContractId = null; loadProtocols(1);"
+                                class="py-3 px-6 text-xs font-bold border-b-2 transition-all flex items-center gap-2"
+                                :class="activeFilterTab === 'offen' ? 'border-[#003D9B] text-[#003D9B] bg-white font-extrabold' : 'border-transparent text-slate-500 hover:text-slate-800'"
+                            >
+                                <i data-lucide="circle-dot" class="w-4 h-4"></i>
+                                <span>Offen</span>
+                                <span class="bg-slate-200/80 text-slate-700 px-2 py-0.5 rounded-full text-[10px] font-semibold" x-text="tabCounts.offen"></span>
+                            </button>
+                            <button
+                                @click="activeFilterTab = 'erledigt'; expandedContractId = null; loadProtocols(1);"
+                                class="py-3 px-6 text-xs font-bold border-b-2 transition-all flex items-center gap-2"
+                                :class="activeFilterTab === 'erledigt' ? 'border-[#003D9B] text-[#003D9B] bg-white font-extrabold' : 'border-transparent text-slate-500 hover:text-slate-800'"
+                            >
+                                <i data-lucide="check-circle-2" class="w-4 h-4"></i>
+                                <span>Erledigt</span>
+                                <span class="bg-slate-200/80 text-slate-700 px-2 py-0.5 rounded-full text-[10px] font-semibold" x-text="tabCounts.erledigt"></span>
+                            </button>
+                            <button
+                                @click="activeFilterTab = 'defekte'; expandedContractId = null; loadProtocols(1);"
+                                class="py-3 px-6 text-xs font-bold border-b-2 transition-all flex items-center gap-2"
+                                :class="activeFilterTab === 'defekte' ? 'border-red-600 text-red-600 bg-white font-extrabold' : 'border-transparent text-slate-500 hover:text-red-600'"
+                            >
+                                <i data-lucide="alert-triangle" class="w-4 h-4"></i>
+                                <span>Defekte</span>
+                                <span class="bg-red-50 text-red-700 px-2 py-0.5 rounded-full text-[10px] font-semibold" x-text="tabCounts.defekte"></span>
+                            </button>
+                        </div>
+                    </template>
+                    <template x-if="ohneListenMode">
+                        <div class="py-3 px-6 text-xs font-bold text-amber-700 flex items-center gap-2">
+                            <i data-lucide="clipboard-x" class="w-4 h-4"></i>
+                            <span>Geräte ohne Auslöselisten</span>
+                            <span class="bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full text-[10px] font-semibold" x-text="totalCount"></span>
+                        </div>
+                    </template>
                 </div>
 
                 <!-- Slim Cards List -->
@@ -314,191 +360,91 @@
                                     </div>
                                 </template>
 
-                                <!-- Detailed View of Devices (Geräte) -->
+                                <!-- Geräte-Übersicht -->
                                 <template x-if="expandedProtocolDetails">
                                     <div class="space-y-4">
-                                        <!-- Devices (Meldergruppen) Table / Cards -->
-                                        <div class="space-y-3">
-                                            <h5 class="text-xs font-bold text-slate-500 uppercase tracking-wider">Anlagen im Wartungsvertrag</h5>
-                                            
-                                            <div class="grid grid-cols-1 gap-3">
-                                                <template x-for="sub in (expandedProtocolDetails.subSystems || [])" :key="sub.id">
-                                                    <div class="bg-white border border-slate-200/80 rounded-xl p-4 shadow-sm hover:border-slate-300 transition space-y-3">
-                                                        <!-- Clean long horizontal row for each device/Anlage -->
-                                                        <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                                                            
-                                                            <!-- Left: Info & Type badge -->
-                                                            <div class="flex items-center gap-3 min-w-0 flex-1">
-                                                                <!-- Type Badge styled by group type BMA, EMA, ELA, Lichtruf, etc. -->
-                                                                <span 
-                                                                    class="px-2.5 py-1 rounded-md text-[10px] font-bold uppercase shrink-0"
-                                                                    :class="sub.system_type === 'BMA' ? 'bg-red-50 text-red-800 border border-red-100' :
-                                                                            sub.system_type === 'EMA' ? 'bg-yellow-50 text-yellow-800 border border-yellow-100' :
-                                                                            sub.system_type === 'ELA' ? 'bg-blue-50 text-blue-800 border border-blue-100' :
-                                                                            sub.system_type === 'Lichtruf' ? 'bg-emerald-50 text-emerald-800 border border-emerald-100' :
-                                                                            sub.system_type === 'SLA' ? 'bg-purple-50 text-purple-800 border border-purple-100' :
-                                                                            'bg-slate-100 text-slate-700 border border-slate-200'"
-                                                                    x-text="sub.system_type || 'BMA'"
-                                                                ></span>
-                                                                
-                                                                <div class="min-w-0 flex-1">
-                                                                    <h6 class="font-bold text-slate-900 text-sm truncate" x-text="sub.name"></h6>
-                                                                    <div class="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-xs text-slate-400">
-                                                                        <span class="flex items-center gap-1">
-                                                                            <i data-lucide="map-pin" class="w-3.5 h-3.5 text-slate-400 shrink-0"></i>
-                                                                            <span>Standort: <strong class="text-slate-700 font-semibold" x-text="expandedProtocolDetails.address"></strong></span>
-                                                                        </span>
-                                                                        <template x-if="sub.address && sub.address !== expandedProtocolDetails.address">
-                                                                            <span class="flex items-center gap-1 bg-slate-50 border border-slate-150 px-2 py-0.5 rounded text-[11px] text-slate-600">
-                                                                                <i data-lucide="building" class="w-3.5 h-3.5 text-slate-400 shrink-0"></i>
-                                                                                <span>Objekt: <strong class="text-slate-800 font-semibold" x-text="sub.address"></strong></span>
-                                                                            </span>
-                                                                        </template>
-                                                                    </div>
-                                                                </div>
-                                                            </div>
- 
-                                                            <!-- Middle: Activation Progress -->
-                                                            <div class="flex items-center gap-3 shrink-0">
-                                                                <div class="text-right">
-                                                                    <div class="text-xs font-bold text-slate-800" x-text="'Ausgelöst: ' + calculateAnlageActivation(sub) + '%'"></div>
-                                                                    <div class="text-[10px] text-slate-500" x-text="getAnlageTestedCount(sub) + ' von ' + getAnlageCellCount(sub) + ' Meldern'"></div>
-                                                                </div>
-                                                                <div class="w-16 bg-slate-100 rounded-full h-2 overflow-hidden border border-slate-200">
-                                                                    <div class="bg-blue-600 h-2 rounded-full transition-all duration-500" :style="'width: ' + calculateAnlageActivation(sub) + '%'"></div>
-                                                                </div>
-                                                            </div>
- 
-                                                            <!-- Right: Row Actions: Archiv, PDF, Bearbeiten, Anzeigen -->
-                                                            <div class="flex items-center gap-1.5 shrink-0 self-end lg:self-auto">
-                                                                <!-- Anzeigen button -->
-                                                                <button 
-                                                                    @click="toggleSubView(sub.id, 'anzeigen')"
-                                                                    class="px-2.5 py-1.5 text-xs font-bold rounded-lg border flex items-center gap-1 transition"
-                                                                    :class="activeSubViews[sub.id] === 'anzeigen' ? 'bg-blue-600 border-blue-600 text-white' : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'"
-                                                                    title="Messpunkte inline anzeigen"
-                                                                >
-                                                                    <i data-lucide="eye" class="w-4 h-4"></i>
-                                                                    <span>Anzeigen</span>
-                                                                </button>
- 
-                                                                <!-- Bearbeiten button -->
-                                                                <button 
-                                                                    @click="openEditProtocolDirect(expandedProtocolDetails.id)"
-                                                                    class="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-blue-50 hover:bg-blue-100 border border-blue-200/50 text-blue-700 flex items-center gap-1 transition"
-                                                                    title="Prüfmatrix im Editor bearbeiten"
-                                                                >
-                                                                    <i data-lucide="edit" class="w-4 h-4"></i>
-                                                                    <span>Bearbeiten</span>
-                                                                </button>
- 
-                                                                <!-- PDF button -->
-                                                                <template x-if="expandedProtocolDetails.has_pdf">
-                                                                    <a 
-                                                                        :href="'/download_pdf/' + expandedProtocolDetails.contract_number" 
-                                                                        target="_blank"
-                                                                        class="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-emerald-50 hover:bg-emerald-100 border border-emerald-200/50 text-emerald-700 flex items-center gap-1 transition"
-                                                                        title="PDF-Protokoll herunterladen"
-                                                                    >
-                                                                        <i data-lucide="file-text" class="w-4 h-4"></i>
-                                                                        <span>PDF</span>
-                                                                    </a>
-                                                                </template>
-                                                                <template x-if="!expandedProtocolDetails.has_pdf">
-                                                                    <button 
-                                                                        disabled
-                                                                        class="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-slate-50 text-slate-300 border border-slate-200 cursor-not-allowed flex items-center gap-1"
-                                                                        title="Noch kein PDF-Protokoll generiert"
-                                                                    >
-                                                                        <i data-lucide="file-text" class="w-4 h-4 text-slate-300"></i>
-                                                                        <span>PDF</span>
-                                                                    </button>
-                                                                </template>
- 
-                                                                <!-- Archiv button -->
-                                                                <button 
-                                                                    @click="toggleSubView(sub.id, 'archiv')"
-                                                                    class="px-2.5 py-1.5 text-xs font-bold rounded-lg border flex items-center gap-1 transition"
-                                                                    :class="activeSubViews[sub.id] === 'archiv' ? 'bg-[#003D9B] border-[#003D9B] text-white' : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'"
-                                                                    title="Historische Dokumente im Archiv anzeigen"
-                                                                >
-                                                                    <i data-lucide="archive" class="w-4 h-4"></i>
-                                                                    <span>Archiv</span>
-                                                                </button>
-                                                            </div>
- 
+                                        <!-- Device Cards (one per WtGrt) -->
+                                        <div class="space-y-2.5">
+                                            <div class="flex items-center justify-between">
+                                                <h5 class="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                                                    <i data-lucide="cpu" class="w-3.5 h-3.5"></i>
+                                                    Geräte im Wartungsvertrag
+                                                    <span class="bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded text-[10px] font-semibold" x-text="(expandedProtocolDetails.devices || []).length"></span>
+                                                </h5>
+                                            </div>
+
+                                            <template x-if="(expandedProtocolDetails.devices || []).length === 0">
+                                                <div class="py-6 text-center text-slate-400 text-xs bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                                                    Keine Geräte für diesen Vertrag hinterlegt.
+                                                </div>
+                                            </template>
+
+                                            <div class="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                                            <template x-for="dev in (expandedProtocolDetails.devices || [])" :key="dev.id">
+                                                <div class="bg-white border border-slate-200/80 rounded-xl p-3.5 shadow-sm hover:border-slate-300 hover:shadow-md transition flex items-start gap-3">
+
+                                                    <!-- Type Badge (left column) -->
+                                                    <span class="mt-0.5 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase shrink-0 tracking-wider"
+                                                          :class="dev.type === 'BMA'     ? 'bg-red-50 text-red-800 border border-red-200' :
+                                                                  dev.type === 'EMA'     ? 'bg-amber-50 text-amber-800 border border-amber-200' :
+                                                                  dev.type === 'ELA'     ? 'bg-blue-50 text-blue-800 border border-blue-200' :
+                                                                  dev.type === 'Lichtruf'? 'bg-emerald-50 text-emerald-800 border border-emerald-200' :
+                                                                  dev.type === 'SLA'     ? 'bg-purple-50 text-purple-800 border border-purple-200' :
+                                                                  dev.type === 'RWA'     ? 'bg-orange-50 text-orange-800 border border-orange-200' :
+                                                                                           'bg-slate-100 text-slate-600 border border-slate-200'"
+                                                          x-text="dev.type || '?'">
+                                                    </span>
+
+                                                    <!-- Info (right column) -->
+                                                    <div class="min-w-0 flex-1">
+                                                        <p class="font-bold text-slate-900 text-sm leading-snug truncate" x-text="dev.name"></p>
+                                                        <div class="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-500">
+                                                            <template x-if="dev.anlage_name">
+                                                                <span class="flex items-center gap-1">
+                                                                    <i data-lucide="building-2" class="w-3 h-3 text-slate-400 shrink-0"></i>
+                                                                    <span x-text="dev.anlage_name"></span>
+                                                                </span>
+                                                            </template>
+                                                            <template x-if="dev.anlage_interval">
+                                                                <span class="flex items-center gap-1 text-slate-400">
+                                                                    <i data-lucide="clock" class="w-3 h-3 shrink-0"></i>
+                                                                    <span x-text="dev.anlage_interval"></span>
+                                                                </span>
+                                                            </template>
+                                                            <template x-if="dev.anlage_address && dev.anlage_address !== expandedProtocolDetails.address">
+                                                                <span class="flex items-center gap-1 text-slate-400">
+                                                                    <i data-lucide="user" class="w-3 h-3 shrink-0"></i>
+                                                                    <span class="truncate" x-text="dev.anlage_address"></span>
+                                                                </span>
+                                                            </template>
                                                         </div>
- 
-                                                        <!-- SUB-VIEW: ANZEIGEN (Beautiful matrix grid table of the entire Anlage!) -->
-                                                        <div x-show="activeSubViews[sub.id] === 'anzeigen'" x-collapse class="p-3 bg-slate-50 rounded-xl border border-slate-200 mt-2">
-                                                            <div class="overflow-x-auto rounded-lg border border-slate-200 shadow-sm bg-white font-mono text-[11px]">
-                                                                <table class="min-w-full divide-y divide-slate-200 border-collapse">
-                                                                    <thead>
-                                                                        <tr class="bg-slate-100 border-b border-slate-200 text-slate-600">
-                                                                            <th class="px-3 py-2 text-left font-bold uppercase tracking-wider text-[10px] w-48 sticky left-0 bg-slate-100 z-10 border-r border-slate-200">Meldegruppe (Zeile)</th>
-                                                                            <template x-for="col in sub.columns" :key="col">
-                                                                                <th class="px-2 py-2 text-center font-bold border-r border-slate-200 min-w-[64px] w-16" x-text="'M' + col.padStart(2, '0')"></th>
-                                                                            </template>
-                                                                        </tr>
-                                                                    </thead>
-                                                                    <tbody class="divide-y divide-slate-100">
-                                                                        <template x-for="row in sub.rows" :key="row.groupId">
-                                                                            <tr>
-                                                                                <td class="px-3 py-2 text-left font-bold text-slate-700 bg-slate-50 sticky left-0 z-10 border-r border-slate-200" x-text="row.groupId + ': ' + row.groupName"></td>
-                                                                                <template x-for="col in sub.columns" :key="col">
-                                                                                    <td class="px-1 py-1.5 text-center border-r border-slate-100">
-                                                                                        <template x-if="row.cells.find(c => c.slotKey === col)">
-                                                                                            <div class="flex flex-col items-center justify-center gap-0.5" x-data="{ cell: row.cells.find(c => c.slotKey === col) }">
-                                                                                                <!-- Detector Type -->
-                                                                                                <span class="text-[9px] text-slate-400 font-medium" x-text="cell.detectorType || '-'"></span>
-                                                                                                <!-- Result/Status -->
-                                                                                                <span class="inline-block px-1 rounded text-[10px] font-bold"
-                                                                                                      :class="cell.value === 'Def.' || cell.value === 'Fehler' ? 'bg-red-100 text-red-700 border border-red-200' : 
-                                                                                                              cell.value && cell.value !== '-' ? 'bg-green-100 text-green-700 border border-green-200' : 
-                                                                                                              'bg-slate-100 text-slate-400'">
-                                                                                                    <span x-text="cell.value || '•'"></span>
-                                                                                                </span>
-                                                                                            </div>
-                                                                                        </template>
-                                                                                        <template x-if="!row.cells.find(c => c.slotKey === col)">
-                                                                                            <span class="text-slate-300">-</span>
-                                                                                        </template>
-                                                                                    </td>
-                                                                                </template>
-                                                                            </tr>
-                                                                        </template>
-                                                                    </tbody>
-                                                                </table>
-                                                            </div>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                            </div>
+                                        </div>
+
+                                        <!-- Archiv -->
+                                        <div class="pt-2 border-t border-slate-100 space-y-2">
+                                            <h5 class="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                                                <i data-lucide="archive" class="w-3.5 h-3.5"></i>
+                                                Archivierte Protokolle
+                                            </h5>
+                                            <template x-if="expandedProtocolArchives.length === 0">
+                                                <div class="text-xs text-slate-400 py-2">Keine archivierten PDFs für diesen Vertrag.</div>
+                                            </template>
+                                            <div class="divide-y divide-slate-100">
+                                                <template x-for="arc in expandedProtocolArchives" :key="arc.filename">
+                                                    <div class="py-2 flex items-center justify-between text-xs">
+                                                        <div>
+                                                            <span class="font-bold text-slate-700" x-text="arc.year"></span> –
+                                                            <span class="text-slate-600 font-semibold" x-text="arc.half_year"></span>
+                                                            <span class="block text-[10px] text-slate-400 font-mono" x-text="arc.filename"></span>
                                                         </div>
- 
-                                                        <!-- SUB-VIEW: ARCHIV (Historical documents listed) -->
-                                                        <div x-show="activeSubViews[sub.id] === 'archiv'" x-collapse class="p-4 bg-slate-50 rounded-xl border border-slate-200/60 mt-2 space-y-2">
-                                                            <div class="text-xs font-bold text-slate-700 flex items-center gap-1">
-                                                                <i data-lucide="archive" class="w-3.5 h-3.5 text-slate-500"></i>
-                                                                <span>Archivverlauf für diese Anlage</span>
-                                                            </div>
-                                                            <div class="divide-y divide-slate-200/60 font-sans">
-                                                                <template x-for="arc in expandedProtocolArchives" :key="arc.filename">
-                                                                    <div class="py-2 flex items-center justify-between text-xs">
-                                                                        <div>
-                                                                            <span class="font-bold text-slate-700" x-text="arc.year"></span> - 
-                                                                            <span class="text-slate-600 font-semibold" x-text="arc.half_year"></span>
-                                                                            <span class="block text-[10px] text-slate-400 font-mono" x-text="arc.filename"></span>
-                                                                        </div>
-                                                                        <a :href="arc.path" class="text-[#003D9B] font-bold hover:underline flex items-center gap-0.5">
-                                                                            <span>PDF herunterladen</span>
-                                                                            <i data-lucide="arrow-down-to-line" class="w-3.5 h-3.5"></i>
-                                                                        </a>
-                                                                    </div>
-                                                                </template>
-                                                                <template x-if="expandedProtocolArchives.length === 0">
-                                                                    <div class="py-2 text-center text-slate-400 text-xs">
-                                                                        Keine historischen PDFs im Archiv für diesen Vertrag verzeichnet.
-                                                                    </div>
-                                                                </template>
-                                                            </div>
-                                                        </div>
+                                                        <a :href="arc.path" class="text-[#003D9B] font-bold hover:underline flex items-center gap-0.5">
+                                                            <span>Herunterladen</span>
+                                                            <i data-lucide="arrow-down-to-line" class="w-3.5 h-3.5"></i>
+                                                        </a>
                                                     </div>
                                                 </template>
                                             </div>
@@ -743,153 +689,284 @@
         </div>
 
         <!-- TAB: SETTINGS & BRAND IDENTITIES -->
-        <div x-show="activeTab === 'settings'" x-transition class="space-y-8">
-            <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-6">
-                <div>
-                    <h3 class="text-base font-bold text-slate-950">System-Definitionen & globales Signalrouting</h3>
-                    <p class="text-xs text-slate-500 mt-1">Hier konfigurierst du standardisierte Melder-Abkürzungen, Matrixspalten-Standardwerte, und Farbzuweisungen.</p>
+        <div x-show="activeTab === 'settings'" x-transition>
+            <div class="flex gap-6 items-start">
+
+                <!-- Left sidebar nav -->
+                <div class="w-52 shrink-0">
+                    <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                        <div class="px-4 py-3 border-b border-slate-100">
+                            <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Einstellungen</span>
+                        </div>
+                        <nav class="flex flex-col py-1">
+                            <button type="button" @click="settingsSection='taifun'"
+                                class="text-left px-4 py-2.5 text-xs font-semibold flex items-center gap-2 transition"
+                                :class="settingsSection==='taifun' ? 'bg-[#003D9B]/10 text-[#003D9B] border-l-2 border-[#003D9B]' : 'text-slate-600 hover:bg-slate-50 border-l-2 border-transparent'">
+                                <i data-lucide="upload-cloud" class="w-3.5 h-3.5 shrink-0"></i>
+                                <span>Taifun XML Import</span>
+                            </button>
+                            <button type="button" @click="settingsSection='anlagentypen'"
+                                class="text-left px-4 py-2.5 text-xs font-semibold flex items-center gap-2 transition"
+                                :class="settingsSection==='anlagentypen' ? 'bg-[#003D9B]/10 text-[#003D9B] border-l-2 border-[#003D9B]' : 'text-slate-600 hover:bg-slate-50 border-l-2 border-transparent'">
+                                <i data-lucide="layers" class="w-3.5 h-3.5 shrink-0"></i>
+                                <span>Anlagentypen</span>
+                            </button>
+                            <button type="button" @click="settingsSection='ausloselisten'"
+                                class="text-left px-4 py-2.5 text-xs font-semibold flex items-center gap-2 transition"
+                                :class="settingsSection==='ausloselisten' ? 'bg-[#003D9B]/10 text-[#003D9B] border-l-2 border-[#003D9B]' : 'text-slate-600 hover:bg-slate-50 border-l-2 border-transparent'">
+                                <i data-lucide="clipboard-list" class="w-3.5 h-3.5 shrink-0"></i>
+                                <span>Auslöselisten</span>
+                            </button>
+                            <button type="button" @click="settingsSection='allgemein'"
+                                class="text-left px-4 py-2.5 text-xs font-semibold flex items-center gap-2 transition"
+                                :class="settingsSection==='allgemein' ? 'bg-[#003D9B]/10 text-[#003D9B] border-l-2 border-[#003D9B]' : 'text-slate-600 hover:bg-slate-50 border-l-2 border-transparent'">
+                                <i data-lucide="settings-2" class="w-3.5 h-3.5 shrink-0"></i>
+                                <span>Allgemein</span>
+                            </button>
+                        </nav>
+                    </div>
                 </div>
 
-                <!-- TAIFUN Import Card -->
-                <div class="border border-[#003D9B]/20 rounded-xl p-5 shadow-sm bg-blue-50/20 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div class="space-y-1">
-                        <h4 class="font-bold text-slate-900 flex items-center gap-1.5 text-sm">
-                            <i data-lucide="upload-cloud" class="w-4 h-4 text-[#003D9B]"></i>
-                            <span>TAIFUN XML-Datenimport</span>
-                        </h4>
-                        <p class="text-xs text-slate-500">Importiere neue Revisionsaufträge und Anlagendaten direkt aus der TAIFUN Handwerker-Software.</p>
-                    </div>
-                    <div>
-                        <label class="inline-flex items-center gap-2 px-4 py-2 bg-[#003D9B] hover:bg-[#002e75] text-white text-xs font-semibold rounded-lg cursor-pointer transition shadow-sm shrink-0">
-                            <i data-lucide="upload-cloud" class="w-4 h-4"></i>
-                            <span>XML-Datei auswählen</span>
-                            <input 
-                                type="file" 
-                                accept=".xml" 
-                                @change="importTaifunXml($event)" 
-                                class="hidden"
-                            >
-                        </label>
-                    </div>
-                </div>
+                <!-- Right content panel -->
+                <div class="flex-1 min-w-0">
 
-                <!-- Management Header & Add Button -->
-                <div class="flex flex-col sm:flex-row justify-between sm:items-center bg-slate-50 rounded-xl p-4 border border-slate-200/80 gap-3">
-                    <div class="space-y-1">
-                        <h4 class="text-xs font-bold text-[#003D9B] uppercase tracking-wider flex items-center gap-1.5">
-                            <i data-lucide="layers" class="w-4 h-4 text-[#003D9B]"></i>
-                            <span>Benutzerdefinierte Anlagentypen &amp; Messpunkte</span>
-                        </h4>
-                        <p class="text-xs text-slate-500">Erstelle neue Anlagentypen für deine Revisionsaufträge oder konfiguriere bestehende Schemata und XML-Bezeichnungen.</p>
-                    </div>
-                    <button type="button" @click="addSystemType()" class="px-4 py-2 bg-[#003D9B] hover:bg-blue-800 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 shadow-sm transition shrink-0">
-                        <i data-lucide="plus-circle" class="w-4 h-4"></i>
-                        <span>Anlagentyp hinzufügen</span>
-                    </button>
-                </div>
-
-                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    <template x-for="(set, key) in systemSettings" :key="key">
-                        <div class="border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm bg-white hover:border-slate-300 transition">
-                            <div class="flex justify-between items-center border-b border-slate-100 pb-2.5">
-                                <div class="flex items-center gap-2">
-                                    <span class="w-3 h-3 rounded-full" :class="set.badgeColor"></span>
-                                    <span class="font-mono text-xs font-bold bg-slate-100 text-slate-700 px-2 py-0.5 rounded" x-text="key"></span>
-                                </div>
-                                <div class="flex items-center gap-3">
-                                    <!-- Toggle Active Switch -->
-                                    <label class="relative inline-flex items-center cursor-pointer select-none">
-                                        <input 
-                                            type="checkbox" 
-                                            :value="key" 
-                                            x-model="activeSystemTypes" 
-                                            class="sr-only peer"
-                                        >
-                                        <div class="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#003D9B]"></div>
-                                        <span class="ml-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide w-12" x-text="activeSystemTypes.includes(key) ? 'Aktiv' : 'Inaktiv'"></span>
-                                    </label>
-                                    
-                                    <!-- Delete Button -->
-                                    <button type="button" @click="deleteSystemType(key)" class="text-slate-400 hover:text-red-500 transition leading-none text-xl" title="Anlagentyp löschen">
-                                        ×
-                                    </button>
-                                </div>
+                    <!-- ── TAIFUN XML IMPORT ── -->
+                    <div x-show="settingsSection==='taifun'" class="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-4">
+                        <div>
+                            <h3 class="text-base font-bold text-slate-950">Taifun XML Import</h3>
+                            <p class="text-xs text-slate-500 mt-1">Verträge und Gerätedaten aus der TAIFUN Handwerker-Software importieren.</p>
+                        </div>
+                        <div class="border border-[#003D9B]/20 rounded-xl p-5 shadow-sm bg-blue-50/20 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div class="space-y-1">
+                                <h4 class="font-bold text-slate-900 flex items-center gap-1.5 text-sm">
+                                    <i data-lucide="upload-cloud" class="w-4 h-4 text-[#003D9B]"></i>
+                                    <span>TAIFUN XML-Datenimport</span>
+                                </h4>
+                                <p class="text-xs text-slate-500">Importiert WtVt-Verträge mit allen Anlagen und Geräten. Bestehende Geräte ohne Auslöselisten werden aktualisiert.</p>
                             </div>
-
-                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                                <div>
-                                    <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Name des Anlagentyps</label>
-                                    <input type="text" x-model="set.name" class="border border-slate-200 rounded px-2 py-1.5 text-xs font-semibold w-full bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-100 transition" placeholder="z.B. Brandmeldeanlage">
-                                </div>
-                                <div>
-                                    <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Bezeichnung in XML-Datei</label>
-                                    <input type="text" x-model="set.xml_name" class="border border-slate-200 rounded px-2 py-1.5 text-xs font-mono font-bold w-full bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-100 transition" placeholder="z.B. BMA">
-                                </div>
-                            </div>
-
-                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                                <div>
-                                    <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Badge-Farbe</label>
-                                    <select x-model="set.badgeColor" @change="set.color = getSystemColorClass(set.badgeColor)" class="border border-slate-200 rounded px-2 py-1.5 text-xs font-semibold w-full bg-slate-50 focus:bg-white transition">
-                                        <option value="bg-red-500">Rot</option>
-                                        <option value="bg-yellow-500">Gelb</option>
-                                        <option value="bg-blue-500">Blau</option>
-                                        <option value="bg-emerald-500">Grün</option>
-                                        <option value="bg-purple-500">Lila</option>
-                                        <option value="bg-indigo-500">Indigo</option>
-                                        <option value="bg-slate-500">Grau</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Vorschau Badge-Stil</label>
-                                    <div class="border rounded px-3 py-1.5 text-center font-bold text-[10px] uppercase tracking-wider" :class="getSystemColorClass(set.badgeColor)" x-text="key + ' - ' + (set.name || 'Ohne Name')"></div>
-                                </div>
-                            </div>
-
-                            <div class="text-xs space-y-3 pt-2 border-t border-slate-100">
-                                <div>
-                                    <span class="text-slate-400 font-bold text-[10px] uppercase tracking-wide">Meldepunkt-Typen (Meldertypen):</span>
-                                    <div class="flex flex-wrap gap-1.5 mt-1.5 font-mono">
-                                        <template x-for="(detType, detIdx) in (set.detectors || [])" :key="detIdx">
-                                            <span class="inline-flex items-center gap-1 bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded text-slate-700 font-semibold text-[10px] transition">
-                                                <span x-text="detType"></span>
-                                                <button type="button" @click="set.detectors.splice(detIdx, 1)" class="text-slate-400 hover:text-red-500 font-bold ml-1 text-xs leading-none" title="Meldertyp entfernen">×</button>
-                                            </span>
-                                        </template>
-                                        <!-- Add Inline Detector -->
-                                        <div class="flex items-center gap-1 mt-1 w-full" x-data="{ newDet: '' }">
-                                            <input type="text" x-model="newDet" @keydown.enter.prevent="if(newDet.trim()){ set.detectors.push(newDet.trim()); newDet=''; }" class="border border-slate-200 rounded px-2 py-1 text-[10px] font-mono flex-grow bg-slate-50 focus:bg-white transition" placeholder="Neuen Meldertyp eingeben...">
-                                            <button type="button" @click="if(newDet.trim()){ set.detectors.push(newDet.trim()); newDet=''; }" class="px-2.5 py-1 bg-[#003D9B] hover:bg-blue-800 text-white rounded text-[10px] font-bold transition">+</button>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div>
-                                    <span class="text-slate-400 font-bold text-[10px] uppercase tracking-wide">Quartalsprüfungsergebnisse (Zulässige Werte):</span>
-                                    <div class="flex flex-wrap gap-1.5 mt-1.5 font-mono">
-                                        <template x-for="(val, valIdx) in (set.values || [])" :key="valIdx">
-                                            <span class="inline-flex items-center gap-1 bg-blue-50 hover:bg-blue-100 text-[#003D9B] px-2 py-0.5 rounded text-[10px] font-bold transition">
-                                                <span x-text="val"></span>
-                                                <button type="button" @click="set.values.splice(valIdx, 1)" class="text-[#003D9B]/50 hover:text-red-500 font-bold ml-1 text-xs leading-none" title="Wert entfernen">×</button>
-                                            </span>
-                                        </template>
-                                        <!-- Add Inline Value -->
-                                        <div class="flex items-center gap-1 mt-1 w-full" x-data="{ newVal: '' }">
-                                            <input type="text" x-model="newVal" @keydown.enter.prevent="if(newVal.trim()){ set.values.push(newVal.trim()); newVal=''; }" class="border border-slate-200 rounded px-2 py-1 text-[10px] font-mono flex-grow bg-slate-50 focus:bg-white transition" placeholder="Neuen Statuswert eingeben...">
-                                            <button type="button" @click="if(newVal.trim()){ set.values.push(newVal.trim()); newVal=''; }" class="px-2.5 py-1 bg-[#003D9B] hover:bg-blue-800 text-white rounded text-[10px] font-bold transition">+</button>
-                                        </div>
-                                    </div>
-                                </div>
+                            <div>
+                                <label class="inline-flex items-center gap-2 px-4 py-2 bg-[#003D9B] hover:bg-[#002e75] text-white text-xs font-semibold rounded-lg cursor-pointer transition shadow-sm shrink-0">
+                                    <i data-lucide="upload-cloud" class="w-4 h-4"></i>
+                                    <span>XML-Datei auswählen</span>
+                                    <input type="file" accept=".xml" @change="importTaifunXml($event)" class="hidden">
+                                </label>
                             </div>
                         </div>
-                    </template>
-                </div>
+                    </div>
 
-                <!-- Global Save Bar -->
-                <div class="flex justify-end pt-4 border-t border-slate-200">
-                    <button type="button" @click="saveSettings(true)" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-md transition flex items-center gap-2">
-                        <i data-lucide="save" class="w-4 h-4"></i>
-                        <span>Definitionen &amp; Einstellungen speichern</span>
-                    </button>
+                    <!-- ── ANLAGENTYPEN ── -->
+                    <div x-show="settingsSection==='anlagentypen'" class="space-y-4">
+
+                        <!-- List header -->
+                        <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-5">
+                            <div class="flex justify-between items-center mb-4">
+                                <div>
+                                    <h3 class="text-base font-bold text-slate-950">Anlagentypen</h3>
+                                    <p class="text-xs text-slate-500 mt-0.5">Aktive Typen werden in der Vertragsliste gefiltert und als Chips angezeigt.</p>
+                                </div>
+                                <button type="button" @click="openNewAnlagentyp()"
+                                    class="px-3 py-1.5 bg-[#003D9B] hover:bg-blue-800 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 shadow-sm transition">
+                                    <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                                    <span>Neuer Typ</span>
+                                </button>
+                            </div>
+
+                            <!-- Type list table -->
+                            <div class="rounded-xl border border-slate-200 overflow-hidden">
+                                <table class="w-full text-xs">
+                                    <thead class="bg-slate-50 text-slate-500 uppercase tracking-wide text-[10px]">
+                                        <tr>
+                                            <th class="px-4 py-2.5 text-left font-semibold">Badge</th>
+                                            <th class="px-4 py-2.5 text-left font-semibold">Typ-ID</th>
+                                            <th class="px-4 py-2.5 text-left font-semibold">Name</th>
+                                            <th class="px-4 py-2.5 text-left font-semibold">Taifun-ID</th>
+                                            <th class="px-4 py-2.5 text-center font-semibold">Aktiv</th>
+                                            <th class="px-4 py-2.5 text-right font-semibold">Aktion</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-slate-100">
+                                        <template x-for="t in anlagentypen" :key="t.type_id">
+                                            <tr class="hover:bg-slate-50 transition">
+                                                <td class="px-4 py-2.5">
+                                                    <span class="px-2 py-0.5 rounded text-[10px] font-bold text-white"
+                                                        :class="'bg-' + (t.badge_color||'slate') + '-500'"
+                                                        x-text="t.badge || t.type_id"></span>
+                                                </td>
+                                                <td class="px-4 py-2.5 font-mono font-bold text-slate-700" x-text="t.type_id"></td>
+                                                <td class="px-4 py-2.5 text-slate-700" x-text="t.type_name"></td>
+                                                <td class="px-4 py-2.5 text-slate-500 font-mono" x-text="t.taifun_typ_id || '—'"></td>
+                                                <td class="px-4 py-2.5 text-center">
+                                                    <button type="button" @click="toggleAnlagentyp(t.type_id)"
+                                                        class="w-8 h-4 rounded-full transition relative"
+                                                        :class="t.active ? 'bg-[#003D9B]' : 'bg-slate-200'">
+                                                        <span class="absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-all"
+                                                            :class="t.active ? 'left-4' : 'left-0.5'"></span>
+                                                    </button>
+                                                </td>
+                                                <td class="px-4 py-2.5 text-right flex items-center justify-end gap-2">
+                                                    <button type="button" @click="openEditAnlagentyp(t)"
+                                                        class="text-slate-400 hover:text-[#003D9B] transition" title="Bearbeiten">
+                                                        <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+                                                    </button>
+                                                    <button type="button" @click="deleteAnlagentyp(t.type_id)"
+                                                        class="text-slate-400 hover:text-red-500 transition" title="Löschen">
+                                                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                        <tr x-show="anlagentypen.length === 0">
+                                            <td colspan="6" class="px-4 py-8 text-center text-slate-400 text-xs">Keine Anlagentypen konfiguriert</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Edit / Create form -->
+                        <div x-show="atForm !== null" x-transition class="bg-white border border-[#003D9B]/20 rounded-2xl shadow-sm p-6 space-y-5">
+                            <div class="flex justify-between items-center">
+                                <h4 class="text-sm font-bold text-slate-900" x-text="atForm && atForm._isNew ? 'Neuer Anlagentyp' : 'Anlagentyp bearbeiten'"></h4>
+                                <button type="button" @click="atForm = null" class="text-slate-400 hover:text-slate-700">
+                                    <i data-lucide="x" class="w-4 h-4"></i>
+                                </button>
+                            </div>
+
+                            <template x-if="atForm">
+                                <div class="space-y-4">
+                                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                        <div>
+                                            <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Typ-ID *</label>
+                                            <input type="text" x-model="atForm.type_id" :disabled="!atForm._isNew"
+                                                class="border border-slate-200 rounded px-2 py-1.5 text-xs font-mono font-bold w-full bg-slate-50 focus:bg-white disabled:opacity-50"
+                                                placeholder="z.B. BMA">
+                                        </div>
+                                        <div class="col-span-2">
+                                            <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Typ-Name</label>
+                                            <input type="text" x-model="atForm.type_name"
+                                                class="border border-slate-200 rounded px-2 py-1.5 text-xs w-full bg-slate-50 focus:bg-white"
+                                                placeholder="z.B. Brandmeldeanlage">
+                                        </div>
+                                        <div>
+                                            <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Taifun Typ-ID</label>
+                                            <input type="number" x-model.number="atForm.taifun_typ_id"
+                                                class="border border-slate-200 rounded px-2 py-1.5 text-xs font-mono w-full bg-slate-50 focus:bg-white"
+                                                placeholder="31">
+                                        </div>
+                                    </div>
+
+                                    <div class="grid grid-cols-3 gap-3">
+                                        <div>
+                                            <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Badge-Text</label>
+                                            <input type="text" x-model="atForm.badge"
+                                                class="border border-slate-200 rounded px-2 py-1.5 text-xs font-bold w-full bg-slate-50 focus:bg-white"
+                                                placeholder="BMA">
+                                        </div>
+                                        <div>
+                                            <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Badge-Farbe</label>
+                                            <select x-model="atForm.badge_color"
+                                                class="border border-slate-200 rounded px-2 py-1.5 text-xs w-full bg-slate-50 focus:bg-white">
+                                                <option value="red">Rot</option>
+                                                <option value="yellow">Gelb</option>
+                                                <option value="blue">Blau</option>
+                                                <option value="emerald">Grün</option>
+                                                <option value="purple">Lila</option>
+                                                <option value="indigo">Indigo</option>
+                                                <option value="orange">Orange</option>
+                                                <option value="amber">Amber</option>
+                                                <option value="slate">Grau</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Vorschau</label>
+                                            <div class="px-3 py-1.5 rounded text-[10px] font-bold text-white text-center"
+                                                :class="'bg-' + (atForm.badge_color||'slate') + '-500'"
+                                                x-text="atForm.badge || atForm.type_id || '?'"></div>
+                                        </div>
+                                    </div>
+
+                                    <div class="border-t border-slate-100 pt-4 space-y-3">
+                                        <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wide">Meldepunkt-Definitionen</span>
+
+                                        <div>
+                                            <label class="block text-[10px] font-semibold text-slate-500 mb-1">Meldertypen</label>
+                                            <div class="flex flex-wrap gap-1.5 mb-1" x-data="{ newDet: '' }">
+                                                <template x-for="(d, di) in atForm.meldepunkt_definitionen.detectors" :key="di">
+                                                    <span class="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded text-[10px] font-mono font-semibold">
+                                                        <span x-text="d"></span>
+                                                        <button type="button" @click="atForm.meldepunkt_definitionen.detectors.splice(di,1)" class="text-slate-400 hover:text-red-500 ml-0.5">×</button>
+                                                    </span>
+                                                </template>
+                                                <div class="flex items-center gap-1 mt-1">
+                                                    <input type="text" x-model="newDet" @keydown.enter.prevent="atFormAddDet(newDet); newDet=''"
+                                                        class="border border-slate-200 rounded px-2 py-1 text-[10px] font-mono w-28 bg-slate-50" placeholder="+ Typ">
+                                                    <button type="button" @click="atFormAddDet(newDet); newDet=''" class="px-2 py-1 bg-[#003D9B] text-white rounded text-[10px] font-bold">+</button>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <label class="block text-[10px] font-semibold text-slate-500 mb-1">Prüfwerte</label>
+                                            <div class="flex flex-wrap gap-1.5 mb-1" x-data="{ newVal: '' }">
+                                                <template x-for="(v, vi) in atForm.meldepunkt_definitionen.values" :key="vi">
+                                                    <span class="inline-flex items-center gap-1 bg-blue-50 text-[#003D9B] px-2 py-0.5 rounded text-[10px] font-bold">
+                                                        <span x-text="v"></span>
+                                                        <button type="button" @click="atForm.meldepunkt_definitionen.values.splice(vi,1)" class="text-[#003D9B]/50 hover:text-red-500 ml-0.5">×</button>
+                                                    </span>
+                                                </template>
+                                                <div class="flex items-center gap-1 mt-1">
+                                                    <input type="text" x-model="newVal" @keydown.enter.prevent="atFormAddVal(newVal); newVal=''"
+                                                        class="border border-slate-200 rounded px-2 py-1 text-[10px] font-mono w-28 bg-slate-50" placeholder="+ Wert">
+                                                    <button type="button" @click="atFormAddVal(newVal); newVal=''" class="px-2 py-1 bg-[#003D9B] text-white rounded text-[10px] font-bold">+</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="flex justify-between items-center pt-3 border-t border-slate-100">
+                                        <label class="flex items-center gap-2 cursor-pointer select-none">
+                                            <input type="checkbox" x-model="atForm.active" class="sr-only peer">
+                                            <div class="w-9 h-5 bg-slate-200 rounded-full peer peer-checked:bg-[#003D9B] relative transition">
+                                                <span class="absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all"
+                                                    :class="atForm.active ? 'left-4' : 'left-0.5'"></span>
+                                            </div>
+                                            <span class="text-xs font-semibold text-slate-600" x-text="atForm.active ? 'Aktiv' : 'Inaktiv'"></span>
+                                        </label>
+                                        <div class="flex gap-2">
+                                            <button type="button" @click="atForm = null"
+                                                class="px-3 py-1.5 border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg hover:bg-slate-50 transition">
+                                                Abbrechen
+                                            </button>
+                                            <button type="button" @click="saveAnlagentyp()"
+                                                class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition">
+                                                <i data-lucide="save" class="w-3.5 h-3.5"></i>
+                                                <span>Speichern</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- ── AUSLÖSELISTEN ── -->
+                    <div x-show="settingsSection==='ausloselisten'" class="bg-white border border-slate-200 rounded-2xl shadow-sm p-6">
+                        <h3 class="text-base font-bold text-slate-950 mb-2">Auslöselisten</h3>
+                        <p class="text-xs text-slate-500">Verwaltung und Zuweisung von Auslöselisten zu Geräten. Auslöselisten werden im Protokoll-Editor gepflegt.</p>
+                        <div class="mt-6 text-center text-slate-400 text-sm py-8 border border-dashed border-slate-200 rounded-xl">
+                            Noch nicht implementiert — Auslöselisten werden im Protokoll-Editor verwaltet.
+                        </div>
+                    </div>
+
+                    <!-- ── ALLGEMEIN ── -->
+                    <div x-show="settingsSection==='allgemein'" class="bg-white border border-slate-200 rounded-2xl shadow-sm p-6">
+                        <h3 class="text-base font-bold text-slate-950 mb-2">Allgemeine Einstellungen</h3>
+                        <p class="text-xs text-slate-500">System-Konfiguration und globale Standardwerte.</p>
+                        <div class="mt-6 text-center text-slate-400 text-sm py-8 border border-dashed border-slate-200 rounded-xl">
+                            Noch nicht implementiert.
+                        </div>
+                    </div>
+
                 </div>
             </div>
         </div>
@@ -1201,8 +1278,20 @@
                 currentPage: 1,
                 totalPages: 1,
                 totalCount: 0,
-                tabCounts: { offen: 0, erledigt: 0, defekte: 0 },
+                tabCounts: { offen: 0, erledigt: 0, defekte: 0, ohne_liste: 0 },
                 isLoadingProtocols: false,
+
+                // Filter state
+                ohneListenMode: false,
+                activeTypeFilter: [],
+
+                // Anlagentypen (loaded from server)
+                anlagentypen: [],
+
+                // Settings sidebar section
+                settingsSection: 'taifun',
+                // Anlagentyp edit form
+                atForm: null,  // null = not editing; object = editing/creating
 
                 showDetailView: false,
                 selectedProtocol: null,
@@ -1299,6 +1388,7 @@
                     this.loadSettings();
                     this.loadProtocols();
                     this.loadTechnicians();
+                    this.loadAnlagentypen();
                     
                     // Trigger Lucide icons generation safely
                     setTimeout(() => {
@@ -1318,11 +1408,13 @@
                     this.isLoadingProtocols = true;
                     this.expandedContractId = null;
                     this.expandedProtocolDetails = null;
+                    const filterVal = this.ohneListenMode ? 'ohne_liste' : this.activeFilterTab;
                     const params = new URLSearchParams({
                         page: this.currentPage,
                         per_page: 30,
                         search: this.searchQuery,
-                        filter: this.activeFilterTab
+                        filter: filterVal,
+                        types: this.activeTypeFilter.join(',')
                     });
                     fetch('/api/protocols?' + params.toString())
                     .then(r => r.json())
@@ -1784,8 +1876,113 @@
                             if (data.settings.system_settings) {
                                 this.systemSettings = data.settings.system_settings;
                             }
+                            if (data.settings.anlagentypen) {
+                                this.anlagentypen = data.settings.anlagentypen;
+                            }
                         }
                     });
+                },
+
+                loadAnlagentypen() {
+                    fetch('/api/anlagentypen')
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) this.anlagentypen = data.anlagentypen;
+                    });
+                },
+
+                openNewAnlagentyp() {
+                    this.atForm = {
+                        type_id: '', type_name: '', taifun_typ_id: null, active: true,
+                        badge: '', badge_color: 'red',
+                        meldepunkt_definitionen: { detectors: ['-', 'Normal'], values: ['CHECK', 'Def.'], columns: ['1','2','3','4'] },
+                        zusatz_tabelle: null,
+                        _isNew: true
+                    };
+                },
+
+                openEditAnlagentyp(t) {
+                    this.atForm = JSON.parse(JSON.stringify(t));
+                    this.atForm._isNew = false;
+                },
+
+                saveAnlagentyp() {
+                    if (!this.atForm || !this.atForm.type_id.trim()) {
+                        this.triggerToast('Typ-ID ist erforderlich', 'warning'); return;
+                    }
+                    const payload = Object.assign({}, this.atForm);
+                    delete payload._isNew;
+                    fetch('/api/anlagentypen', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            this.triggerToast('Anlagentyp gespeichert', 'success');
+                            this.atForm = null;
+                            this.loadAnlagentypen();
+                            this.loadProtocols(1);
+                        } else {
+                            this.triggerToast('Fehler: ' + data.error, 'warning');
+                        }
+                    });
+                },
+
+                deleteAnlagentyp(type_id) {
+                    if (!confirm(`Anlagentyp '${type_id}' wirklich löschen?`)) return;
+                    fetch('/api/anlagentypen/' + encodeURIComponent(type_id), { method: 'DELETE' })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            this.triggerToast('Anlagentyp gelöscht', 'success');
+                            this.loadAnlagentypen();
+                            this.loadProtocols(1);
+                        } else {
+                            this.triggerToast('Fehler: ' + data.error, 'warning');
+                        }
+                    });
+                },
+
+                toggleAnlagentyp(type_id) {
+                    const t = this.anlagentypen.find(x => x.type_id === type_id);
+                    if (!t) return;
+                    t.active = !t.active;
+                    fetch('/api/anlagentypen', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(t)
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            this.loadProtocols(1);
+                        }
+                    });
+                },
+
+                toggleTypeFilter(type_id) {
+                    const idx = this.activeTypeFilter.indexOf(type_id);
+                    if (idx === -1) this.activeTypeFilter.push(type_id);
+                    else this.activeTypeFilter.splice(idx, 1);
+                    this.loadProtocols(1);
+                },
+
+                toggleOhneListen() {
+                    this.ohneListenMode = !this.ohneListenMode;
+                    this.loadProtocols(1);
+                },
+
+                atFormAddDet(val) {
+                    val = val.trim();
+                    if (val && this.atForm && !this.atForm.meldepunkt_definitionen.detectors.includes(val))
+                        this.atForm.meldepunkt_definitionen.detectors.push(val);
+                },
+                atFormAddVal(val) {
+                    val = val.trim();
+                    if (val && this.atForm && !this.atForm.meldepunkt_definitionen.values.includes(val))
+                        this.atForm.meldepunkt_definitionen.values.push(val);
                 },
 
                 saveSettings(showToast = true) {

@@ -28,7 +28,8 @@ def get_db_connection():
             ("anlage_id", "VARCHAR(100) DEFAULT 'default'"),
             ("anlage_name", "VARCHAR(255) DEFAULT 'Hauptanlage'"),
             ("anlage_type", "VARCHAR(50) DEFAULT 'BMA'"),
-            ("anlage_address", "VARCHAR(255) DEFAULT ''")
+            ("anlage_address", "VARCHAR(255) DEFAULT ''"),
+            ("anlage_interval", "VARCHAR(50) DEFAULT 'Halbjährlich'"),
         ]:
             try:
                 cursor.execute(f"ALTER TABLE protocol_groups ADD COLUMN {col_name} {col_type}")
@@ -39,57 +40,117 @@ def get_db_connection():
         pass
     return conn
 
+DEFAULT_ANLAGENTYPEN = [
+    {
+        "type_id": "BMA", "type_name": "Brandmeldeanlage",
+        "taifun_typ_id": 31, "active": True,
+        "badge": "BMA", "badge_color": "red",
+        "meldepunkt_definitionen": {
+            "detectors": ["-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR"],
+            "values": ["CHECK", "H1", "H2", "Def."],
+            "columns": ["1","2","3","4","5","6","7","8"]
+        },
+        "zusatz_tabelle": None
+    },
+    {
+        "type_id": "EMA", "type_name": "Einbruchmeldeanlage",
+        "taifun_typ_id": 33, "active": True,
+        "badge": "EMA", "badge_color": "yellow",
+        "meldepunkt_definitionen": {
+            "detectors": ["-", "Normal", "BWM", "ZK", "RSK", "Lichtschranke", "Glasbruch", "Körperschall"],
+            "values": ["CHECK", "Def."],
+            "columns": ["1","2","3","4"]
+        },
+        "zusatz_tabelle": None
+    },
+    {
+        "type_id": "ELA", "type_name": "Elektroakustische Anlage",
+        "taifun_typ_id": 0, "active": True,
+        "badge": "ELA", "badge_color": "blue",
+        "meldepunkt_definitionen": {
+            "detectors": ["-", "Normal", "Innenlautsprecher", "Außenlautsprecher"],
+            "values": ["CHECK", "Def."],
+            "columns": ["1","2","3","4"]
+        },
+        "zusatz_tabelle": None
+    },
+    {
+        "type_id": "Lichtruf", "type_name": "Lichtrufanlage",
+        "taifun_typ_id": 0, "active": True,
+        "badge": "LR", "badge_color": "emerald",
+        "meldepunkt_definitionen": {
+            "detectors": ["-", "Normal", "AT", "BT", "ZT", "EM", "PN", "Display"],
+            "values": ["CHECK", "Def."],
+            "columns": ["1","2","3","4"]
+        },
+        "zusatz_tabelle": None
+    },
+    {
+        "type_id": "SLA", "type_name": "Sprechanlage",
+        "taifun_typ_id": 0, "active": True,
+        "badge": "SLA", "badge_color": "indigo",
+        "meldepunkt_definitionen": {
+            "detectors": ["-", "Normal", "SLA"],
+            "values": ["CHECK", "Def."],
+            "columns": ["1","2","3","4"]
+        },
+        "zusatz_tabelle": None
+    },
+    {
+        "type_id": "RWA", "type_name": "Rauchabzugsanlage",
+        "taifun_typ_id": 0, "active": False,
+        "badge": "RWA", "badge_color": "orange",
+        "meldepunkt_definitionen": {
+            "detectors": ["-", "Normal", "RWA"],
+            "values": ["CHECK", "Def."],
+            "columns": ["1","2","3","4"]
+        },
+        "zusatz_tabelle": None
+    },
+    {
+        "type_id": "NT", "type_name": "Netzteil / Versorgung",
+        "taifun_typ_id": 32, "active": False,
+        "badge": "NT", "badge_color": "slate",
+        "meldepunkt_definitionen": {
+            "detectors": ["-", "Normal"],
+            "values": ["CHECK", "Def."],
+            "columns": ["1","2"]
+        },
+        "zusatz_tabelle": None
+    },
+    {
+        "type_id": "NotLicht", "type_name": "Notlichtanlage",
+        "taifun_typ_id": 43, "active": False,
+        "badge": "NL", "badge_color": "amber",
+        "meldepunkt_definitionen": {
+            "detectors": ["-", "Normal", "Block", "Einzel"],
+            "values": ["CHECK", "Def."],
+            "columns": ["1","2","3","4"]
+        },
+        "zusatz_tabelle": None
+    },
+]
+
 def load_settings():
     settings_path = os.path.join(os.path.dirname(DB_PATH), "settings.json")
     default_settings = {
+        "anlagentypen": DEFAULT_ANLAGENTYPEN,
         "active_system_types": ["BMA", "EMA", "ELA", "Lichtruf", "SLA"],
         "system_settings": {
-            "BMA": {
-                "name": "Brandmeldeanlage",
-                "xml_name": "BMA",
-                "color": "bg-red-50 text-red-800 border-red-200",
-                "badgeColor": "bg-red-500",
-                "detectors": ["-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR"],
-                "values": ["CHECK", "H1", "H2", "Def."]
-            },
-            "EMA": {
-                "name": "Einbruchmeldeanlage",
-                "xml_name": "EMA",
-                "color": "bg-yellow-50 text-yellow-800 border-yellow-200",
-                "badgeColor": "bg-yellow-500",
-                "detectors": ["-", "Normal", "BWM", "ZK", "RSK", "Lichtschranke", "Glasbruch", "Körperschall"],
-                "values": ["CHECK", "Def."]
-            },
-            "ELA": {
-                "name": "Elektroakustik",
-                "xml_name": "ELA",
-                "color": "bg-blue-50 text-blue-800 border-blue-200",
-                "badgeColor": "bg-blue-500",
-                "detectors": ["-", "Normal", "Innenlautsprecher", "Außenlautsprecher"],
-                "values": ["CHECK", "Def."]
-            },
-            "Lichtruf": {
-                "name": "Lichtrufanlage",
-                "xml_name": "Lichtruf",
-                "color": "bg-emerald-50 text-emerald-800 border-emerald-200",
-                "badgeColor": "bg-emerald-500",
-                "detectors": ["-", "Normal", "AT", "BT", "ZT", "EM", "PN", "Display"],
-                "values": ["CHECK", "Def."]
-            },
-            "SLA": {
-                "name": "Sprechanlage",
-                "xml_name": "SLA",
-                "color": "bg-indigo-50 text-indigo-800 border-indigo-200",
-                "badgeColor": "bg-indigo-500",
-                "detectors": ["-", "Normal", "SLA"],
-                "values": ["CHECK", "Def."]
-            }
+            "BMA": {"name": "Brandmeldeanlage", "xml_name": "BMA", "color": "bg-red-50 text-red-800 border-red-200", "badgeColor": "bg-red-500", "detectors": ["-","Normal","ZD","ZB","TDIFF","TMAX","RAS","LINEAR"], "values": ["CHECK","H1","H2","Def."]},
+            "EMA": {"name": "Einbruchmeldeanlage", "xml_name": "EMA", "color": "bg-yellow-50 text-yellow-800 border-yellow-200", "badgeColor": "bg-yellow-500", "detectors": ["-","Normal","BWM","ZK","RSK","Lichtschranke","Glasbruch","Körperschall"], "values": ["CHECK","Def."]},
+            "ELA": {"name": "Elektroakustik", "xml_name": "ELA", "color": "bg-blue-50 text-blue-800 border-blue-200", "badgeColor": "bg-blue-500", "detectors": ["-","Normal","Innenlautsprecher","Außenlautsprecher"], "values": ["CHECK","Def."]},
+            "Lichtruf": {"name": "Lichtrufanlage", "xml_name": "Lichtruf", "color": "bg-emerald-50 text-emerald-800 border-emerald-200", "badgeColor": "bg-emerald-500", "detectors": ["-","Normal","AT","BT","ZT","EM","PN","Display"], "values": ["CHECK","Def."]},
+            "SLA": {"name": "Sprechanlage", "xml_name": "SLA", "color": "bg-indigo-50 text-indigo-800 border-indigo-200", "badgeColor": "bg-indigo-500", "detectors": ["-","Normal","SLA"], "values": ["CHECK","Def."]}
         }
     }
     if os.path.exists(settings_path):
         try:
             with open(settings_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                loaded = json.load(f)
+            if "anlagentypen" not in loaded:
+                loaded["anlagentypen"] = DEFAULT_ANLAGENTYPEN
+            return loaded
         except Exception:
             pass
     return default_settings
@@ -140,52 +201,95 @@ def get_protocols():
     page = max(1, int(request.args.get("page", 1)))
     per_page = min(100, max(10, int(request.args.get("per_page", 30))))
     search = request.args.get("search", "").strip()
-    status_filter = request.args.get("filter", "")  # "offen", "erledigt", "defekte"
+    status_filter = request.args.get("filter", "")   # "offen","erledigt","defekte","ohne_liste"
+    types_param = request.args.get("types", "")       # comma-separated type filter, e.g. "BMA,EMA"
     offset = (page - 1) * per_page
+
+    settings = load_settings()
+    anlagentypen = settings.get("anlagentypen", [])
+    active_types = [t["type_id"] for t in anlagentypen if t.get("active")]
+    if not active_types:
+        active_types = settings.get("active_system_types", ["BMA", "EMA", "ELA", "Lichtruf", "SLA"])
+
+    # Optional further type filter from request
+    if types_param:
+        wanted = {t.strip() for t in types_param.split(",") if t.strip()}
+        active_types = [t for t in active_types if t in wanted]
+
+    ohne_liste = (status_filter == "ohne_liste")
 
     conn = get_db_connection()
     cursor = conn.cursor()
 
     defect_subq = "EXISTS(SELECT 1 FROM group_cells gc WHERE gc.protocol_id = p.id AND (gc.value = 'Def.' OR gc.value = 'Fehler'))"
 
+    # Build active-type SQL placeholders (parameterised)
+    if active_types:
+        at_ph = ",".join("?" * len(active_types))
+        at_p  = list(active_types)
+    else:
+        at_ph = "NULL"
+        at_p  = []
+
+    has_active_type = f"EXISTS(SELECT 1 FROM protocol_groups pg WHERE pg.protocol_id=p.id AND pg.anlage_type IN ({at_ph}))"
+    has_liste       = f"EXISTS(SELECT 1 FROM group_cells gc JOIN protocol_groups pg2 ON pg2.protocol_id=gc.protocol_id AND pg2.group_id=gc.group_id WHERE gc.protocol_id=p.id AND pg2.anlage_type IN ({at_ph}))"
+
     def build_where(extra_cond=None):
-        conds = []
-        params = []
+        conds  = [has_active_type]
+        params = list(at_p)                   # params for has_active_type
+        if ohne_liste:
+            conds.append(f"NOT ({has_liste})")
+            params.extend(at_p)               # params for NOT has_liste
+        else:
+            conds.append(has_liste)
+            params.extend(at_p)               # params for has_liste
         if search:
             pat = f"%{search}%"
             conds.append("(LOWER(p.name) LIKE LOWER(?) OR LOWER(p.address) LIKE LOWER(?) OR LOWER(p.contract_number) LIKE LOWER(?) OR LOWER(p.system_type) LIKE LOWER(?))")
             params.extend([pat, pat, pat, pat])
         if extra_cond:
             conds.append(extra_cond)
-        return ("WHERE " + " AND ".join(conds)) if conds else "", params
+        return "WHERE " + " AND ".join(conds), params
 
-    # Tab counts (search-aware, filter-independent)
+    # Tab counts (search-aware, type-aware, base-filter-aware)
     w, p = build_where("p.status != 'synchronized'")
     count_offen = cursor.execute(f"SELECT COUNT(*) FROM protocols p {w}", p).fetchone()[0]
     w, p = build_where("p.status = 'synchronized'")
     count_erledigt = cursor.execute(f"SELECT COUNT(*) FROM protocols p {w}", p).fetchone()[0]
     w, p = build_where(defect_subq)
     count_defekte = cursor.execute(f"SELECT COUNT(*) FROM protocols p {w}", p).fetchone()[0]
+    # ohne_liste count: has_active + NOT has_liste (always ignores current ohne_liste mode)
+    conds_ol  = [has_active_type, f"NOT ({has_liste})"]
+    params_ol = list(at_p) + list(at_p)
+    if search:
+        pat = f"%{search}%"
+        conds_ol.append("(LOWER(p.name) LIKE LOWER(?) OR LOWER(p.address) LIKE LOWER(?) OR LOWER(p.contract_number) LIKE LOWER(?) OR LOWER(p.system_type) LIKE LOWER(?))")
+        params_ol.extend([pat, pat, pat, pat])
+    count_ohne_liste = cursor.execute(f"SELECT COUNT(*) FROM protocols p WHERE {' AND '.join(conds_ol)}", params_ol).fetchone()[0]
 
-    # Active filter condition
+    # Active filter condition (status tabs only apply when not in ohne_liste mode)
     filter_cond = None
-    if status_filter == "offen":
-        filter_cond = "p.status != 'synchronized'"
-    elif status_filter == "erledigt":
-        filter_cond = "p.status = 'synchronized'"
-    elif status_filter == "defekte":
-        filter_cond = defect_subq
+    if not ohne_liste:
+        if status_filter == "offen":    filter_cond = "p.status != 'synchronized'"
+        elif status_filter == "erledigt": filter_cond = "p.status = 'synchronized'"
+        elif status_filter == "defekte":  filter_cond = defect_subq
 
     main_where, main_params = build_where(filter_cond)
     total = cursor.execute(f"SELECT COUNT(*) FROM protocols p {main_where}", main_params).fetchone()[0]
     total_pages = max(1, (total + per_page - 1) // per_page)
 
-    # Paginated data — has_defect via SQL, no per-row filesystem calls
+    device_summary_subq = """(
+        SELECT GROUP_CONCAT(DISTINCT pg.anlage_type)
+        FROM protocol_groups pg WHERE pg.protocol_id = p.id
+    )"""
+
+    # Paginated data — has_defect and device_summary via SQL subqueries
     records = cursor.execute(f"""
         SELECT
             p.id, p.name, p.address, p.contract_number, p.interval, p.system_type, p.status,
             p.last_edited_by, p.last_edited_at,
-            CASE WHEN {defect_subq} THEN 1 ELSE 0 END AS has_defect
+            CASE WHEN {defect_subq} THEN 1 ELSE 0 END AS has_defect,
+            {device_summary_subq} AS device_summary
         FROM protocols p
         {main_where}
         ORDER BY p.name COLLATE NOCASE
@@ -204,7 +308,8 @@ def get_protocols():
             "status": r["status"],
             "last_edited_by": r["last_edited_by"] or "-",
             "last_edited_at": r["last_edited_at"] or "-",
-            "has_defect": bool(r["has_defect"])
+            "has_defect": bool(r["has_defect"]),
+            "device_summary": r["device_summary"] or "",
         })
     conn.close()
     return jsonify({
@@ -219,7 +324,8 @@ def get_protocols():
         "counts": {
             "offen": count_offen,
             "erledigt": count_erledigt,
-            "defekte": count_defekte
+            "defekte": count_defekte,
+            "ohne_liste": count_ohne_liste
         }
     })
 
@@ -291,22 +397,41 @@ def get_protocol_detail(p_id):
                 "columns": [],
                 "rows": []
             }
-            
+
         sub_systems_map[a_id]["rows"].append({
             "groupId": g_id,
             "groupName": g["group_name"],
             "cells": cells_list
         })
-        
+
         for c in cells_list:
             if c["slotKey"] not in sub_systems_map[a_id]["columns"]:
                 sub_systems_map[a_id]["columns"].append(c["slotKey"])
-                
+
+    # Build flat devices list (one entry per WtGrt / protocol_group row)
+    devices_list = []
+    for g in groups:
+        a_interval = "Halbjährlich"
+        try:
+            if "anlage_interval" in g.keys() and g["anlage_interval"]:
+                a_interval = g["anlage_interval"]
+        except Exception:
+            pass
+        devices_list.append({
+            "id": g["group_id"],
+            "name": g["group_name"],
+            "type": (g["anlage_type"] if "anlage_type" in g.keys() and g["anlage_type"] else p["system_type"]) or "BMA",
+            "anlage_id": (g["anlage_id"] if "anlage_id" in g.keys() else "") or "",
+            "anlage_name": (g["anlage_name"] if "anlage_name" in g.keys() else "") or "",
+            "anlage_address": (g["anlage_address"] if "anlage_address" in g.keys() else "") or "",
+            "anlage_interval": a_interval,
+        })
+
     for sub in sub_systems_map.values():
         sub["columns"] = sorted(sub["columns"], key=lambda x: int(x) if x.isdigit() else 0)
         if not sub["columns"]:
             sub["columns"] = cols
-            
+
     sub_systems_list = list(sub_systems_map.values())
     conn.close()
 
@@ -330,6 +455,7 @@ def get_protocol_detail(p_id):
             "detector_types": det_types,
             "rows": rows_data,
             "subSystems": sub_systems_list,
+            "devices": devices_list,
             "has_pdf": has_pdf
         },
         "archives": archives
@@ -580,20 +706,68 @@ def post_settings():
         data = request.json
         active_system_types = data.get("active_system_types")
         system_settings = data.get("system_settings")
-        
+        anlagentypen = data.get("anlagentypen")
+
         if active_system_types is not None and not isinstance(active_system_types, list):
             return jsonify({"success": False, "error": "active_system_types must be an array"}), 400
-            
+
         settings = load_settings()
         if active_system_types is not None:
             settings["active_system_types"] = active_system_types
         if system_settings is not None:
             settings["system_settings"] = system_settings
-            
+        if anlagentypen is not None:
+            settings["anlagentypen"] = anlagentypen
+
         save_settings(settings)
         return jsonify({"success": True, "message": "Einstellungen erfolgreich gespeichert."})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/anlagentypen", methods=["GET"])
+def api_get_anlagentypen():
+    settings = load_settings()
+    return jsonify({"success": True, "anlagentypen": settings.get("anlagentypen", [])})
+
+
+@app.route("/api/anlagentypen", methods=["POST"])
+def api_save_anlagentyp():
+    try:
+        data = request.json
+        type_id = (data.get("type_id") or "").strip()
+        if not type_id:
+            return jsonify({"success": False, "error": "type_id ist erforderlich"}), 400
+
+        settings = load_settings()
+        typen = settings.get("anlagentypen", [])
+        existing = next((i for i, t in enumerate(typen) if t["type_id"] == type_id), None)
+        if existing is not None:
+            typen[existing] = data
+        else:
+            typen.append(data)
+        settings["anlagentypen"] = typen
+        save_settings(settings)
+        return jsonify({"success": True, "anlagentyp": data})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/anlagentypen/<type_id>", methods=["DELETE"])
+def api_delete_anlagentyp(type_id):
+    try:
+        settings = load_settings()
+        typen = settings.get("anlagentypen", [])
+        before = len(typen)
+        typen = [t for t in typen if t["type_id"] != type_id]
+        if len(typen) == before:
+            return jsonify({"success": False, "error": "Anlagentyp nicht gefunden"}), 404
+        settings["anlagentypen"] = typen
+        save_settings(settings)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 
 # ----------------- UPLOADS & FILE PARSING API -----------------
 
@@ -710,92 +884,95 @@ def import_taifun():
                 if is_taifun_format:
                     contract_number = get_tag_value(block, "Nr")
                     info = get_tag_value(block, "Info")
-                    kd_match = get_tag_value(block, "KdMatch")
-                    
+
                     if not contract_number:
                         continue
-                        
-                    name = f"{kd_match} ({info})" if kd_match else info
-                    if not name:
-                        name = f"Vertrag {contract_number}"
-                        
+
+                    name = info or f"Vertrag {contract_number}"
                     p_id = f"PRO-{contract_number}"
-                    address = build_taifun_address(block) or "Aus TAIFUN importiert"
-                    
+
                     # Parse WtAgList
                     wtag_list_block = extract_tag_content(block, "WtAgList")
                     wtag_blocks = extract_tags_content(wtag_list_block, "WtAg")
-                    
-                    wt_ag_index = 0
+
+                    # Use the first WtAg's customer name as the contract address
+                    address = "Aus TAIFUN importiert"
                     for wtag in wtag_blocks:
-                        wt_ag_index += 1
-                        
-                        # Split header to avoid nested tags
-                        wtag_header = re.split(r"<WtGrtList>|<WtVLLIST>", wtag, flags=re.IGNORECASE)[0]
-                        wtag_info = get_tag_value(wtag_header, "Info") or f"Anlage {wt_ag_index}"
-                        anlage_address = build_taifun_address(wtag_header) or build_taifun_address(wtag)
-                        
-                        # Extract interval
-                        wtvl_list_block = extract_tag_content(wtag, "WtVLLIST")
-                        wtvl_blocks = extract_tags_content(wtvl_list_block, "WtVl")
-                        wt_ag_interval = "Halbjährlich"
-                        for wtvl in wtvl_blocks:
-                            wt_intervall = get_tag_value(wtvl, "WtIntervall")
-                            if wt_intervall == "3":
-                                wt_ag_interval = "Quartalsweise"
-                            elif wt_intervall == "6":
-                                wt_ag_interval = "Halbjährlich"
-                            elif wt_intervall == "12":
-                                wt_ag_interval = "Jährlich"
-                            elif wt_intervall == "1":
-                                wt_ag_interval = "Monatlich"
-                                
-                        # Extract WtGrtList
-                        wtgrt_list_block = extract_tag_content(wtag, "WtGrtList")
-                        wtgrt_blocks = extract_tags_content(wtgrt_list_block, "WtGrt")
-                        
-                        wt_grt_index = 0
-                        for wtgrt in wtgrt_blocks:
-                            wt_grt_index += 1
-                            dev_name = get_tag_value(wtgrt, "Name") or "Gerät"
-                            dev_info = get_tag_value(wtgrt, "Info") or "Zentrale"
-                            
-                            system_type = get_clean_type(dev_name)
-                            
-                            if wt_ag_index == 1 and wt_grt_index == 1:
-                                interval = wt_ag_interval
-                                default_system_type = system_type
-                                
-                            sub_id = f"sub-taifun-{contract_number}-{wt_ag_index}-{wt_grt_index}"
-                            
-                            sub_name = f"{wtag_info} - {dev_info}" if dev_info and dev_info != dev_name else f"{wtag_info} - {dev_name}"
-                            
-                            devices_rows = [
-                                {"name": dev_info or "Zentrale", "info": "Zentrale"},
-                                {"name": "Meldergruppe 1", "info": "Linie 1"},
-                                {"name": "Meldergruppe 2", "info": "Linie 2"}
-                            ]
-                            
-                            sub_systems_to_import.append({
-                                "id": sub_id,
-                                "name": sub_name,
-                                "system_type": system_type,
-                                "interval": wt_ag_interval,
-                                "address": anlage_address,
-                                "devices": devices_rows
+                        wtag_hdr = re.split(r"<WtGrtList>|<WtVLList>", wtag, flags=re.IGNORECASE)[0]
+                        mt3 = get_tag_value(wtag_hdr, "MtName3") or get_tag_value(wtag_hdr, "MtName2")
+                        if mt3:
+                            address = mt3
+                            break
+
+                    # Build flat list of devices (one per WtGrt)
+                    devices_to_import = []
+
+                    def parse_interval(val):
+                        if val == "1": return "Monatlich"
+                        if val in ("3", "4"): return "Quartalsweise"
+                        if val == "6": return "Halbjährlich"
+                        if val == "12": return "Jährlich"
+                        return "Halbjährlich"
+
+                    for ag_idx, wtag in enumerate(wtag_blocks, 1):
+                        wtag_hdr = re.split(r"<WtGrtList>|<WtVLList>", wtag, flags=re.IGNORECASE)[0]
+
+                        anlage_nr = get_tag_value(wtag_hdr, "Nr") or f"A{ag_idx:03d}"
+                        # OjName3 = building/object name (Haus 1, Gebäude A, ...)
+                        obj_name = get_tag_value(wtag_hdr, "OjName3") or get_tag_value(wtag_hdr, "MtName3") or f"Standort {ag_idx}"
+                        customer = get_tag_value(wtag_hdr, "MtName3") or ""
+
+                        # Interval from first WtVL of this WtAg
+                        wtvl_block = extract_tag_content(wtag, "WtVLList")
+                        wtvl_items = extract_tags_content(wtvl_block, "WtVL")
+                        ag_interval = "Halbjährlich"
+                        for wtvl in wtvl_items:
+                            ag_interval = parse_interval(get_tag_value(wtvl, "WtIntervall"))
+                            break  # only first WtVL counts per WtAg
+
+                        # Devices (WtGrt) — each becomes one protocol_groups row
+                        wtgrt_block = extract_tag_content(wtag, "WtGrtList")
+                        wtgrt_items = extract_tags_content(wtgrt_block, "WtGrt")
+
+                        for grt_idx, wtgrt in enumerate(wtgrt_items, 1):
+                            dev_guid = get_tag_value(wtgrt, "GUID") or ""
+                            # Sanitise GUID → alphanumeric group_id
+                            group_id = re.sub(r"[^A-Za-z0-9]", "", dev_guid)[:48] or f"G{ag_idx:03d}{grt_idx:03d}"
+                            dev_name_raw = get_tag_value(wtgrt, "Name") or "Gerät"
+                            dev_info = get_tag_value(wtgrt, "Info") or dev_name_raw
+                            dev_type = get_clean_type(dev_name_raw)
+
+                            devices_to_import.append({
+                                "group_id": group_id,
+                                "group_name": dev_info,
+                                "group_type": dev_type,
+                                "anlage_id": anlage_nr,
+                                "anlage_name": obj_name,
+                                "anlage_type": dev_type,
+                                "anlage_address": customer,
+                                "anlage_interval": ag_interval,
                             })
-                    if not sub_systems_to_import:
-                        sub_systems_to_import.append({
-                            "id": f"sub-taifun-{contract_number}-default",
-                            "name": "Hauptanlage",
-                            "system_type": "BMA",
-                            "interval": "Halbjährlich",
-                            "address": "",
-                            "devices": [
-                                {"name": "Zentrale", "info": "Zentrale"},
-                                {"name": "Meldergruppe 1", "info": "Linie 1"}
-                            ]
+
+                    # Derive primary contract metadata from first real device
+                    if devices_to_import:
+                        first = devices_to_import[0]
+                        default_system_type = first["group_type"] if first["group_type"] in ("BMA", "EMA", "ELA", "Lichtruf", "SLA") else "BMA"
+                        interval = first["anlage_interval"]
+                    else:
+                        default_system_type = "BMA"
+                        interval = "Halbjährlich"
+                        # placeholder so the contract still appears
+                        devices_to_import.append({
+                            "group_id": f"G{contract_number}000",
+                            "group_name": "Anlage",
+                            "group_type": "BMA",
+                            "anlage_id": "A001",
+                            "anlage_name": "Standort",
+                            "anlage_type": "BMA",
+                            "anlage_address": "",
+                            "anlage_interval": "Halbjährlich",
                         })
+
                 else:
                     # Legacy Format parsing
                     id_val = get_tag_value(block, "ID")
@@ -848,7 +1025,7 @@ def import_taifun():
                     "Lichtruf": ["1", "2", "3", "4"],
                     "SLA": ["1", "2"]
                 }
-                
+
                 default_values = {
                     "BMA": ["CHECK", "Def."],
                     "EMA": ["OK", "Fehler"],
@@ -856,7 +1033,7 @@ def import_taifun():
                     "Lichtruf": ["OK", "Fehler"],
                     "SLA": ["OK", "Fehler"]
                 }
-                
+
                 default_detector_types = {
                     "BMA": ["-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR"],
                     "EMA": ["-", "Normal", "BWM", "RSK", "IR", "GLAS"],
@@ -864,70 +1041,60 @@ def import_taifun():
                     "Lichtruf": ["-", "Normal", "ZUG", "RUF", "WC"],
                     "SLA": ["-", "Normal", "SLA"]
                 }
-                
+
                 cols = json.dumps(default_columns.get(default_system_type, ["1", "2", "3", "4"]))
                 app_vals = json.dumps(default_values.get(default_system_type, ["CHECK", "Def."]))
                 det_types = json.dumps(default_detector_types.get(default_system_type, ["-", "Normal"]))
-                
+
                 cursor.execute("""
                     INSERT INTO protocols (id, name, address, contract_number, interval, system_type, status, columns, applicable_values, detector_types)
                     VALUES (?, ?, ?, ?, ?, ?, 'ready_to_download', ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET 
-                        name=EXCLUDED.name, 
-                        address=EXCLUDED.address, 
-                        interval=EXCLUDED.interval, 
-                        system_type=EXCLUDED.system_type, 
+                    ON CONFLICT(id) DO UPDATE SET
+                        name=EXCLUDED.name,
+                        address=EXCLUDED.address,
+                        interval=EXCLUDED.interval,
+                        system_type=EXCLUDED.system_type,
                         contract_number=EXCLUDED.contract_number
                 """, (p_id, name, address, contract_number, interval, default_system_type, cols, app_vals, det_types))
-                
+
                 cursor.execute("DELETE FROM group_cells WHERE protocol_id = ?", (p_id,))
                 cursor.execute("DELETE FROM protocol_groups WHERE protocol_id = ?", (p_id,))
-                
-                grp_counter = 1
-                for sub in sub_systems_to_import:
-                    system_set = settings.get("system_settings", {}).get(sub["system_type"]) or settings.get("system_settings", {}).get("BMA") or {
-                        "detectors": ["-", "Normal"],
-                        "values": ["CHECK", "Def."]
-                    }
-                    available_detectors = system_set.get("detectors", ["-", "Normal"])
-                    
-                    active_cols = default_columns.get(sub["system_type"], ["1", "2", "3", "4"])
-                    if settings.get("system_settings", {}).get(sub["system_type"], {}).get("columns"):
-                        active_cols = settings["system_settings"][sub["system_type"]]["columns"]
-                        
-                    if is_taifun_format:
-                        for dev in sub["devices"]:
-                            group_id = f"G-{str(grp_counter).zfill(2)}"
-                            grp_counter += 1
-                            
-                            group_name = dev["info"] or f"{sub['system_type']} Komponente"
-                            matched_det_type = match_detector_type(dev["info"], dev["name"], available_detectors)
-                            
-                            cursor.execute("""
-                                INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type, anlage_id, anlage_name, anlage_type, anlage_address)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (p_id, group_id, group_name, 'NAM', sub["id"], sub["name"], sub["system_type"], sub["address"] or ""))
-                            
-                            for c_idx, slot_key in enumerate(active_cols):
-                                detector_type = matched_det_type if c_idx == 0 else (available_detectors[1] if len(available_detectors) > 1 else "Normal")
-                                cursor.execute("""
-                                    INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value)
-                                    VALUES (?, ?, ?, ?, '')
-                                """, (p_id, group_id, slot_key, detector_type))
-                    else:
+
+                if is_taifun_format:
+                    # One protocol_group row per WtGrt — no cells created
+                    for dev in devices_to_import:
+                        cursor.execute("""
+                            INSERT INTO protocol_groups
+                                (protocol_id, group_id, group_name, group_type,
+                                 anlage_id, anlage_name, anlage_type, anlage_address, anlage_interval)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(protocol_id, group_id) DO UPDATE SET
+                                group_name=EXCLUDED.group_name,
+                                group_type=EXCLUDED.group_type,
+                                anlage_id=EXCLUDED.anlage_id,
+                                anlage_name=EXCLUDED.anlage_name,
+                                anlage_type=EXCLUDED.anlage_type,
+                                anlage_address=EXCLUDED.anlage_address,
+                                anlage_interval=EXCLUDED.anlage_interval
+                        """, (p_id, dev["group_id"], dev["group_name"], dev["group_type"],
+                              dev["anlage_id"], dev["anlage_name"], dev["anlage_type"],
+                              dev["anlage_address"], dev["anlage_interval"]))
+                else:
+                    # Legacy format: build groups + cells from sub_systems_to_import
+                    for sub in sub_systems_to_import:
                         groups_map = {}
                         for dev in sub["devices"]:
                             gruppe = dev["group"] or "GRP 01"
                             melder_typ = dev["melderTyp"] or "Normal"
                             anzahl = dev["anzahl"] or 1
-                            
+
                             if gruppe not in groups_map:
                                 groups_map[gruppe] = {
                                     "name": f"{gruppe} ({dev['info'] or dev['name']})",
                                     "type": "TECH" if sub["system_type"] == "BMA" else "NAM",
                                     "cells": []
                                 }
-                                
+
                             start_idx = len(groups_map[gruppe]["cells"]) + 1
                             for i in range(anzahl):
                                 groups_map[gruppe]["cells"].append({
@@ -935,13 +1102,16 @@ def import_taifun():
                                     "detectorType": melder_typ,
                                     "value": ""
                                 })
-                                
+
                         for group_id, g_data in groups_map.items():
                             cursor.execute("""
-                                INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type, anlage_id, anlage_name, anlage_type, anlage_address)
+                                INSERT INTO protocol_groups
+                                    (protocol_id, group_id, group_name, group_type,
+                                     anlage_id, anlage_name, anlage_type, anlage_address)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (p_id, group_id, g_data["name"], g_data["type"], sub["id"], sub["name"], sub["system_type"], sub["address"] or ""))
-                            
+                            """, (p_id, group_id, g_data["name"], g_data["type"],
+                                  sub["id"], sub["name"], sub["system_type"], sub["address"] or ""))
+
                             for cell in g_data["cells"]:
                                 cursor.execute("""
                                     INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value)
@@ -957,7 +1127,7 @@ def import_taifun():
             
         return jsonify({
             "success": True,
-            "message": f"{imported_count} Wartungsverträge inklusive aller Anlagen und Messpunkte erfolgreich aus TAIFUN-XML importiert und verknüpft."
+            "message": f"{imported_count} Wartungsverträge mit allen Anlagen und Geräten erfolgreich aus TAIFUN-XML importiert."
         })
     except Exception as e:
         print(f"Error during XML import: {str(e)}")

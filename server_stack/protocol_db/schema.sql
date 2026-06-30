@@ -51,32 +51,6 @@ CREATE TABLE IF NOT EXISTS group_cells (
     UNIQUE(protocol_id, group_id, slot_key)
 );
 
--- Insert Sample Metadata
-INSERT OR IGNORE INTO technicians (id, username, password_hash, name) 
+-- Seed technician account
+INSERT OR IGNORE INTO technicians (id, username, password_hash, name)
 VALUES ('99283-FS', 'tprantl', '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918', 'Thomas Prantl');
-
-INSERT OR IGNORE INTO protocols (id, name, address, contract_number, interval, system_type, status, last_edited_by, last_edited_at, columns, applicable_values, detector_types)
-VALUES (
-    '1', 
-    'Zentral-Klinikum West', 
-    'Klinikstraße 12, 1010 Wien', 
-    'V-2024-99a', 
-    'Halbjährlich', 
-    'BMA', 
-    'ready_to_download', 
-    'Sophia Reiter', 
-    '15.05.2026', 
-    '["1","2","3","4","5","6","7","8"]', 
-    '["CHECK","Def."]', 
-    '["ZD","DB","RAS","TDIF"]'
-);
-
-INSERT OR IGNORE INTO protocol_groups (protocol_id, group_id, group_name, group_type)
-VALUES ('1', 'GRP 01', 'Technikraum 2a', 'TECH');
-
-INSERT OR IGNORE INTO group_cells (protocol_id, group_id, slot_key, detector_type, value)
-VALUES 
-('1', 'GRP 01', '1', 'ZD', ''),
-('1', 'GRP 01', '2', 'ZD', ''),
-('1', 'GRP 01', '3', 'RAS', ''),
-('1', 'GRP 01', '4', 'ZD', '');
