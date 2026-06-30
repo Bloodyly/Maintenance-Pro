@@ -825,9 +825,7 @@ def get_cells(protocol_id, group_id):
         "SELECT slot_key, detector_type, value FROM group_cells WHERE protocol_id = ? AND group_id = ? ORDER BY CAST(slot_key AS INTEGER)",
         (protocol_id, group_id)
     )
-    cells = []
-    for c in cursor.fetchall():
-        cells.append({"slot_key": c["slot_key"], "detector_type": c["detector_type"], "value": c["value"] or ""})
+    rows = cursor.fetchall()
     conn.close()
 
     anlage_type = dev["anlage_type"] or "BMA"
@@ -844,8 +842,32 @@ def get_cells(protocol_id, group_id):
                 mp_def = at.get("meldepunkt_definitionen")
                 break
 
+    # Check for grid format row
+    grid_row = next((r for r in rows if r["slot_key"] == "__grid__" and r["detector_type"] == "GRID_V1"), None)
+    if grid_row:
+        try:
+            grid_data = json.loads(grid_row["value"])
+            return jsonify({
+                "success": True,
+                "format": "grid",
+                "grid": grid_data,
+                "group_name": dev["group_name"],
+                "anlage_type": anlage_type,
+                "anlage_interval": dev["anlage_interval"] or "Halbjährlich",
+                "meldepunkt_definitionen": mp_def
+            })
+        except Exception:
+            pass  # Fall through to flat format if JSON parse fails
+
+    # Flat format (legacy)
+    cells = []
+    for c in rows:
+        if c["slot_key"] != "__grid__":
+            cells.append({"slot_key": c["slot_key"], "detector_type": c["detector_type"], "value": c["value"] or ""})
+
     return jsonify({
         "success": True,
+        "format": "flat",
         "cells": cells,
         "group_name": dev["group_name"],
         "anlage_type": anlage_type,
@@ -857,24 +879,103 @@ def get_cells(protocol_id, group_id):
 @app.route("/api/cells/<protocol_id>/<group_id>", methods=["POST"])
 def save_cells(protocol_id, group_id):
     data = request.json
-    cells = data.get("cells", [])
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ?", (protocol_id, group_id))
-        for c in cells:
+        if "grid" in data:
+            # Grid format: store as single __grid__ GRID_V1 row
+            grid_json = json.dumps(data["grid"], ensure_ascii=False)
+            cursor.execute(
+                "DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = '__grid__'",
+                (protocol_id, group_id)
+            )
             cursor.execute("""
                 INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (protocol_id, group_id, c["slot_key"], c["detector_type"], c.get("value", ""),
-                  int(datetime.now().timestamp())))
-        conn.commit()
+                VALUES (?, ?, '__grid__', 'GRID_V1', ?, ?)
+            """, (protocol_id, group_id, grid_json, int(datetime.now().timestamp())))
+            conn.commit()
+            conn.close()
+            return jsonify({"success": True, "count": 1})
+        else:
+            # Flat format (legacy): DELETE all + re-INSERT
+            cells = data.get("cells", [])
+            cursor.execute("DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ?", (protocol_id, group_id))
+            for c in cells:
+                cursor.execute("""
+                    INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (protocol_id, group_id, c["slot_key"], c["detector_type"], c.get("value", ""),
+                      int(datetime.now().timestamp())))
+            conn.commit()
+            conn.close()
+            return jsonify({"success": True, "count": len(cells)})
     except Exception as e:
         conn.rollback()
         conn.close()
         return jsonify({"success": False, "error": str(e)}), 500
-    conn.close()
-    return jsonify({"success": True, "count": len(cells)})
+
+
+def parse_etb_to_grid(file_bytes, filename):
+    """Parse ESSER ETB or CSV export to grid format."""
+    groups = []
+    types_dict = {}
+
+    try:
+        text = file_bytes.decode("utf-8", errors="ignore")
+        lines = [l.strip() for l in text.splitlines() if l.strip() and not l.startswith("#")]
+
+        delimiter = ";" if any(";" in l for l in lines[:5]) else ","
+
+        for row_idx, line in enumerate(lines):
+            parts = [p.strip() for p in line.split(delimiter)]
+            if len(parts) < 2:
+                continue
+
+            grp_num = parts[0]
+            grp_name = parts[1]
+            groups.append([grp_num, grp_name])
+
+            for col_idx, det_type in enumerate(parts[2:], start=1):
+                if det_type and det_type != "-":
+                    types_dict[f"{row_idx + 1}_{col_idx}"] = det_type
+    except Exception:
+        pass
+
+    if not groups:
+        # Binary ETB: scan for ASCII strings that look like group records
+        text_fallback = file_bytes.decode("latin-1", errors="replace")
+        matches = re.findall(r'([0-9]{1,3})\x00+([A-Za-z\xc0-\xfe][^\x00]{2,40})', text_fallback)
+        for idx, (grp_num, grp_name) in enumerate(matches[:60]):
+            clean_name = ''.join(c for c in grp_name if c.isprintable()).strip()
+            if clean_name:
+                groups.append([grp_num.zfill(2), clean_name])
+
+    n_groups = len(groups)
+    n_cols = max((int(k.split("_")[1]) for k in types_dict), default=8) if types_dict else 8
+
+    return {
+        "v": 1,
+        "n_groups": n_groups or 5,
+        "n_cols": n_cols,
+        "groups": groups or [[str(i + 1), f"Meldegruppe {i + 1}"] for i in range(5)],
+        "types": types_dict,
+        "values": {}
+    }
+
+
+@app.route("/api/cells/<protocol_id>/<group_id>/import-etb", methods=["POST"])
+def import_etb_cells(protocol_id, group_id):
+    if "file" not in request.files:
+        return jsonify({"success": False, "error": "Keine Datei hochgeladen."}), 400
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"success": False, "error": "Dateiname fehlt."}), 400
+    try:
+        file_bytes = f.read()
+        grid = parse_etb_to_grid(file_bytes, f.filename)
+        return jsonify({"success": True, "grid": grid})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/admin/delete-all-cells", methods=["POST"])

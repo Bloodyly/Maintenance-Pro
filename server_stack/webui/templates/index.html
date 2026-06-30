@@ -1315,68 +1315,145 @@
     </div>
 
     <!-- 6. MODAL: CELLS EDITOR (Auslöselisten) -->
-    <div x-show="isCellsEditorOpen" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex flex-col" style="display:none;">
-
-        <!-- Header bar -->
-        <div class="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shrink-0">
+    <div x-show="isCellsEditorOpen" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex flex-col" style="display:none;">
+        <!-- Header -->
+        <div class="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between gap-4 shrink-0">
+            <!-- Left: device info -->
             <div class="flex items-center gap-3">
-                <span class="px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider"
-                      :class="cellsEditorDevice?.type === 'BMA'     ? 'bg-red-50 text-red-800 border border-red-200' :
-                              cellsEditorDevice?.type === 'EMA'     ? 'bg-amber-50 text-amber-800 border border-amber-200' :
-                              cellsEditorDevice?.type === 'ELA'     ? 'bg-blue-50 text-blue-800 border border-blue-200' :
-                              cellsEditorDevice?.type === 'Lichtruf'? 'bg-emerald-50 text-emerald-800 border border-emerald-200' :
-                              cellsEditorDevice?.type === 'SLA'     ? 'bg-purple-50 text-purple-800 border border-purple-200' :
-                                                                       'bg-slate-100 text-slate-600 border border-slate-200'"
+                <span class="px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider text-white"
+                      :class="'bg-' + (cellsEditorDevice?.type === 'BMA' ? 'red' : cellsEditorDevice?.type === 'EMA' ? 'amber' : 'slate') + '-600'"
                       x-text="cellsEditorDevice?.type || ''"></span>
                 <div>
-                    <h3 class="text-base font-bold text-slate-900" x-text="cellsEditorDevice?.name || ''"></h3>
-                    <p class="text-xs text-slate-500" x-text="cellsEditorReadOnly ? 'Auslöseliste (Ansehen)' : 'Auslöseliste bearbeiten'"></p>
+                    <h3 class="text-sm font-bold text-slate-900" x-text="cellsEditorDevice?.name || ''"></h3>
+                    <p class="text-[11px] text-slate-400" x-text="cellsEditorReadOnly ? 'Ansehen' : 'Auslöseliste bearbeiten'"></p>
                 </div>
             </div>
+            <!-- Right: tools -->
             <div class="flex items-center gap-2">
-                <template x-if="!cellsEditorReadOnly">
-                    <label class="inline-flex items-center gap-2 px-3 py-1.5 border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg cursor-pointer hover:bg-slate-50 transition">
-                        <i data-lucide="file-up" class="w-3.5 h-3.5"></i>
-                        <span>CSV importieren</span>
-                        <input type="file" accept=".csv,.txt" @change="importCellsCsv($event)" class="hidden">
-                    </label>
+                <!-- Grid mode toolbar -->
+                <template x-if="gridFormat === 'grid' && !cellsEditorReadOnly">
+                    <div class="flex items-center gap-2">
+                        <!-- Detector type palette -->
+                        <div class="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+                            <template x-for="dt in (cellsEditorDef?.detectors || ['-','Normal','ZD','ZB'])" :key="dt">
+                                <button type="button"
+                                    @click="gridPaintType = dt"
+                                    :title="dt"
+                                    class="px-2 py-1 rounded text-[10px] font-bold transition border"
+                                    :class="gridPaintType === dt
+                                        ? 'text-white border-transparent shadow ' + gridTypeColor(dt)
+                                        : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400'"
+                                    x-text="dt === '-' ? '✕' : dt">
+                                </button>
+                            </template>
+                        </div>
+                        <!-- Config inputs -->
+                        <div class="flex items-center gap-1.5 text-[11px]">
+                            <label class="text-slate-500 font-semibold">Gruppen:</label>
+                            <input type="number" x-model.number="gridConfig.n_groups" min="1" max="200" @change="gridApplyConfig()"
+                                class="w-16 border border-slate-200 rounded px-2 py-1 text-xs text-center font-mono">
+                            <label class="text-slate-500 font-semibold">Melder max.:</label>
+                            <input type="number" x-model.number="gridConfig.n_cols" min="1" max="60" @change="gridApplyConfig()"
+                                class="w-16 border border-slate-200 rounded px-2 py-1 text-xs text-center font-mono">
+                        </div>
+                        <!-- ETB import -->
+                        <label class="inline-flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg cursor-pointer hover:bg-slate-50 transition">
+                            <i data-lucide="file-up" class="w-3.5 h-3.5"></i>
+                            <span>ETB importieren</span>
+                            <input type="file" accept=".etb,.csv,.txt" @change="importEtbFile($event)" class="hidden">
+                        </label>
+                    </div>
                 </template>
-                <button @click="isCellsEditorOpen = false" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg border border-slate-200 flex items-center gap-1.5 transition">
-                    <i data-lucide="x" class="w-3.5 h-3.5"></i>
-                    <span>Schließen</span>
+                <!-- Close -->
+                <button @click="isCellsEditorOpen = false"
+                    class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg border border-slate-200 flex items-center gap-1.5 transition">
+                    <i data-lucide="x" class="w-3.5 h-3.5"></i> Schließen
                 </button>
             </div>
         </div>
 
-        <!-- Body -->
-        <div class="flex-1 overflow-y-auto p-6 bg-slate-50/50">
-
-            <!-- Loading state -->
-            <div x-show="cellsEditorLoading" class="flex justify-center items-center py-16 text-slate-400 text-xs gap-2">
+        <!-- Body: loading spinner or grid or flat editor -->
+        <div class="flex-1 overflow-auto" @mouseup.window="gridEndPaint()" @mouseleave.window="gridEndPaint()">
+            <div x-show="cellsEditorLoading" class="flex justify-center py-20 text-slate-400 text-xs gap-2">
                 <svg class="animate-spin h-4 w-4 text-[#003D9B]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                     <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
-                <span>Laden...</span>
+                Laden...
             </div>
 
-            <template x-if="!cellsEditorLoading">
-                <div class="space-y-4 max-w-3xl">
+            <!-- GRID MODE -->
+            <template x-if="!cellsEditorLoading && gridFormat === 'grid'">
+                <div class="p-0 select-none" style="overflow: auto; max-height: calc(100vh - 140px);">
+                    <table class="border-collapse text-xs" style="table-layout: fixed; min-width: max-content;">
+                        <colgroup>
+                            <col style="width:52px; min-width:52px;">
+                            <col style="width:180px; min-width:120px;">
+                            <template x-for="c in gridConfig.n_cols" :key="c">
+                                <col style="width:36px; min-width:32px;">
+                            </template>
+                        </colgroup>
+                        <thead>
+                            <tr>
+                                <th class="sticky top-0 left-0 z-30 bg-slate-800 text-white text-center text-[10px] font-bold border border-slate-700 px-1 py-2">Grp</th>
+                                <th class="sticky top-0 z-30 bg-slate-800 text-white text-left text-[10px] font-bold border border-slate-700 px-2 py-2" style="left:52px;">Bezeichnung</th>
+                                <template x-for="c in gridConfig.n_cols" :key="c">
+                                    <th class="sticky top-0 z-20 bg-slate-700 text-white text-center text-[10px] font-bold border border-slate-600 px-0 py-2 w-9" x-text="c"></th>
+                                </template>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="(grp, rIdx) in gridGroups" :key="rIdx">
+                                <tr class="group/row hover:bg-blue-50/30">
+                                    <!-- Group number -->
+                                    <td class="sticky left-0 z-10 bg-slate-50 border border-slate-200 text-center p-0">
+                                        <input type="text" x-model="grp.grp_num"
+                                            class="w-full text-center font-mono font-bold text-[11px] bg-transparent border-0 outline-none px-1 py-1.5"
+                                            :readonly="cellsEditorReadOnly">
+                                    </td>
+                                    <!-- Bezeichnung -->
+                                    <td class="sticky z-10 bg-white border border-slate-200 p-0" style="left:52px;">
+                                        <input type="text" x-model="grp.name" placeholder="Bezeichnung..."
+                                            class="w-full text-[11px] bg-transparent border-0 outline-none px-2 py-1.5"
+                                            :readonly="cellsEditorReadOnly">
+                                    </td>
+                                    <!-- Detector cells -->
+                                    <template x-for="c in gridConfig.n_cols" :key="c">
+                                        <td class="border border-slate-200 p-0 text-center relative"
+                                            :class="[
+                                                gridInSelection(rIdx+1, c) ? 'ring-2 ring-inset ring-blue-500' : '',
+                                                cellsEditorReadOnly ? 'cursor-default' : 'cursor-crosshair'
+                                            ]"
+                                            @mousedown.prevent="if(!cellsEditorReadOnly) gridStartPaint(rIdx+1, c)"
+                                            @mouseenter="if(!cellsEditorReadOnly) gridMovePaint(rIdx+1, c)">
+                                            <div class="w-full h-7 flex items-center justify-center text-[9px] font-bold transition"
+                                                :class="gridCell(rIdx+1, c).type === '-' || !gridCell(rIdx+1, c).type
+                                                    ? 'bg-slate-100 text-slate-300'
+                                                    : gridTypeColor(gridCell(rIdx+1, c).type) + ' text-white'"
+                                                x-text="gridCell(rIdx+1, c).type === '-' || !gridCell(rIdx+1, c).type ? '' : gridTypeText(gridCell(rIdx+1, c).type)">
+                                            </div>
+                                        </td>
+                                    </template>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </template>
 
-                    <!-- Row count + add button -->
+            <!-- FLAT MODE (fallback for non-grid device types) -->
+            <template x-if="!cellsEditorLoading && gridFormat === 'flat'">
+                <div class="p-6 space-y-4">
                     <div class="flex justify-between items-center">
                         <span class="text-xs text-slate-500" x-text="cellsEditorRows.length + ' Meldepunkte'"></span>
                         <button x-show="!cellsEditorReadOnly" type="button" @click="addCellsRow()"
-                            class="px-3 py-1.5 bg-[#003D9B] hover:bg-blue-800 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition">
-                            <i data-lucide="plus" class="w-3.5 h-3.5"></i>
-                            <span>Zeile hinzufügen</span>
+                            class="px-3 py-1.5 bg-[#003D9B] hover:bg-blue-800 text-white text-xs font-bold rounded-lg flex items-center gap-1.5">
+                            <i data-lucide="plus" class="w-3.5 h-3.5"></i> Zeile hinzufügen
                         </button>
                     </div>
-
-                    <!-- Table -->
-                    <div class="rounded-xl border border-slate-200 overflow-hidden bg-white shadow-sm">
+                    <div class="rounded-xl border border-slate-200 overflow-hidden">
                         <table class="w-full text-xs">
-                            <thead class="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wide border-b border-slate-200">
+                            <thead class="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wide">
                                 <tr>
                                     <th class="px-3 py-2.5 text-center w-12 font-semibold">Nr.</th>
                                     <th class="px-3 py-2.5 text-left font-semibold">Meldertyp</th>
@@ -1386,29 +1463,24 @@
                             </thead>
                             <tbody class="divide-y divide-slate-100">
                                 <template x-for="(row, idx) in cellsEditorRows" :key="idx">
-                                    <tr class="hover:bg-slate-50/50 transition">
+                                    <tr class="hover:bg-slate-50/50">
                                         <td class="px-3 py-2 text-center font-mono text-slate-400" x-text="row.slot_key"></td>
                                         <td class="px-3 py-2">
-                                            <template x-if="cellsEditorReadOnly">
-                                                <span class="font-semibold text-slate-700" x-text="row.detector_type"></span>
-                                            </template>
+                                            <template x-if="cellsEditorReadOnly"><span class="font-semibold text-slate-700" x-text="row.detector_type"></span></template>
                                             <template x-if="!cellsEditorReadOnly">
-                                                <select x-model="row.detector_type" class="border border-slate-200 rounded px-2 py-1 text-xs w-full bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-400">
-                                                    <template x-for="dt in (cellsEditorDef?.detectors || ['-', 'Normal'])" :key="dt">
+                                                <select x-model="row.detector_type" class="border border-slate-200 rounded px-2 py-1 text-xs w-full bg-slate-50">
+                                                    <template x-for="dt in (cellsEditorDef?.detectors || ['-','Normal'])" :key="dt">
                                                         <option :value="dt" x-text="dt"></option>
                                                     </template>
                                                 </select>
                                             </template>
                                         </td>
                                         <td class="px-3 py-2">
-                                            <template x-if="cellsEditorReadOnly">
-                                                <span :class="row.value === 'Def.' ? 'text-red-600 font-bold' : (row.value ? 'text-emerald-700 font-semibold' : 'text-slate-400')"
-                                                      x-text="row.value || '—'"></span>
-                                            </template>
+                                            <template x-if="cellsEditorReadOnly"><span x-text="row.value || '—'"></span></template>
                                             <template x-if="!cellsEditorReadOnly">
-                                                <select x-model="row.value" class="border border-slate-200 rounded px-2 py-1 text-xs w-full bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-400">
+                                                <select x-model="row.value" class="border border-slate-200 rounded px-2 py-1 text-xs w-full bg-slate-50">
                                                     <option value="">—</option>
-                                                    <template x-for="v in (cellsEditorDef?.values || ['CHECK', 'Def.'])" :key="v">
+                                                    <template x-for="v in (cellsEditorDef?.values || ['CHECK','Def.'])" :key="v">
                                                         <option :value="v" x-text="v"></option>
                                                     </template>
                                                 </select>
@@ -1422,12 +1494,7 @@
                                     </tr>
                                 </template>
                                 <tr x-show="cellsEditorRows.length === 0">
-                                    <td colspan="4" class="px-4 py-10 text-center text-slate-400 text-xs">
-                                        Noch keine Meldepunkte vorhanden.
-                                        <template x-if="!cellsEditorReadOnly">
-                                            <span> Zeile hinzufügen oder CSV importieren.</span>
-                                        </template>
-                                    </td>
+                                    <td colspan="4" class="px-4 py-8 text-center text-slate-400">Noch keine Meldepunkte. Zeile hinzufügen.</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1436,18 +1503,18 @@
             </template>
         </div>
 
-        <!-- Footer save bar (only for edit mode) -->
-        <template x-if="!cellsEditorReadOnly">
-            <div class="border-t border-slate-200 bg-white px-6 py-4 flex justify-end gap-3 shrink-0">
-                <button @click="isCellsEditorOpen = false" class="px-4 py-2 border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg hover:bg-slate-50 transition">
-                    Abbrechen
-                </button>
+        <!-- Footer -->
+        <div x-show="!cellsEditorReadOnly" class="border-t border-slate-200 bg-white px-6 py-3 flex justify-between items-center shrink-0">
+            <div class="text-[11px] text-slate-400" x-show="gridFormat === 'grid'">
+                <span x-text="Object.values(gridCells).filter(c=>c.type&&c.type!=='-').length"></span> belegte Meldepunkte
+            </div>
+            <div class="flex gap-2">
+                <button @click="isCellsEditorOpen = false" class="px-4 py-2 border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg hover:bg-slate-50 transition">Abbrechen</button>
                 <button @click="saveCells()" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition">
-                    <i data-lucide="save" class="w-3.5 h-3.5"></i>
-                    <span>Auslöseliste speichern</span>
+                    <i data-lucide="save" class="w-3.5 h-3.5"></i> Auslöseliste speichern
                 </button>
             </div>
-        </template>
+        </div>
     </div>
 
     <!-- 7. Footer -->
@@ -1535,7 +1602,18 @@
                 cellsEditorDef: null,
                 cellsEditorLoading: false,
                 activeEditorSubIndex: 0,
-                
+
+                // Grid editor state
+                gridFormat: 'flat',
+                gridConfig: { n_groups: 10, n_cols: 20 },
+                gridGroups: [],
+                gridCells: {},
+                gridPaintType: 'ZD',
+                gridPainting: false,
+                gridPaintStart: null,
+                gridPaintEnd: null,
+                gridShowValues: false,
+
                 // System Settings Default Template Lookups
                 systemSettings: {
                     "BMA": {
@@ -2257,6 +2335,84 @@
                 },
 
                 // ── CELLS EDITOR (Auslöselisten) ──
+
+                // Grid helper functions
+                gridKey(r, c) { return r + '_' + c; },
+                gridCell(r, c) { return this.gridCells[this.gridKey(r, c)] || { type: '-', value: '' }; },
+                gridTypeColor(type) {
+                    const map = {
+                        'ZD': 'bg-blue-500', 'Normal': 'bg-emerald-500', 'ZB': 'bg-yellow-500',
+                        'TDIFF': 'bg-orange-400', 'TMAX': 'bg-red-500', 'RAS': 'bg-purple-500',
+                        'LINEAR': 'bg-pink-500', '-': 'bg-slate-100'
+                    };
+                    return map[type] || 'bg-slate-400';
+                },
+                gridTypeText(type) {
+                    const map = { 'ZD': 'ZD', 'Normal': 'N', 'ZB': 'ZB', 'TDIFF': 'TD', 'TMAX': 'TM', 'RAS': 'RS', 'LINEAR': 'LN', '-': '' };
+                    return map[type] || (type || '');
+                },
+                gridInSelection(r, c) {
+                    if (!this.gridPainting || !this.gridPaintStart || !this.gridPaintEnd) return false;
+                    const [minR, maxR] = [Math.min(this.gridPaintStart.r, this.gridPaintEnd.r), Math.max(this.gridPaintStart.r, this.gridPaintEnd.r)];
+                    const [minC, maxC] = [Math.min(this.gridPaintStart.c, this.gridPaintEnd.c), Math.max(this.gridPaintStart.c, this.gridPaintEnd.c)];
+                    return r >= minR && r <= maxR && c >= minC && c <= maxC;
+                },
+                gridStartPaint(r, c) {
+                    this.gridPainting = true;
+                    this.gridPaintStart = { r, c };
+                    this.gridPaintEnd = { r, c };
+                },
+                gridMovePaint(r, c) {
+                    if (!this.gridPainting) return;
+                    this.gridPaintEnd = { r, c };
+                },
+                gridEndPaint() {
+                    if (!this.gridPainting) return;
+                    const [minR, maxR] = [Math.min(this.gridPaintStart.r, this.gridPaintEnd.r), Math.max(this.gridPaintStart.r, this.gridPaintEnd.r)];
+                    const [minC, maxC] = [Math.min(this.gridPaintStart.c, this.gridPaintEnd.c), Math.max(this.gridPaintStart.c, this.gridPaintEnd.c)];
+                    for (let r = minR; r <= maxR; r++) {
+                        for (let c = minC; c <= maxC; c++) {
+                            const key = this.gridKey(r, c);
+                            const existing = this.gridCells[key] || { type: '-', value: '' };
+                            this.gridCells[key] = { type: this.gridPaintType, value: existing.value };
+                        }
+                    }
+                    this.gridPainting = false; this.gridPaintStart = null; this.gridPaintEnd = null;
+                },
+                gridInitEmpty(n_groups, n_cols) {
+                    this.gridGroups = Array.from({ length: n_groups }, (_, i) => ({ grp_num: String(i + 1).padStart(2, '0'), name: '' }));
+                    this.gridCells = {};
+                    this.gridConfig = { n_groups, n_cols };
+                },
+                gridApplyConfig() {
+                    const { n_groups, n_cols } = this.gridConfig;
+                    while (this.gridGroups.length < n_groups) {
+                        const i = this.gridGroups.length;
+                        this.gridGroups.push({ grp_num: String(i + 1).padStart(2, '0'), name: '' });
+                    }
+                    this.gridGroups = this.gridGroups.slice(0, n_groups);
+                },
+                gridFromJson(data) {
+                    this.gridConfig = { n_groups: data.n_groups, n_cols: data.n_cols };
+                    this.gridGroups = (data.groups || []).map(([grp_num, name]) => ({ grp_num, name }));
+                    this.gridCells = {};
+                    const types = data.types || {};
+                    const values = data.values || {};
+                    const allKeys = new Set([...Object.keys(types), ...Object.keys(values)]);
+                    for (const k of allKeys) {
+                        this.gridCells[k] = { type: types[k] || '-', value: values[k] || '' };
+                    }
+                },
+                gridToJson() {
+                    const types = {}; const values = {};
+                    for (const [k, cell] of Object.entries(this.gridCells)) {
+                        if (cell.type && cell.type !== '-') types[k] = cell.type;
+                        if (cell.value) values[k] = cell.value;
+                    }
+                    return { v: 1, n_groups: this.gridConfig.n_groups, n_cols: this.gridConfig.n_cols,
+                        groups: this.gridGroups.map(g => [g.grp_num, g.name]), types, values };
+                },
+
                 openCellsViewer(protocol_id, dev) {
                     this.cellsEditorReadOnly = true;
                     this.openCellsEditorInner(protocol_id, dev);
@@ -2271,6 +2427,8 @@
                     this.cellsEditorProtocolId = protocol_id;
                     this.cellsEditorDevice = dev;
                     this.cellsEditorRows = [];
+                    this.gridCells = {};
+                    this.gridGroups = [];
                     this.cellsEditorDef = null;
                     this.cellsEditorLoading = true;
                     this.isCellsEditorOpen = true;
@@ -2278,8 +2436,25 @@
                     .then(r => r.json())
                     .then(data => {
                         if (data.success) {
-                            this.cellsEditorRows = data.cells;
                             this.cellsEditorDef = data.meldepunkt_definitionen;
+                            if (data.format === 'grid') {
+                                this.gridFormat = 'grid';
+                                this.gridFromJson(data.grid);
+                                if (!this.gridPaintType && this.cellsEditorDef?.detectors?.length > 1) {
+                                    this.gridPaintType = this.cellsEditorDef.detectors[1];
+                                }
+                            } else {
+                                this.gridFormat = 'flat';
+                                this.cellsEditorRows = data.cells || [];
+                                // Auto-switch to grid for BMA/EMA
+                                if (dev.type === 'BMA' || dev.type === 'EMA') {
+                                    this.gridFormat = 'grid';
+                                    this.gridInitEmpty(10, 20);
+                                    if (!this.gridPaintType && this.cellsEditorDef?.detectors?.length > 1) {
+                                        this.gridPaintType = this.cellsEditorDef.detectors[1];
+                                    }
+                                }
+                            }
                         }
                         this.cellsEditorLoading = false;
                         setTimeout(() => { this.safeCreateIcons(); }, 100);
@@ -2298,10 +2473,16 @@
                 },
 
                 saveCells() {
+                    let body;
+                    if (this.gridFormat === 'grid') {
+                        body = JSON.stringify({ grid: this.gridToJson() });
+                    } else {
+                        body = JSON.stringify({ cells: this.cellsEditorRows });
+                    }
                     fetch(`/api/cells/${this.cellsEditorProtocolId}/${this.cellsEditorDevice.id}`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ cells: this.cellsEditorRows })
+                        body
                     })
                     .then(r => r.json())
                     .then(data => {
@@ -2309,15 +2490,32 @@
                             this.triggerToast('Auslöseliste gespeichert', 'success');
                             this.isCellsEditorOpen = false;
                             if (this.expandedContractId) {
-                                const eid = this.expandedContractId;
-                                this.toggleContractExpand(eid);
-                                setTimeout(() => { this.toggleContractExpand(eid); }, 50);
+                                const id = this.expandedContractId;
+                                this.toggleContractExpand(id);
+                                setTimeout(() => this.toggleContractExpand(id), 100);
                             }
                             this.loadProtocols(this.currentPage);
-                        } else {
-                            this.triggerToast('Fehler: ' + data.error, 'warning');
-                        }
+                        } else { this.triggerToast('Fehler: ' + data.error, 'warning'); }
                     });
+                },
+
+                importEtbFile(event) {
+                    const file = event.target.files[0];
+                    if (!file) return;
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    fetch(`/api/cells/${this.cellsEditorProtocolId}/${this.cellsEditorDevice.id}/import-etb`, {
+                        method: 'POST', body: formData
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            this.gridFormat = 'grid';
+                            this.gridFromJson(data.grid);
+                            this.triggerToast('ETB-Datei importiert', 'success');
+                        } else { this.triggerToast('Import-Fehler: ' + data.error, 'warning'); }
+                    });
+                    event.target.value = '';
                 },
 
                 importCellsCsv(event) {
