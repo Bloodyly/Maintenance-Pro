@@ -128,10 +128,11 @@
                         <p class="text-xs text-slate-500">Kunden- und vertragsbasierte Revisionslisten aus der TAIFUN Handwerker-Software</p>
                     </div>
                     <div class="flex items-center gap-2.5 w-full md:w-auto">
-                        <input 
-                            type="text" 
-                            x-model="searchQuery" 
-                            placeholder="Anlage, Adresse oder Vertrag suchen..." 
+                        <input
+                            type="text"
+                            x-model="searchQuery"
+                            @input.debounce.350ms="loadProtocols(1)"
+                            placeholder="Anlage, Adresse oder Vertrag suchen..."
                             class="border border-slate-200 px-3.5 py-1.5 rounded-lg text-xs w-full md:w-80 focus:outline-none focus:ring-1 focus:ring-blue-500"
                         >
                     </div>
@@ -139,38 +140,48 @@
 
                 <!-- Tabs filtering system -->
                 <div class="flex border-b border-slate-200 bg-slate-50/80">
-                    <button 
-                        @click="activeFilterTab = 'offen'; expandedContractId = null;" 
+                    <button
+                        @click="activeFilterTab = 'offen'; expandedContractId = null; loadProtocols(1);"
                         class="py-3 px-6 text-xs font-bold border-b-2 transition-all flex items-center gap-2"
                         :class="activeFilterTab === 'offen' ? 'border-[#003D9B] text-[#003D9B] bg-white font-extrabold' : 'border-transparent text-slate-500 hover:text-slate-800'"
                     >
                         <i data-lucide="circle-dot" class="w-4 h-4"></i>
                         <span>Offen</span>
-                        <span class="bg-slate-200/80 text-slate-700 px-2 py-0.5 rounded-full text-[10px] font-semibold" x-text="protocols.filter(p => p.status !== 'synchronized').length"></span>
+                        <span class="bg-slate-200/80 text-slate-700 px-2 py-0.5 rounded-full text-[10px] font-semibold" x-text="tabCounts.offen"></span>
                     </button>
-                    <button 
-                        @click="activeFilterTab = 'erledigt'; expandedContractId = null;" 
+                    <button
+                        @click="activeFilterTab = 'erledigt'; expandedContractId = null; loadProtocols(1);"
                         class="py-3 px-6 text-xs font-bold border-b-2 transition-all flex items-center gap-2"
                         :class="activeFilterTab === 'erledigt' ? 'border-[#003D9B] text-[#003D9B] bg-white font-extrabold' : 'border-transparent text-slate-500 hover:text-slate-800'"
                     >
                         <i data-lucide="check-circle-2" class="w-4 h-4"></i>
                         <span>Erledigt</span>
-                        <span class="bg-slate-200/80 text-slate-700 px-2 py-0.5 rounded-full text-[10px] font-semibold" x-text="protocols.filter(p => p.status === 'synchronized').length"></span>
+                        <span class="bg-slate-200/80 text-slate-700 px-2 py-0.5 rounded-full text-[10px] font-semibold" x-text="tabCounts.erledigt"></span>
                     </button>
-                    <button 
-                        @click="activeFilterTab = 'defekte'; expandedContractId = null;" 
+                    <button
+                        @click="activeFilterTab = 'defekte'; expandedContractId = null; loadProtocols(1);"
                         class="py-3 px-6 text-xs font-bold border-b-2 transition-all flex items-center gap-2"
                         :class="activeFilterTab === 'defekte' ? 'border-red-600 text-red-600 bg-white font-extrabold' : 'border-transparent text-slate-500 hover:text-red-600'"
                     >
                         <i data-lucide="alert-triangle" class="w-4 h-4"></i>
                         <span>Defekte</span>
-                        <span class="bg-red-50 text-red-700 px-2 py-0.5 rounded-full text-[10px] font-semibold" x-text="protocols.filter(p => p.has_defect).length"></span>
+                        <span class="bg-red-50 text-red-700 px-2 py-0.5 rounded-full text-[10px] font-semibold" x-text="tabCounts.defekte"></span>
                     </button>
                 </div>
 
                 <!-- Slim Cards List -->
                 <div class="flex flex-col gap-3 p-6 bg-slate-50/50">
-                    <template x-for="p in filteredProtocols()" :key="p.id">
+                    <!-- Loading skeleton -->
+                    <div x-show="isLoadingProtocols" class="flex justify-center items-center py-16 gap-2.5 text-xs text-slate-400">
+                        <svg class="animate-spin h-4 w-4 text-[#003D9B]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <span>Wartungsverträge werden geladen...</span>
+                    </div>
+                    <template x-if="!isLoadingProtocols">
+                    <div class="flex flex-col gap-3">
+                    <template x-for="p in protocols" :key="p.id">
                         <div 
                             class="rounded-xl overflow-hidden shadow-sm hover:shadow-md transition flex flex-col border"
                             :class="expandedContractId === p.id ? 'bg-slate-100 border-slate-400 ring-1 ring-slate-300/50 shadow-md' : 'bg-white border-slate-200 hover:border-slate-300'"
@@ -271,9 +282,9 @@
                                             <i data-lucide="edit" class="w-3.5 h-3.5"></i>
                                             <span>Vertrag editieren</span>
                                         </button>
-                                        <template x-if="p.has_pdf">
-                                            <a 
-                                                :href="'/download_pdf/' + p.contract_number" 
+                                        <template x-if="expandedProtocolDetails && expandedProtocolDetails.has_pdf">
+                                            <a
+                                                :href="'/download_pdf/' + p.contract_number"
                                                 target="_blank"
                                                 class="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold rounded-lg border border-emerald-200/50 flex items-center gap-1.5 transition"
                                             >
@@ -495,15 +506,46 @@
                                     </div>
                                 </template>
                             </div>
+                        </div>
                         </template>
 
-                        <template x-if="filteredProtocols().length === 0">
+                        <template x-if="protocols.length === 0">
                             <div class="text-center py-12 bg-white rounded-2xl border border-slate-200 text-slate-400 text-xs">
                                 Keine Wartungsverträge den Suchkriterien entsprechend gefunden.
                             </div>
                         </template>
                     </div>
+                    </template><!-- end x-if="!isLoadingProtocols" -->
+
+                    <!-- Pagination -->
+                    <div x-show="totalPages > 1 && !isLoadingProtocols" class="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2 mt-1 border-t border-slate-200">
+                        <span class="text-xs text-slate-500">
+                            Seite <strong x-text="currentPage"></strong> von <strong x-text="totalPages"></strong>
+                            &middot; <strong x-text="totalCount"></strong> Verträge gesamt
+                        </span>
+                        <div class="flex items-center gap-1">
+                            <button
+                                @click="loadProtocols(currentPage - 1)"
+                                :disabled="currentPage <= 1"
+                                class="px-3 py-1.5 text-xs font-bold rounded-lg border border-slate-200 bg-white text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition"
+                            >← Zurück</button>
+                            <template x-for="pg in pageNumbers()" :key="pg + '-' + Math.random()">
+                                <button
+                                    @click="pg !== '…' && loadProtocols(pg)"
+                                    class="px-3 py-1.5 text-xs font-bold rounded-lg border transition"
+                                    :class="pg === currentPage ? 'bg-[#003D9B] border-[#003D9B] text-white' : (pg === '…' ? 'border-transparent text-slate-400 cursor-default' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50')"
+                                    x-text="pg"
+                                ></button>
+                            </template>
+                            <button
+                                @click="loadProtocols(currentPage + 1)"
+                                :disabled="currentPage >= totalPages"
+                                class="px-3 py-1.5 text-xs font-bold rounded-lg border border-slate-200 bg-white text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition"
+                            >Weiter →</button>
+                        </div>
+                    </div>
                 </div>
+            </div>
 
             <!-- DETAILED MATRIX VIEW & ACTION SHEET (Shown when viewing a single protocol) -->
             <div class="space-y-8" x-show="showDetailView">
@@ -1154,11 +1196,18 @@
                 technicians: [],
                 searchQuery: '',
                 stats: { total: 0, pending: 0, synced: 0 },
-                
+
+                // Pagination state
+                currentPage: 1,
+                totalPages: 1,
+                totalCount: 0,
+                tabCounts: { offen: 0, erledigt: 0, defekte: 0 },
+                isLoadingProtocols: false,
+
                 showDetailView: false,
                 selectedProtocol: null,
                 archives: [],
-                
+
                 // Unified editor
                 isEditorOpen: false,
                 editorMode: 'create', // 'create' or 'edit'
@@ -1264,43 +1313,54 @@
                     setTimeout(() => { this.toast.show = false; }, 3500);
                 },
                 
-                loadProtocols() {
-                    fetch('/api/protocols')
+                loadProtocols(page) {
+                    if (page !== undefined) this.currentPage = page;
+                    this.isLoadingProtocols = true;
+                    this.expandedContractId = null;
+                    this.expandedProtocolDetails = null;
+                    const params = new URLSearchParams({
+                        page: this.currentPage,
+                        per_page: 30,
+                        search: this.searchQuery,
+                        filter: this.activeFilterTab
+                    });
+                    fetch('/api/protocols?' + params.toString())
                     .then(r => r.json())
                     .then(data => {
                         if (data.success) {
                             this.protocols = data.protocols;
+                            this.currentPage = data.pagination.page;
+                            this.totalPages = data.pagination.total_pages;
+                            this.totalCount = data.pagination.total;
+                            this.tabCounts = data.counts;
                             this.calcStats();
                         }
-                    });
+                        this.isLoadingProtocols = false;
+                        setTimeout(() => { this.safeCreateIcons(); }, 100);
+                    })
+                    .catch(() => { this.isLoadingProtocols = false; });
                 },
-                
-                calcStats() {
-                    this.stats.total = this.protocols.length;
-                    this.stats.pending = this.protocols.filter(p => p.status === 'ready_to_download').length;
-                    this.stats.synced = this.protocols.filter(p => p.status === 'synchronized').length;
-                },
-                
-                filteredProtocols() {
-                    let list = this.protocols || [];
-                    
-                    // Filter based on active tab
-                    if (this.activeFilterTab === 'offen') {
-                        list = list.filter(p => p.status !== 'synchronized');
-                    } else if (this.activeFilterTab === 'erledigt') {
-                        list = list.filter(p => p.status === 'synchronized');
-                    } else if (this.activeFilterTab === 'defekte') {
-                        list = list.filter(p => p.has_defect);
-                    }
 
-                    if (!this.searchQuery) return list;
-                    let q = this.searchQuery.toLowerCase();
-                    return list.filter(p => 
-                        p.name.toLowerCase().includes(q) || 
-                        p.address.toLowerCase().includes(q) || 
-                        p.contract_number.toLowerCase().includes(q) ||
-                        p.system_type.toLowerCase().includes(q)
-                    );
+                calcStats() {
+                    this.stats.total = this.totalCount;
+                    this.stats.pending = this.tabCounts.offen;
+                    this.stats.synced = this.tabCounts.erledigt;
+                },
+
+                pageNumbers() {
+                    const total = this.totalPages;
+                    const cur = this.currentPage;
+                    if (total <= 7) {
+                        return Array.from({ length: total }, (_, i) => i + 1);
+                    }
+                    const pages = [1];
+                    if (cur > 3) pages.push('…');
+                    for (let i = Math.max(2, cur - 1); i <= Math.min(total - 1, cur + 1); i++) {
+                        pages.push(i);
+                    }
+                    if (cur < total - 2) pages.push('…');
+                    pages.push(total);
+                    return pages;
                 },
 
                 toggleContractExpand(id) {

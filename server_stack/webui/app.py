@@ -137,20 +137,63 @@ def home():
 
 @app.route("/api/protocols", methods=["GET"])
 def get_protocols():
+    page = max(1, int(request.args.get("page", 1)))
+    per_page = min(100, max(10, int(request.args.get("per_page", 30))))
+    search = request.args.get("search", "").strip()
+    status_filter = request.args.get("filter", "")  # "offen", "erledigt", "defekte"
+    offset = (page - 1) * per_page
+
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT id, name, address, contract_number, interval, system_type, status, last_edited_by, last_edited_at 
-        FROM protocols
-    """)
-    records = cursor.fetchall()
-    
-    # Calculate live session status or live technicians check if any
+
+    defect_subq = "EXISTS(SELECT 1 FROM group_cells gc WHERE gc.protocol_id = p.id AND (gc.value = 'Def.' OR gc.value = 'Fehler'))"
+
+    def build_where(extra_cond=None):
+        conds = []
+        params = []
+        if search:
+            pat = f"%{search}%"
+            conds.append("(LOWER(p.name) LIKE LOWER(?) OR LOWER(p.address) LIKE LOWER(?) OR LOWER(p.contract_number) LIKE LOWER(?) OR LOWER(p.system_type) LIKE LOWER(?))")
+            params.extend([pat, pat, pat, pat])
+        if extra_cond:
+            conds.append(extra_cond)
+        return ("WHERE " + " AND ".join(conds)) if conds else "", params
+
+    # Tab counts (search-aware, filter-independent)
+    w, p = build_where("p.status != 'synchronized'")
+    count_offen = cursor.execute(f"SELECT COUNT(*) FROM protocols p {w}", p).fetchone()[0]
+    w, p = build_where("p.status = 'synchronized'")
+    count_erledigt = cursor.execute(f"SELECT COUNT(*) FROM protocols p {w}", p).fetchone()[0]
+    w, p = build_where(defect_subq)
+    count_defekte = cursor.execute(f"SELECT COUNT(*) FROM protocols p {w}", p).fetchone()[0]
+
+    # Active filter condition
+    filter_cond = None
+    if status_filter == "offen":
+        filter_cond = "p.status != 'synchronized'"
+    elif status_filter == "erledigt":
+        filter_cond = "p.status = 'synchronized'"
+    elif status_filter == "defekte":
+        filter_cond = defect_subq
+
+    main_where, main_params = build_where(filter_cond)
+    total = cursor.execute(f"SELECT COUNT(*) FROM protocols p {main_where}", main_params).fetchone()[0]
+    total_pages = max(1, (total + per_page - 1) // per_page)
+
+    # Paginated data — has_defect via SQL, no per-row filesystem calls
+    records = cursor.execute(f"""
+        SELECT
+            p.id, p.name, p.address, p.contract_number, p.interval, p.system_type, p.status,
+            p.last_edited_by, p.last_edited_at,
+            CASE WHEN {defect_subq} THEN 1 ELSE 0 END AS has_defect
+        FROM protocols p
+        {main_where}
+        ORDER BY p.name COLLATE NOCASE
+        LIMIT ? OFFSET ?
+    """, main_params + [per_page, offset]).fetchall()
+
     results = []
     for r in records:
-        pdf_path = os.path.join(SAMBA_SHARE_PATH, "Protokolle", f"{r['contract_number']}.pdf")
-        has_pdf = os.path.exists(pdf_path)
-        
         results.append({
             "id": r["id"],
             "name": r["name"],
@@ -161,10 +204,24 @@ def get_protocols():
             "status": r["status"],
             "last_edited_by": r["last_edited_by"] or "-",
             "last_edited_at": r["last_edited_at"] or "-",
-            "has_pdf": has_pdf
+            "has_defect": bool(r["has_defect"])
         })
     conn.close()
-    return jsonify({"success": True, "protocols": results})
+    return jsonify({
+        "success": True,
+        "protocols": results,
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "total_pages": total_pages
+        },
+        "counts": {
+            "offen": count_offen,
+            "erledigt": count_erledigt,
+            "defekte": count_defekte
+        }
+    })
 
 @app.route("/api/protocols/<p_id>", methods=["GET"])
 def get_protocol_detail(p_id):
@@ -252,10 +309,10 @@ def get_protocol_detail(p_id):
             
     sub_systems_list = list(sub_systems_map.values())
     conn.close()
-    
-    # Also fetch Samba list recursively for details view
+
     archives = get_archives_for_contract(p["contract_number"])
-    
+    has_pdf = os.path.exists(os.path.join(SAMBA_SHARE_PATH, "Protokolle", f"{p['contract_number']}.pdf"))
+
     return jsonify({
         "success": True,
         "protocol": {
@@ -272,7 +329,8 @@ def get_protocol_detail(p_id):
             "applicable_values": app_vals,
             "detector_types": det_types,
             "rows": rows_data,
-            "subSystems": sub_systems_list
+            "subSystems": sub_systems_list,
+            "has_pdf": has_pdf
         },
         "archives": archives
     })
