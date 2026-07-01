@@ -330,13 +330,15 @@ def get_protocols():
         FROM protocol_groups pg WHERE pg.protocol_id = p.id
     )"""
 
-    # Paginated data — has_defect and device_summary via SQL subqueries
+    # Paginated data — has_defect, device_summary, and fill progress via SQL subqueries
     records = cursor.execute(f"""
         SELECT
             p.id, p.name, p.address, p.contract_number, p.interval, p.system_type, p.status,
             p.last_edited_by, p.last_edited_at,
             CASE WHEN {defect_subq} THEN 1 ELSE 0 END AS has_defect,
-            {device_summary_subq} AS device_summary
+            {device_summary_subq} AS device_summary,
+            (SELECT COUNT(*) FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.value != '' AND gc.value IS NOT NULL) AS filled_cells,
+            (SELECT COUNT(*) FROM group_cells gc WHERE gc.protocol_id = p.id) AS total_cells
         FROM protocols p
         {main_where}
         ORDER BY p.name COLLATE NOCASE
@@ -357,6 +359,8 @@ def get_protocols():
             "last_edited_at": r["last_edited_at"] or "-",
             "has_defect": bool(r["has_defect"]),
             "device_summary": r["device_summary"] or "",
+            "filled_cells": r["filled_cells"] or 0,
+            "total_cells": r["total_cells"] or 0,
         })
     conn.close()
     return jsonify({
@@ -459,6 +463,16 @@ def get_protocol_detail(p_id):
             if c["slotKey"] not in sub_systems_map[a_id]["columns"]:
                 sub_systems_map[a_id]["columns"].append(c["slotKey"])
 
+    # Pre-fetch cell stats per group for progress display
+    cursor.execute(
+        "SELECT group_id, COUNT(*) as total, "
+        "SUM(CASE WHEN value != '' AND value IS NOT NULL THEN 1 ELSE 0 END) as filled, "
+        "SUM(CASE WHEN value IN ('Def.', 'Fehler') THEN 1 ELSE 0 END) as defects "
+        "FROM group_cells WHERE protocol_id = ? GROUP BY group_id",
+        (p_id,)
+    )
+    cell_stats_by_group = {row["group_id"]: row for row in cursor.fetchall()}
+
     # Build flat devices list (one entry per WtGrt / protocol_group row)
     devices_list = []
     for g in groups:
@@ -468,6 +482,7 @@ def get_protocol_detail(p_id):
                 a_interval = g["anlage_interval"]
         except Exception:
             pass
+        cs = cell_stats_by_group.get(g["group_id"])
         devices_list.append({
             "id": g["group_id"],
             "name": g["group_name"],
@@ -477,6 +492,9 @@ def get_protocol_detail(p_id):
             "anlage_address": (g["anlage_address"] if "anlage_address" in g.keys() else "") or "",
             "anlage_interval": a_interval,
             "has_cells": g["group_id"] in groups_with_cells,
+            "total_cells": cs["total"] if cs else 0,
+            "filled_cells": cs["filled"] if cs else 0,
+            "defect_cells": cs["defects"] if cs else 0,
         })
 
     for sub in sub_systems_map.values():
@@ -636,11 +654,23 @@ def reset_protocol(p_id):
         
     contract_num = prod["contract_number"]
     active_pdf = os.path.join(SAMBA_SHARE_PATH, "Protokolle", f"{contract_num}.pdf")
-    
-    # 1. Back up active PDF PDF to versioned Samba directory if it exists
+
+    # Determine archive period subfolder from protocol's interval setting
+    cursor.execute("SELECT interval FROM protocols WHERE id = ?", (p_id,))
+    proto_row = cursor.fetchone()
+    iv = ((proto_row["interval"] if proto_row else "") or "Halbjährlich").lower()
+    now_month = datetime.now().month
+    if "quartal" in iv:
+        period = f"Q{(now_month - 1) // 3 + 1}"
+    elif "jähr" in iv and "halb" not in iv:
+        period = "J"
+    else:
+        period = "H1" if now_month <= 6 else "H2"
+
+    # 1. Back up active PDF to versioned Samba directory if it exists
     if os.path.exists(active_pdf):
         year = datetime.now().strftime("%Y")
-        archive_dir = os.path.join(SAMBA_SHARE_PATH, "Archiv", contract_num, year, "H1")
+        archive_dir = os.path.join(SAMBA_SHARE_PATH, "Archiv", contract_num, year, period)
         os.makedirs(archive_dir, exist_ok=True)
         
         existing_files = [f for f in os.listdir(archive_dir) if f.startswith(contract_num) and f.endswith(".pdf")]
@@ -664,6 +694,19 @@ def reset_protocol(p_id):
         
     conn.close()
     return jsonify({"success": True, "message": "Wartungsvertrag erfolgreich für das nächste Turnusintervall freigegeben!"})
+
+@app.route("/api/protocols/mark-done/<p_id>", methods=["POST"])
+def mark_protocol_done(p_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM protocols WHERE id = ?", (p_id,))
+    if not cursor.fetchone():
+        conn.close()
+        return jsonify({"success": False, "error": "Protokoll nicht gefunden."}), 404
+    cursor.execute("UPDATE protocols SET status = 'synchronized' WHERE id = ?", (p_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "message": "Protokoll als erledigt markiert."})
 
 # ----------------- TECHNICIANS ROUTES -----------------
 

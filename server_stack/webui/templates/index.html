@@ -269,7 +269,30 @@
                                 <div class="flex items-center justify-between lg:justify-end gap-3 shrink-0">
                                     <!-- Device Summary list on mobile -->
                                     <div class="md:hidden text-[10px] font-mono" :class="expandedContractId === p.id ? 'text-slate-300' : 'text-slate-500'" x-text="p.device_summary"></div>
- 
+
+                                    <!-- Progress + Defect indicator -->
+                                    <div class="flex items-center gap-2 shrink-0">
+                                        <template x-if="p.has_defect">
+                                            <span class="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold bg-red-50 text-red-700 border border-red-200">
+                                                <i data-lucide="alert-triangle" class="w-3 h-3"></i>
+                                                Defekte
+                                            </span>
+                                        </template>
+                                        <template x-if="p.total_cells > 0">
+                                            <div class="flex items-center gap-1.5" :title="p.filled_cells + ' / ' + p.total_cells + ' Meldepunkte'">
+                                                <div class="w-20 h-1.5 rounded-full overflow-hidden"
+                                                     :class="expandedContractId === p.id ? 'bg-slate-600' : 'bg-slate-200'">
+                                                    <div class="h-full rounded-full transition-all"
+                                                         :class="p.status === 'synchronized' ? 'bg-emerald-400' : p.has_defect ? 'bg-red-400' : 'bg-blue-400'"
+                                                         :style="'width:' + fillPercent(p.filled_cells, p.total_cells) + '%'"></div>
+                                                </div>
+                                                <span class="text-[10px] font-mono font-semibold"
+                                                      :class="expandedContractId === p.id ? 'text-slate-300' : 'text-slate-500'"
+                                                      x-text="fillPercent(p.filled_cells, p.total_cells) + '%'"></span>
+                                            </div>
+                                        </template>
+                                    </div>
+
                                     <!-- Status Badge -->
                                     <div class="shrink-0">
                                         <template x-if="p.status === 'ready_to_download'">
@@ -338,7 +361,16 @@
                                                 <span>PDF herunterladen</span>
                                             </a>
                                         </template>
-                                        <button 
+                                        <button
+                                            x-show="p.status !== 'synchronized'"
+                                            @click="markDone(p.id)"
+                                            class="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-semibold rounded-lg border border-emerald-200 flex items-center gap-1.5 transition"
+                                            title="Als erledigt markieren"
+                                        >
+                                            <i data-lucide="check-circle" class="w-3.5 h-3.5"></i>
+                                            <span>Erledigt</span>
+                                        </button>
+                                        <button
                                             @click="triggerReset(p.id)"
                                             class="px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold rounded-lg border border-slate-200 flex items-center gap-1.5 transition"
                                             title="Intervall zurücksetzen / Neu planen"
@@ -399,18 +431,21 @@
 
                                                         <!-- Info (right column) -->
                                                         <div class="min-w-0 flex-1">
-                                                            <p class="font-bold text-slate-900 text-sm leading-snug truncate" x-text="dev.name"></p>
+                                                            <div class="flex items-center justify-between gap-2">
+                                                                <p class="font-bold text-slate-900 text-sm leading-snug truncate" x-text="dev.name"></p>
+                                                                <!-- Defect warning -->
+                                                                <template x-if="dev.defect_cells > 0">
+                                                                    <span class="shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold bg-red-50 text-red-700 border border-red-200">
+                                                                        <i data-lucide="alert-triangle" class="w-3 h-3"></i>
+                                                                        <span x-text="dev.defect_cells"></span>
+                                                                    </span>
+                                                                </template>
+                                                            </div>
                                                             <div class="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-500">
                                                                 <template x-if="dev.anlage_name">
                                                                     <span class="flex items-center gap-1">
                                                                         <i data-lucide="building-2" class="w-3 h-3 text-slate-400 shrink-0"></i>
                                                                         <span x-text="dev.anlage_name"></span>
-                                                                    </span>
-                                                                </template>
-                                                                <template x-if="dev.anlage_interval">
-                                                                    <span class="flex items-center gap-1 text-slate-400">
-                                                                        <i data-lucide="clock" class="w-3 h-3 shrink-0"></i>
-                                                                        <span x-text="dev.anlage_interval"></span>
                                                                     </span>
                                                                 </template>
                                                                 <template x-if="dev.anlage_address && dev.anlage_address !== expandedProtocolDetails.address">
@@ -419,6 +454,32 @@
                                                                         <span class="truncate" x-text="dev.anlage_address"></span>
                                                                     </span>
                                                                 </template>
+                                                            </div>
+
+                                                            <!-- Progress bar -->
+                                                            <template x-if="dev.total_cells > 0">
+                                                                <div class="mt-2 flex items-center gap-2">
+                                                                    <div class="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                                                        <div class="h-full rounded-full transition-all"
+                                                                             :class="dev.defect_cells > 0 ? 'bg-red-400' : (dev.filled_cells >= dev.total_cells ? 'bg-emerald-400' : 'bg-blue-400')"
+                                                                             :style="'width:' + fillPercent(dev.filled_cells, dev.total_cells) + '%'"></div>
+                                                                    </div>
+                                                                    <span class="text-[10px] font-mono text-slate-400" x-text="dev.filled_cells + '/' + dev.total_cells"></span>
+                                                                </div>
+                                                            </template>
+
+                                                            <!-- Interval badges -->
+                                                            <div class="mt-2 flex items-center gap-1 flex-wrap">
+                                                                <template x-for="badge in intervalBadgeList(dev.anlage_interval)" :key="badge">
+                                                                    <span class="px-1.5 py-0.5 rounded text-[9px] font-bold border transition"
+                                                                          :class="isBadgeDone(badge, dev.anlage_interval)
+                                                                              ? 'bg-emerald-500 text-white border-emerald-600'
+                                                                              : isBadgeCurrent(badge, dev.anlage_interval)
+                                                                                  ? 'bg-blue-100 text-blue-700 border-blue-300'
+                                                                                  : 'bg-slate-100 text-slate-400 border-slate-200'"
+                                                                          x-text="badge"></span>
+                                                                </template>
+                                                                <span class="text-[9px] text-slate-400 ml-0.5" x-text="dev.anlage_interval"></span>
                                                             </div>
                                                         </div>
                                                     </div>
@@ -1425,10 +1486,17 @@
                                             @mousedown.prevent="if(!cellsEditorReadOnly) gridStartPaint(rIdx+1, c)"
                                             @mouseenter="if(!cellsEditorReadOnly) gridMovePaint(rIdx+1, c)">
                                             <div class="w-full h-7 flex items-center justify-center text-[9px] font-bold transition"
-                                                :class="gridCell(rIdx+1, c).type === '-' || !gridCell(rIdx+1, c).type
-                                                    ? 'bg-slate-100 text-slate-300'
-                                                    : gridTypeColor(gridCell(rIdx+1, c).type) + ' text-white'"
-                                                x-text="gridCell(rIdx+1, c).type === '-' || !gridCell(rIdx+1, c).type ? '' : gridTypeText(gridCell(rIdx+1, c).type)">
+                                                :class="(!gridCell(rIdx+1, c).type || gridCell(rIdx+1, c).type === '-')
+                                                    ? 'bg-slate-100'
+                                                    : gridTypeColorPale(gridCell(rIdx+1, c).type)">
+                                                <span x-show="(!gridCell(rIdx+1, c).type || gridCell(rIdx+1, c).type === '-') ? false : !gridCell(rIdx+1, c).value"
+                                                      :class="gridTypeTextPale(gridCell(rIdx+1, c).type)"
+                                                      class="opacity-60 font-semibold text-[9px]"
+                                                      x-text="gridTypeText(gridCell(rIdx+1, c).type)"></span>
+                                                <span x-show="!!gridCell(rIdx+1, c).value"
+                                                      :class="gridCell(rIdx+1, c).value === 'Def.' || gridCell(rIdx+1, c).value === 'Fehler' ? 'text-red-700' : 'text-slate-900'"
+                                                      class="font-black text-[8px] leading-none"
+                                                      x-text="gridCell(rIdx+1, c).value"></span>
                                             </div>
                                         </td>
                                     </template>
@@ -2493,9 +2561,68 @@
                     };
                     return map[type] || 'bg-slate-400';
                 },
+                gridTypeColorPale(type) {
+                    const map = {
+                        'ZD': 'bg-blue-100', 'Normal': 'bg-emerald-100', 'ZB': 'bg-yellow-100',
+                        'TDIFF': 'bg-orange-100', 'TMAX': 'bg-red-100', 'RAS': 'bg-purple-100',
+                        'LINEAR': 'bg-pink-100',
+                    };
+                    return map[type] || 'bg-slate-100';
+                },
+                gridTypeTextPale(type) {
+                    const map = {
+                        'ZD': 'text-blue-400', 'Normal': 'text-emerald-400', 'ZB': 'text-yellow-500',
+                        'TDIFF': 'text-orange-400', 'TMAX': 'text-red-400', 'RAS': 'text-purple-400',
+                        'LINEAR': 'text-pink-400',
+                    };
+                    return map[type] || 'text-slate-400';
+                },
                 gridTypeText(type) {
                     const map = { 'ZD': 'ZD', 'Normal': 'N', 'ZB': 'ZB', 'TDIFF': 'TD', 'TMAX': 'TM', 'RAS': 'RS', 'LINEAR': 'LN', '-': '' };
                     return map[type] || (type || '');
+                },
+                intervalBadgeList(interval) {
+                    const iv = (interval || '').toLowerCase();
+                    if (iv.includes('quartal')) return ['Q1','Q2','Q3','Q4'];
+                    if (iv.includes('monatlich')) return ['M01','M02','M03','M04','M05','M06','M07','M08','M09','M10','M11','M12'];
+                    if (iv.includes('jähr') && !iv.includes('halb')) return ['J'];
+                    return ['H1','H2'];
+                },
+                currentPeriodLabel(interval) {
+                    const iv = (interval || '').toLowerCase();
+                    const m = new Date().getMonth() + 1;
+                    if (iv.includes('quartal')) return 'Q' + Math.ceil(m / 3);
+                    if (iv.includes('monatlich')) return 'M' + String(m).padStart(2,'0');
+                    if (iv.includes('jähr') && !iv.includes('halb')) return 'J';
+                    return m <= 6 ? 'H1' : 'H2';
+                },
+                isBadgeDone(period, interval) {
+                    const year = String(new Date().getFullYear());
+                    const archives = this.expandedProtocolDetails?.archives || [];
+                    if (archives.some(a => a.year === year && a.half_year === period)) return true;
+                    const cur = this.currentPeriodLabel(interval);
+                    if (period === cur && this.expandedProtocolDetails?.status === 'synchronized') return true;
+                    return false;
+                },
+                isBadgeCurrent(period, interval) {
+                    return period === this.currentPeriodLabel(interval);
+                },
+                fillPercent(filled, total) {
+                    if (!total) return 0;
+                    return Math.round((filled / total) * 100);
+                },
+                async markDone(protocolId) {
+                    const r = await fetch(`/api/protocols/mark-done/${protocolId}`, { method: 'POST' });
+                    const data = await r.json();
+                    if (data.success) {
+                        this.triggerToast(data.message, 'success');
+                        await this.loadProtocols(this.currentPage);
+                        if (this.expandedProtocolDetails?.id === protocolId) {
+                            this.expandedProtocolDetails = { ...this.expandedProtocolDetails, status: 'synchronized' };
+                        }
+                    } else {
+                        this.triggerToast(data.error || 'Fehler', 'warning');
+                    }
                 },
                 gridInSelection(r, c) {
                     if (!this.gridPainting || !this.gridPaintStart || !this.gridPaintEnd) return false;
