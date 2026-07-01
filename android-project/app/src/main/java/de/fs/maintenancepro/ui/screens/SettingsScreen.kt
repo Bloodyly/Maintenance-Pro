@@ -23,6 +23,9 @@ import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import kotlinx.coroutines.launch
@@ -308,6 +311,106 @@ fun SettingsScreen(
                             Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
                             Text("Anlagentypen neu laden", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
+            // ── Offline-Datenbank Sync Card ──────────────────────────────────
+            val syncState by viewModel.syncState.collectAsState()
+            val lastSyncAt = configState?.lastFullSyncAt ?: 0L
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                border = BorderStroke(1.dp, IndustrialOutlineVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Default.Sync, contentDescription = null, tint = IndustrialPrimary)
+                        Text(
+                            text = "Offline-Datenbank Synchronisation",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = IndustrialOnSurface
+                        )
+                    }
+                    Text(
+                        text = "Lädt alle Verträge mit Auslöselisten herunter, damit diese offline vollständig durchsucht und bearbeitet werden können.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = IndustrialOutline
+                    )
+
+                    if (lastSyncAt > 0L) {
+                        val lastSyncDate = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.GERMAN).format(Date(lastSyncAt))
+                        Text(
+                            text = "Letzter Sync: $lastSyncDate",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = IndustrialOutline
+                        )
+                    }
+
+                    // Sync status feedback
+                    when (val state = syncState) {
+                        is MainViewModel.SyncState.InProgress -> {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                    color = IndustrialPrimary
+                                )
+                                Text(state.message, style = MaterialTheme.typography.labelSmall, color = IndustrialPrimary)
+                            }
+                        }
+                        is MainViewModel.SyncState.Done -> {
+                            Text(
+                                "✓ ${state.downloaded} heruntergeladen" + if (state.uploaded > 0) ", ${state.uploaded} hochgeladen" else "",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF16A34A)
+                            )
+                        }
+                        is MainViewModel.SyncState.Error -> {
+                            Text(
+                                "✗ ${state.message}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = IndustrialError
+                            )
+                        }
+                        else -> {}
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { viewModel.startFullSync() },
+                            enabled = syncState !is MainViewModel.SyncState.InProgress,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = IndustrialPrimary,
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Grundsynchronisation", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                        }
+
+                        if (lastSyncAt > 0L) {
+                            OutlinedButton(
+                                onClick = { viewModel.startDeltaSync() },
+                                enabled = syncState !is MainViewModel.SyncState.InProgress,
+                                modifier = Modifier.weight(1f),
+                                border = BorderStroke(1.dp, IndustrialPrimary)
+                            ) {
+                                Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(16.dp), tint = IndustrialPrimary)
+                                Spacer(Modifier.width(6.dp))
+                                Text("Delta-Sync", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = IndustrialPrimary)
+                            }
                         }
                     }
                 }

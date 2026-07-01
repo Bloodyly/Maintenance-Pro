@@ -13,6 +13,12 @@ import de.fs.maintenancepro.data.remote.ProtocolItemDto
 import de.fs.maintenancepro.data.remote.ProtocolDefinitionDto
 import de.fs.maintenancepro.data.remote.ProtocolColumnDto
 import de.fs.maintenancepro.data.remote.ApplicableValueDto
+import de.fs.maintenancepro.data.remote.SyncDeltaRequestDto
+import de.fs.maintenancepro.data.remote.SyncUploadCellsDto
+import de.fs.maintenancepro.data.remote.SyncCellChangeDto
+import de.fs.maintenancepro.data.remote.SyncProtocolDto
+import de.fs.maintenancepro.data.remote.SyncRowDto
+import kotlinx.coroutines.flow.first
 import de.fs.maintenancepro.data.crypto.CryptoManager
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -59,6 +65,17 @@ class MainViewModel @Inject constructor(
 
     private val _activeProtocolPayload = MutableStateFlow<String?>(null)
     val activeProtocolPayload: StateFlow<String?> = _activeProtocolPayload
+
+    // ── Offline-Sync State ──────────────────────────────────────────────────
+    sealed class SyncState {
+        object Idle : SyncState()
+        data class InProgress(val message: String) : SyncState()
+        data class Done(val downloaded: Int, val uploaded: Int) : SyncState()
+        data class Error(val message: String) : SyncState()
+    }
+
+    private val _syncState = MutableStateFlow<SyncState>(SyncState.Idle)
+    val syncState: StateFlow<SyncState> = _syncState
 
     fun setLiveModusEnabled(enabled: Boolean) {
         _liveModusEnabled.value = enabled
@@ -694,6 +711,225 @@ class MainViewModel @Inject constructor(
             false
         } catch (e: Exception) {
             false
+        }
+    }
+
+    // ── Grundsynchronisation: bulk download all contracts with Auslöselisten ──
+
+    fun startFullSync() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (_isOffline.value) { _syncState.value = SyncState.Error("Kein Netzwerk"); return@launch }
+            _syncState.value = SyncState.InProgress("Verbinde mit Server…")
+            try {
+                val response = apiService.syncFull()
+                if (!response.isSuccessful || response.body() == null) {
+                    _syncState.value = SyncState.Error("Server-Fehler ${response.code()}"); return@launch
+                }
+                val body = response.body()!!
+                _syncState.value = SyncState.InProgress("Speichere ${body.protocols.size} Verträge…")
+                for (proto in body.protocols) {
+                    protocolDao.insertOrUpdate(ProtocolEntity(
+                        id = proto.id, name = proto.name, address = proto.address,
+                        contractNumber = proto.contract_number, interval = proto.interval,
+                        systemType = proto.system_type, localStatus = proto.status,
+                        decryptedPayloadJson = buildSyncPayloadJson(proto),
+                        lastEditedAt = proto.updated_at
+                    ))
+                }
+                val config = serverConfigDao.getConfig() ?: ServerConfigEntity()
+                serverConfigDao.saveConfig(config.copy(lastFullSyncAt = body.sync_version))
+                _syncState.value = SyncState.Done(downloaded = body.protocols.size, uploaded = 0)
+            } catch (e: Exception) {
+                _syncState.value = SyncState.Error("Fehler: ${e.message}")
+            }
+        }
+    }
+
+    // ── Delta-Sync: upload local changes + download server changes ──────────
+
+    fun startDeltaSync() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (_isOffline.value) { _syncState.value = SyncState.Error("Kein Netzwerk"); return@launch }
+            _syncState.value = SyncState.InProgress("Prüfe auf Änderungen…")
+            try {
+                val config = serverConfigDao.getConfig()
+                val since = config?.lastFullSyncAt ?: 0L
+
+                // 1. Collect cells modified locally since last sync
+                val localChanges = collectLocalChanges(since)
+
+                // 2. Download server delta
+                val deltaResp = apiService.syncDelta(SyncDeltaRequestDto(since))
+                if (!deltaResp.isSuccessful || deltaResp.body() == null) {
+                    _syncState.value = SyncState.Error("Delta-Fehler ${deltaResp.code()}"); return@launch
+                }
+                val delta = deltaResp.body()!!
+
+                // 3. Merge server delta into local Room entities
+                _syncState.value = SyncState.InProgress("${delta.protocols.size} geänderte Verträge…")
+                for (proto in delta.protocols) {
+                    val existing = protocolDao.getProtocolById(proto.id)
+                    val mergedPayload = if (existing != null) {
+                        mergeServerDeltaIntoLocal(existing.decryptedPayloadJson, proto)
+                    } else {
+                        buildSyncPayloadJson(proto)
+                    }
+                    protocolDao.insertOrUpdate(ProtocolEntity(
+                        id = proto.id, name = proto.name, address = proto.address,
+                        contractNumber = proto.contract_number, interval = proto.interval,
+                        systemType = proto.system_type, localStatus = proto.status,
+                        decryptedPayloadJson = mergedPayload, lastEditedAt = delta.sync_version
+                    ))
+                }
+
+                // 4. Upload local changes to server
+                var uploadedCount = 0
+                if (localChanges.isNotEmpty()) {
+                    _syncState.value = SyncState.InProgress("Lade ${localChanges.size} Änderungen hoch…")
+                    val uploadResp = apiService.uploadCells(SyncUploadCellsDto(localChanges))
+                    if (uploadResp.isSuccessful && uploadResp.body() != null) {
+                        uploadedCount = uploadResp.body()!!.applied
+                        // Mark successfully uploaded protocols as synchronized
+                        localChanges.map { it.protocol_id }.distinct().forEach { pid ->
+                            protocolDao.getProtocolById(pid)?.let { e ->
+                                protocolDao.insertOrUpdate(e.copy(localStatus = "synchronized"))
+                            }
+                        }
+                    }
+                }
+
+                serverConfigDao.saveConfig((config ?: ServerConfigEntity()).copy(lastFullSyncAt = delta.sync_version))
+                _syncState.value = SyncState.Done(downloaded = delta.protocols.size, uploaded = uploadedCount)
+            } catch (e: Exception) {
+                _syncState.value = SyncState.Error("Sync-Fehler: ${e.message}")
+            }
+        }
+    }
+
+    /** Collect all cells with updated_at > since across local upload_pending protocols. */
+    private suspend fun collectLocalChanges(since: Long): List<SyncCellChangeDto> {
+        val changes = mutableListOf<SyncCellChangeDto>()
+        val allProtocols = protocolDao.getAllProtocolsFlow().first()
+        for (entity in allProtocols) {
+            if (entity.localStatus != "upload_pending") continue
+            try {
+                val root = JSONObject(entity.decryptedPayloadJson)
+                val rows = root.getJSONArray("rows")
+                for (i in 0 until rows.length()) {
+                    val row = rows.getJSONObject(i)
+                    val groupId = row.getString("group_id")
+                    val cells = row.getJSONArray("cells")
+                    for (j in 0 until cells.length()) {
+                        val cell = cells.getJSONObject(j)
+                        val updatedAt = cell.optLong("updated_at", 0L)
+                        if (updatedAt > since) {
+                            changes.add(SyncCellChangeDto(
+                                protocol_id = entity.id,
+                                group_id = groupId,
+                                slot_key = cell.getString("slot_key"),
+                                detector_type = cell.optString("detector_type", "-"),
+                                value = cell.optString("value", ""),
+                                updated_at = updatedAt
+                            ))
+                        }
+                    }
+                }
+            } catch (_: Exception) { }
+        }
+        return changes
+    }
+
+    /** Build the standard payload JSON from a SyncProtocolDto (used for full sync and new protocols). */
+    private fun buildSyncPayloadJson(proto: SyncProtocolDto): String {
+        return JSONObject().apply {
+            put("protocol_id", proto.id)
+            put("client_name", proto.name)
+            put("contract_number", proto.contract_number)
+            put("interval", proto.interval)
+            put("system_type", proto.system_type)
+
+            val defObj = JSONObject()
+            proto.definition?.let { def ->
+                val colsArr = JSONArray().also { arr -> def.columns.forEach { c -> arr.put(JSONObject().apply { put("key", c.key); put("label", c.label) }) } }
+                val valArr  = JSONArray().also { arr -> def.applicable_values.forEach { v -> arr.put(JSONObject().apply { put("value", v.value); put("label", v.label); put("is_defect", v.is_defect) }) } }
+                val dtArr   = JSONArray().also { arr -> def.detector_types.forEach { arr.put(it) } }
+                defObj.put("columns", colsArr)
+                defObj.put("applicable_values", valArr)
+                defObj.put("detector_types", dtArr)
+            }
+            put("definition", defObj)
+            put("rows", buildRowsArray(proto.rows))
+        }.toString()
+    }
+
+    private fun buildRowsArray(rows: List<SyncRowDto>): JSONArray =
+        JSONArray().also { arr ->
+            rows.forEach { row ->
+                arr.put(JSONObject().apply {
+                    put("group_id", row.group_id)
+                    put("group_name", row.group_name)
+                    put("group_type", row.group_type)
+                    row.anlage_id?.let { put("anlage_id", it) }
+                    row.anlage_name?.let { put("anlage_name", it) }
+                    row.anlage_type?.let { put("anlage_type", it) }
+                    row.anlage_interval?.let { put("anlage_interval", it) }
+                    put("cells", JSONArray().also { ca ->
+                        row.cells.forEach { c ->
+                            ca.put(JSONObject().apply {
+                                put("slot_key", c.slot_key); put("detector_type", c.detector_type)
+                                put("value", c.value); put("updated_at", c.updated_at)
+                            })
+                        }
+                    })
+                })
+            }
+        }
+
+    /**
+     * Merges a server delta into the existing local JSON payload.
+     * Server wins for cells with newer updated_at; local wins otherwise.
+     */
+    private fun mergeServerDeltaIntoLocal(localJson: String, serverDelta: SyncProtocolDto): String {
+        return try {
+            val root = JSONObject(localJson)
+            val localRows = root.getJSONArray("rows")
+
+            // group_id → row index map
+            val groupIdx = (0 until localRows.length()).associateBy { localRows.getJSONObject(it).getString("group_id") }
+
+            for (serverRow in serverDelta.rows) {
+                val idx = groupIdx[serverRow.group_id]
+                if (idx == null) {
+                    // New group from server
+                    localRows.put(JSONObject().apply {
+                        put("group_id", serverRow.group_id); put("group_name", serverRow.group_name)
+                        put("group_type", serverRow.group_type)
+                        put("cells", JSONArray().also { ca -> serverRow.cells.forEach { c -> ca.put(JSONObject().apply { put("slot_key", c.slot_key); put("detector_type", c.detector_type); put("value", c.value); put("updated_at", c.updated_at) }) } })
+                    })
+                    continue
+                }
+
+                val localRow = localRows.getJSONObject(idx)
+                val localCells = localRow.getJSONArray("cells")
+                val cellIdx = (0 until localCells.length()).associateBy { localCells.getJSONObject(it).getString("slot_key") }
+
+                for (sc in serverRow.cells) {
+                    val ci = cellIdx[sc.slot_key]
+                    if (ci == null) {
+                        localCells.put(JSONObject().apply { put("slot_key", sc.slot_key); put("detector_type", sc.detector_type); put("value", sc.value); put("updated_at", sc.updated_at) })
+                    } else {
+                        val lc = localCells.getJSONObject(ci)
+                        if (sc.updated_at > lc.optLong("updated_at", 0L)) {
+                            lc.put("detector_type", sc.detector_type)
+                            lc.put("value", sc.value)
+                            lc.put("updated_at", sc.updated_at)
+                        }
+                    }
+                }
+            }
+            root.toString()
+        } catch (_: Exception) {
+            buildSyncPayloadJson(serverDelta)
         }
     }
 

@@ -48,5 +48,7 @@ data class ServerConfigEntity(
     val serverAddress: String = "https://field-service.corp.internal",
     val port: Int = 8443,
     val username: String = "TECH_UNIT_99283",
-    val encryptedPasswordBase64: String = ""
+    val encryptedPasswordBase64: String = "",
+    /** Epoch-ms timestamp of the last successful sync (full or delta). 0 = never synced. */
+    val lastFullSyncAt: Long = 0L
 )

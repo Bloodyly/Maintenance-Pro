@@ -268,7 +268,7 @@ def get_protocols():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    defect_subq = "EXISTS(SELECT 1 FROM group_cells gc WHERE gc.protocol_id = p.id AND (gc.value = 'Def.' OR gc.value = 'Fehler'))"
+    defect_subq = "EXISTS(SELECT 1 FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.slot_key != '__grid__' AND (gc.value = 'Def.' OR gc.value = 'Fehler'))"
 
     # Build active-type SQL placeholders (parameterised)
     if active_types:
@@ -337,16 +337,34 @@ def get_protocols():
             p.last_edited_by, p.last_edited_at,
             CASE WHEN {defect_subq} THEN 1 ELSE 0 END AS has_defect,
             {device_summary_subq} AS device_summary,
-            (SELECT COUNT(*) FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.value != '' AND gc.value IS NOT NULL) AS filled_cells,
-            (SELECT COUNT(*) FROM group_cells gc WHERE gc.protocol_id = p.id) AS total_cells
+            (SELECT COUNT(*) FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.slot_key != '__grid__' AND gc.value != '' AND gc.value IS NOT NULL) AS filled_cells,
+            (SELECT COUNT(*) FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.slot_key != '__grid__') AS total_cells
         FROM protocols p
         {main_where}
         ORDER BY p.name COLLATE NOCASE
         LIMIT ? OFFSET ?
     """, main_params + [per_page, offset]).fetchall()
 
+    # Batch-fetch grid cells to compute proper filled/total for grid-format groups
+    p_ids_page = [r["id"] for r in records]
+    grid_stats = {}
+    if p_ids_page:
+        ph = ",".join("?" * len(p_ids_page))
+        for gc_row in cursor.execute(
+            f"SELECT protocol_id, value FROM group_cells WHERE protocol_id IN ({ph}) AND slot_key = '__grid__'",
+            p_ids_page
+        ).fetchall():
+            try:
+                grid = json.loads(gc_row["value"])
+                gs = grid_stats.setdefault(gc_row["protocol_id"], {"filled": 0, "total": 0})
+                gs["total"] += len(grid.get("types", {}))
+                gs["filled"] += sum(1 for v in grid.get("values", {}).values() if v)
+            except Exception:
+                pass
+
     results = []
     for r in records:
+        gs = grid_stats.get(r["id"], {"filled": 0, "total": 0})
         results.append({
             "id": r["id"],
             "name": r["name"],
@@ -359,8 +377,8 @@ def get_protocols():
             "last_edited_at": r["last_edited_at"] or "-",
             "has_defect": bool(r["has_defect"]),
             "device_summary": r["device_summary"] or "",
-            "filled_cells": r["filled_cells"] or 0,
-            "total_cells": r["total_cells"] or 0,
+            "filled_cells": (r["filled_cells"] or 0) + gs["filled"],
+            "total_cells": (r["total_cells"] or 0) + gs["total"],
         })
     conn.close()
     return jsonify({
@@ -410,12 +428,14 @@ def get_protocol_detail(p_id):
         cells = cursor.fetchall()
         cells_list = []
         for c in cells:
+            if c["slot_key"] == "__grid__":
+                continue  # Grid data belongs in the cells editor, not the structure editor
             cells_list.append({
                 "slotKey": c["slot_key"],
                 "detectorType": c["detector_type"],
                 "value": c["value"]
             })
-            
+
         cells_list = sorted(cells_list, key=lambda x: int(x["slotKey"]) if x["slotKey"].isdigit() else 999)
         
         rows_data.append({
@@ -463,15 +483,31 @@ def get_protocol_detail(p_id):
             if c["slotKey"] not in sub_systems_map[a_id]["columns"]:
                 sub_systems_map[a_id]["columns"].append(c["slotKey"])
 
-    # Pre-fetch cell stats per group for progress display
+    # Pre-fetch cell stats per group for progress display (flat format only)
     cursor.execute(
         "SELECT group_id, COUNT(*) as total, "
         "SUM(CASE WHEN value != '' AND value IS NOT NULL THEN 1 ELSE 0 END) as filled, "
         "SUM(CASE WHEN value IN ('Def.', 'Fehler') THEN 1 ELSE 0 END) as defects "
-        "FROM group_cells WHERE protocol_id = ? GROUP BY group_id",
+        "FROM group_cells WHERE protocol_id = ? AND slot_key != '__grid__' GROUP BY group_id",
         (p_id,)
     )
-    cell_stats_by_group = {row["group_id"]: row for row in cursor.fetchall()}
+    cell_stats_by_group = {row["group_id"]: dict(row) for row in cursor.fetchall()}
+
+    # Override stats for grid-format groups by parsing the stored JSON
+    for grid_row in cursor.execute(
+        "SELECT group_id, value FROM group_cells WHERE protocol_id = ? AND slot_key = '__grid__'",
+        (p_id,)
+    ).fetchall():
+        try:
+            grid = json.loads(grid_row["value"])
+            values_map = grid.get("values", {})
+            cell_stats_by_group[grid_row["group_id"]] = {
+                "total": len(grid.get("types", {})),
+                "filled": sum(1 for v in values_map.values() if v),
+                "defects": sum(1 for v in values_map.values() if v in ("Def.", "Fehler")),
+            }
+        except Exception:
+            pass
 
     # Build flat devices list (one entry per WtGrt / protocol_group row)
     devices_list = []

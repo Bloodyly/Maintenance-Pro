@@ -104,6 +104,14 @@ def init_db():
         cursor.execute("ALTER TABLE group_cells ADD COLUMN updated_at INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    try:
+        cursor.execute("ALTER TABLE protocols ADD COLUMN updated_at INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE protocol_groups ADD COLUMN anlage_interval VARCHAR(50) DEFAULT 'Halbjährlich'")
+    except sqlite3.OperationalError:
+        pass
 
     try:
         cursor.execute("ALTER TABLE protocol_groups ADD COLUMN anlage_id VARCHAR(100) DEFAULT 'default'")
@@ -600,6 +608,214 @@ def protocols_live_sync(id):
     
     encrypted_resp = encrypt_payload(json.dumps(response_payload), SERVER_CODEWORD)
     return encrypted_resp, 200
+
+# --- SYNC ENDPOINTS ---
+
+def _build_protocol_sync_payload(cursor, p):
+    """Shared helper: build the full sync payload dict for a protocol row."""
+    p_id = p["id"]
+    cursor.execute("SELECT * FROM protocol_groups WHERE protocol_id = ?", (p_id,))
+    groups = cursor.fetchall()
+
+    rows_data = []
+    for g in groups:
+        cursor.execute(
+            "SELECT slot_key, detector_type, value, updated_at FROM group_cells "
+            "WHERE protocol_id = ? AND group_id = ?", (p_id, g["group_id"])
+        )
+        cells = cursor.fetchall()
+        if not cells:
+            continue
+        rows_data.append({
+            "group_id": g["group_id"],
+            "group_name": g["group_name"],
+            "group_type": g["group_type"] or "NAM",
+            "anlage_id": g["anlage_id"] if "anlage_id" in g.keys() else "default",
+            "anlage_name": g["anlage_name"] if "anlage_name" in g.keys() else "",
+            "anlage_type": g["anlage_type"] if "anlage_type" in g.keys() else "",
+            "anlage_interval": (g["anlage_interval"] if "anlage_interval" in g.keys() else "") or "Halbjährlich",
+            "cells": [{"slot_key": c["slot_key"], "detector_type": c["detector_type"],
+                       "value": c["value"], "updated_at": c["updated_at"] or 0} for c in cells]
+        })
+
+    if not rows_data:
+        return None
+
+    try:
+        cols = [{"key": c, "label": f"Slot {c}"} for c in json.loads(p["columns"])]
+        app_vals = [{"value": v, "label": v, "is_defect": v == "Def."} for v in json.loads(p["applicable_values"])]
+        det_types = json.loads(p["detector_types"])
+    except Exception:
+        cols, app_vals, det_types = [], [], []
+
+    return {
+        "id": p["id"],
+        "name": p["name"],
+        "address": p["address"],
+        "contract_number": p["contract_number"],
+        "interval": p["interval"],
+        "system_type": p["system_type"],
+        "status": p["status"],
+        "updated_at": (p["updated_at"] if "updated_at" in p.keys() else 0) or 0,
+        "definition": {"columns": cols, "applicable_values": app_vals, "detector_types": det_types},
+        "rows": rows_data,
+    }
+
+
+@app.route("/protocols/sync/full", methods=["POST"])
+def sync_full():
+    """Bulk download: all protocols that have at least one group_cell."""
+    success, auth_details = authenticate_request()
+    if not success:
+        return jsonify(auth_details), 401
+
+    sync_version = int(datetime.utcnow().timestamp() * 1000)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT DISTINCT p.* FROM protocols p
+        WHERE EXISTS (SELECT 1 FROM group_cells gc WHERE gc.protocol_id = p.id)
+    """)
+    protocols = cursor.fetchall()
+
+    result = []
+    for p in protocols:
+        payload = _build_protocol_sync_payload(cursor, p)
+        if payload:
+            result.append(payload)
+
+    conn.close()
+
+    encrypted_resp = encrypt_payload(json.dumps({"sync_version": sync_version, "protocols": result}), SERVER_CODEWORD)
+    return encrypted_resp, 200
+
+
+@app.route("/protocols/sync/delta", methods=["POST"])
+def sync_delta():
+    """Delta download: only protocols/cells changed since the given timestamp."""
+    success, auth_details = authenticate_request()
+    if not success:
+        return jsonify(auth_details), 401
+
+    try:
+        encrypted_body = request.data.decode("utf-8").strip()
+        body_json = json.loads(decrypt_payload(encrypted_body, SERVER_CODEWORD)) if encrypted_body else {}
+        since = int(body_json.get("since", 0))
+    except Exception as e:
+        return jsonify({"error": "DECRYPTION_FAILED", "message": str(e)}), 400
+
+    sync_version = int(datetime.utcnow().timestamp() * 1000)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Protocols where the protocol itself OR any of its cells changed since 'since'
+    cursor.execute("""
+        SELECT DISTINCT p.* FROM protocols p
+        WHERE (
+            (p.updated_at IS NOT NULL AND p.updated_at > ?) OR
+            EXISTS (SELECT 1 FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.updated_at > ?)
+        ) AND EXISTS (SELECT 1 FROM group_cells gc2 WHERE gc2.protocol_id = p.id)
+    """, (since, since))
+    protocols = cursor.fetchall()
+
+    result = []
+    for p in protocols:
+        p_id = p["id"]
+        # For delta: only send cells that actually changed since 'since'
+        cursor.execute("SELECT * FROM protocol_groups WHERE protocol_id = ?", (p_id,))
+        groups = cursor.fetchall()
+
+        rows_data = []
+        for g in groups:
+            cursor.execute(
+                "SELECT slot_key, detector_type, value, updated_at FROM group_cells "
+                "WHERE protocol_id = ? AND group_id = ? AND updated_at > ?",
+                (p_id, g["group_id"], since)
+            )
+            cells = cursor.fetchall()
+            if cells:
+                rows_data.append({
+                    "group_id": g["group_id"],
+                    "group_name": g["group_name"],
+                    "group_type": g["group_type"] or "NAM",
+                    "cells": [{"slot_key": c["slot_key"], "detector_type": c["detector_type"],
+                               "value": c["value"], "updated_at": c["updated_at"] or 0} for c in cells]
+                })
+
+        result.append({
+            "id": p["id"], "name": p["name"], "address": p["address"],
+            "contract_number": p["contract_number"], "interval": p["interval"],
+            "system_type": p["system_type"], "status": p["status"],
+            "updated_at": (p["updated_at"] if "updated_at" in p.keys() else 0) or 0,
+            "rows": rows_data,
+        })
+
+    conn.close()
+    encrypted_resp = encrypt_payload(json.dumps({"sync_version": sync_version, "protocols": result}), SERVER_CODEWORD)
+    return encrypted_resp, 200
+
+
+@app.route("/protocols/sync/upload-cells", methods=["POST"])
+def sync_upload_cells():
+    """Delta upload: apply individual cell changes (last-write-wins by updated_at)."""
+    success, auth_details = authenticate_request()
+    if not success:
+        return jsonify(auth_details), 401
+
+    try:
+        encrypted_body = request.data.decode("utf-8").strip()
+        body_json = json.loads(decrypt_payload(encrypted_body, SERVER_CODEWORD))
+        changes = body_json.get("changes", [])
+    except Exception as e:
+        return jsonify({"error": "DECRYPTION_FAILED", "message": str(e)}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    applied = 0
+    now = int(datetime.utcnow().timestamp() * 1000)
+    updated_protocols = set()
+
+    for change in changes:
+        p_id = change.get("protocol_id")
+        g_id = change.get("group_id")
+        slot = change.get("slot_key")
+        det_type = change.get("detector_type", "-")
+        val = change.get("value", "")
+        ts = int(change.get("updated_at", now))
+
+        cursor.execute(
+            "SELECT updated_at FROM group_cells WHERE protocol_id=? AND group_id=? AND slot_key=?",
+            (p_id, g_id, slot)
+        )
+        existing = cursor.fetchone()
+
+        if existing is None or (existing["updated_at"] or 0) <= ts:
+            cursor.execute("""
+                INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(protocol_id, group_id, slot_key)
+                DO UPDATE SET detector_type=EXCLUDED.detector_type, value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+            """, (p_id, g_id, slot, det_type, val, ts))
+            applied += cursor.rowcount
+            updated_protocols.add(p_id)
+
+    formatted_date = datetime.now().strftime("%d.%m.%Y")
+    for p_id in updated_protocols:
+        cursor.execute(
+            "UPDATE protocols SET status='synchronized', last_edited_by=?, last_edited_at=?, updated_at=? WHERE id=?",
+            (auth_details["name"], formatted_date, now, p_id)
+        )
+
+    conn.commit()
+    conn.close()
+
+    encrypted_resp = encrypt_payload(
+        json.dumps({"status": "ok", "applied": applied, "sync_version": now}), SERVER_CODEWORD
+    )
+    return encrypted_resp, 200
+
 
 # --- SHUTDOWN & HEALTH CHECKS ---
 
