@@ -16,8 +16,17 @@ import subprocess
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
 
-# Project root — where esser_etb_parser.py lives
-_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+# Locate esser_etb_parser.py — try several candidate paths robustly
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, '..', '..'))
+_ETB_PARSER_PATH = next(
+    (p for p in [
+        os.path.join(_PROJECT_ROOT, 'esser_etb_parser.py'),
+        os.path.join(os.getcwd(), 'esser_etb_parser.py'),
+        os.path.join(_THIS_DIR, 'esser_etb_parser.py'),
+    ] if os.path.isfile(p)),
+    None
+)
 
 app = Flask(__name__)
 app.secret_key = "office-webui-secret-key-182392"
@@ -963,10 +972,14 @@ def import_etb_cells(protocol_id, group_id):
         fname = f.filename.lower()
 
         if fname.endswith(".etb"):
-            parser_path = os.path.join(_PROJECT_ROOT, "esser_etb_parser.py")
-            if not os.path.isfile(parser_path):
+            parser_path = _ETB_PARSER_PATH
+            if not parser_path:
+                searched = [
+                    os.path.join(_PROJECT_ROOT, 'esser_etb_parser.py'),
+                    os.path.join(os.getcwd(), 'esser_etb_parser.py'),
+                ]
                 return jsonify({"success": False,
-                                "error": f"esser_etb_parser.py nicht gefunden ({parser_path})"}), 500
+                                "error": f"esser_etb_parser.py nicht gefunden (gesucht in: {', '.join(searched)})"}), 500
 
             suffix = os.path.splitext(f.filename)[1] or ".etb"
             tmp_etb = tmp_json = None
