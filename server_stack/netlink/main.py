@@ -364,15 +364,35 @@ def protocol_download(id):
         cells = cursor.fetchall()
         cells_list = []
         for c in cells:
-            cells_list.append({
-                "slot_key": c["slot_key"],
-                "detector_type": c["detector_type"],
-                "value": c["value"]
-            })
+            if c["slot_key"] == "__grid__" and c["detector_type"] == "GRID_V1":
+                # Expand grid matrix into flat cells so the app can render them directly
+                try:
+                    grid_data = json.loads(c["value"])
+                    types_map = grid_data.get("types", {})
+                    values_map = grid_data.get("values", {})
+                    for slot_key, det_type in types_map.items():
+                        cells_list.append({
+                            "slot_key": slot_key,
+                            "detector_type": det_type,
+                            "value": values_map.get(slot_key, "")
+                        })
+                except Exception:
+                    pass
+            else:
+                cells_list.append({
+                    "slot_key": c["slot_key"],
+                    "detector_type": c["detector_type"],
+                    "value": c["value"]
+                })
+        if not cells_list:
+            continue  # Skip groups with no renderable cells
         rows_data.append({
             "group_id": g["group_id"],
             "group_name": g["group_name"],
-            "group_type": g["group_type"],
+            "group_type": g.get("group_type", "NAM"),
+            "anlage_id": g.get("anlage_id", "") or "",
+            "anlage_name": g.get("anlage_name", "") or "",
+            "anlage_type": g.get("anlage_type", "") or "",
             "cells": cells_list
         })
     
@@ -646,6 +666,32 @@ def _build_protocol_sync_payload(cursor, p):
         cells = cursor.fetchall()
         if not cells:
             continue
+        expanded_cells = []
+        for c in cells:
+            if c["slot_key"] == "__grid__" and c["detector_type"] == "GRID_V1":
+                try:
+                    grid_data = json.loads(c["value"])
+                    types_map = grid_data.get("types", {})
+                    values_map = grid_data.get("values", {})
+                    ts = c["updated_at"] or 0
+                    for slot_key, det_type in types_map.items():
+                        expanded_cells.append({
+                            "slot_key": slot_key,
+                            "detector_type": det_type,
+                            "value": values_map.get(slot_key, ""),
+                            "updated_at": ts
+                        })
+                except Exception:
+                    pass
+            else:
+                expanded_cells.append({
+                    "slot_key": c["slot_key"],
+                    "detector_type": c["detector_type"],
+                    "value": c["value"],
+                    "updated_at": c["updated_at"] or 0
+                })
+        if not expanded_cells:
+            continue
         rows_data.append({
             "group_id": g["group_id"],
             "group_name": g["group_name"],
@@ -654,8 +700,7 @@ def _build_protocol_sync_payload(cursor, p):
             "anlage_name": g["anlage_name"] if "anlage_name" in g.keys() else "",
             "anlage_type": g["anlage_type"] if "anlage_type" in g.keys() else "",
             "anlage_interval": (g["anlage_interval"] if "anlage_interval" in g.keys() else "") or "Halbjährlich",
-            "cells": [{"slot_key": c["slot_key"], "detector_type": c["detector_type"],
-                       "value": c["value"], "updated_at": c["updated_at"] or 0} for c in cells]
+            "cells": expanded_cells
         })
 
     if not rows_data:

@@ -103,13 +103,15 @@ fun InspectionScreen(
                         detectorType = cellO.getString("detector_type"),
                         value = cellO.optString("value", "")
                     )
-                }
+                }.filter { it.slotKey != "__grid__" } // skip raw grid sentinel (server should expand, but guard here)
                 RowModel(
                     groupId = rowO.getString("group_id"),
-                    groupName = rowO.optString("group_name", ""),
+                    groupName = rowO.optString("anlage_name", "").ifBlank {
+                        rowO.optString("group_name", "")
+                    },
                     cells = cells
                 )
-            }
+            }.filter { it.cells.isNotEmpty() } // skip groups that have no renderable cells
             Triple(columns, rows, applicableValues)
         } catch (e: Exception) {
             Triple(emptyList<ColumnModel>(), emptyList<RowModel>(), emptyList<ValueModel>())
@@ -413,21 +415,21 @@ fun InspectionScreen(
                                     .padding(horizontal = 12.dp, vertical = 8.dp),
                                 contentAlignment = Alignment.CenterStart
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size((6 * zoomScale).dp)
-                                            .background(IndustrialPrimary, RoundedCornerShape(3.dp))
-                                    )
+                                Column {
                                     Text(
                                         text = row.groupId,
                                         fontWeight = FontWeight.Bold,
                                         color = IndustrialPrimary,
                                         fontSize = cellFontSize
                                     )
+                                    if (row.groupName.isNotBlank()) {
+                                        Text(
+                                            text = row.groupName,
+                                            color = IndustrialOutline,
+                                            fontSize = (cellFontSize.value * 0.8f).sp,
+                                            maxLines = 1
+                                        )
+                                    }
                                 }
                             }
                         }
