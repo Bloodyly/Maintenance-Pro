@@ -23,7 +23,9 @@ data class ProtocolEntity(
     val decryptedPayloadJson: String,
     
     val lastEditedAt: Long = 0L,
-    
+
+    val lastOpenedAt: Long = 0L,
+
     val isArchived: Boolean = false
 )
 

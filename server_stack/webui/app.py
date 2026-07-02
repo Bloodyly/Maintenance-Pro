@@ -13,8 +13,14 @@ import shutil
 import uuid
 import tempfile
 import subprocess
-from datetime import datetime
+from datetime import datetime, date
 from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
+
+
+def current_quarter() -> str:
+    today = date.today()
+    q = (today.month - 1) // 3 + 1
+    return f"{today.year}-Q{q}"
 
 # Locate esser_etb_parser.py — try several candidate paths robustly
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -54,6 +60,10 @@ def get_db_connection():
                 cursor.execute(f"ALTER TABLE protocol_groups ADD COLUMN {col_name} {col_type}")
             except sqlite3.OperationalError:
                 pass
+        try:
+            cursor.execute("ALTER TABLE protocols ADD COLUMN synchronized_quarter VARCHAR(20) DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
     except Exception:
         pass
@@ -739,10 +749,30 @@ def mark_protocol_done(p_id):
     if not cursor.fetchone():
         conn.close()
         return jsonify({"success": False, "error": "Protokoll nicht gefunden."}), 404
-    cursor.execute("UPDATE protocols SET status = 'synchronized' WHERE id = ?", (p_id,))
+    cursor.execute(
+        "UPDATE protocols SET status = 'synchronized', synchronized_quarter = ? WHERE id = ?",
+        (current_quarter(), p_id)
+    )
     conn.commit()
     conn.close()
     return jsonify({"success": True, "message": "Protokoll als erledigt markiert."})
+
+
+@app.route("/api/protocols/reset-status/<p_id>", methods=["POST"])
+def reset_protocol_status(p_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM protocols WHERE id = ?", (p_id,))
+    if not cursor.fetchone():
+        conn.close()
+        return jsonify({"success": False, "error": "Protokoll nicht gefunden."}), 404
+    cursor.execute(
+        "UPDATE protocols SET status = 'ready_to_download', synchronized_quarter = '' WHERE id = ?",
+        (p_id,)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "message": "Status zurückgesetzt."})
 
 # ----------------- TECHNICIANS ROUTES -----------------
 

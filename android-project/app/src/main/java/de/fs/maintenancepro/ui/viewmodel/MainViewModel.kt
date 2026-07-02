@@ -120,6 +120,40 @@ class MainViewModel @Inject constructor(
     private val _syncState = MutableStateFlow<SyncState>(SyncState.Idle)
     val syncState: StateFlow<SyncState> = _syncState
 
+    private val prefs = context.getSharedPreferences("maintenance_pro_prefs", Context.MODE_PRIVATE)
+
+    // ── Verlauf / History ───────────────────────────────────────────────────
+    val recentlyOpened: Flow<List<ProtocolEntity>> = protocolDao.getRecentlyOpenedFlow()
+
+    private val _historyLimit = MutableStateFlow(20)
+    val historyLimit: StateFlow<Int> = _historyLimit
+
+    fun loadHistoryLimit() {
+        _historyLimit.value = prefs.getInt("history_limit", 20)
+    }
+
+    fun setHistoryLimit(limit: Int) {
+        prefs.edit().putInt("history_limit", limit).apply()
+        _historyLimit.value = limit
+    }
+
+    fun trackProtocolOpen(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val entity = protocolDao.getProtocolById(id) ?: return@launch
+            protocolDao.insertOrUpdate(entity.copy(lastOpenedAt = System.currentTimeMillis()))
+        }
+    }
+
+    fun resetProtocolToOpen(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val entity = protocolDao.getProtocolById(id) ?: return@launch
+            protocolDao.insertOrUpdate(entity.copy(localStatus = "ready_to_download"))
+            try {
+                apiService.resetProtocolStatus(id)
+            } catch (_: Exception) {}
+        }
+    }
+
     fun setLiveModusEnabled(enabled: Boolean) {
         _liveModusEnabled.value = enabled
     }
@@ -134,6 +168,7 @@ class MainViewModel @Inject constructor(
         startLiveSyncLoop()
         startConnectivityCheckLoop()
         updateSearchQuery("")
+        loadHistoryLimit()
     }
 
     private fun startConnectivityCheckLoop() {
@@ -1000,8 +1035,6 @@ class MainViewModel @Inject constructor(
         }
         return list
     }
-
-    private val prefs = context.getSharedPreferences("maintenance_pro_prefs", Context.MODE_PRIVATE)
 
     fun getSystemDefinitionsString(): String? {
         return prefs.getString("system_definitions", null)

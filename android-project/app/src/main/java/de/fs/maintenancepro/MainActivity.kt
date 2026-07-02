@@ -66,7 +66,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                                 icon = { Icon(Icons.Default.Checklist, contentDescription = null) },
-                                label = { Text("Geladen") }
+                                label = { Text("Verlauf") }
                             )
                             NavigationBarItem(
                                 selected = selectedTab == 2,
@@ -105,6 +105,7 @@ class MainActivity : ComponentActivity() {
                             SearchScreen(
                                 viewModel = viewModel,
                                 onNavigateToInspection = { id ->
+                                    viewModel.trackProtocolOpen(id)
                                     navController.navigate("inspection/$id")
                                 },
                                 onNavigateToSettings = {
@@ -113,11 +114,12 @@ class MainActivity : ComponentActivity() {
                                 }
                             )
                         }
-                        
+
                         composable("downloaded") {
                             DownloadedScreen(
                                 viewModel = viewModel,
                                 onNavigateToInspection = { id ->
+                                    viewModel.trackProtocolOpen(id)
                                     navController.navigate("inspection/$id")
                                 }
                             )

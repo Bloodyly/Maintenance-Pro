@@ -47,6 +47,10 @@ interface ApiService {
     /** Delta-Sync upload: push individual cell changes (last-write-wins). */
     @POST("protocols/sync/upload-cells")
     suspend fun uploadCells(@Body req: SyncUploadCellsDto): Response<SyncUploadResponseDto>
+
+    /** Reset protocol status to ready_to_download without touching cell data. */
+    @POST("protocols/reset-status/{id}")
+    suspend fun resetProtocolStatus(@Path("id") protocolId: String): Response<ResetStatusResponseDto>
 }
 
 // ── Existing DTOs ────────────────────────────────────────────────────────────
@@ -163,3 +167,5 @@ data class SyncCellDto(
 )
 
 data class SyncUploadResponseDto(val status: String, val applied: Int, val sync_version: Long)
+
+data class ResetStatusResponseDto(val status: String, val message: String)

@@ -371,6 +371,15 @@
                                             <span>Erledigt</span>
                                         </button>
                                         <button
+                                            x-show="p.status === 'synchronized'"
+                                            @click="resetStatusOnly(p.id)"
+                                            class="px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 text-xs font-semibold rounded-lg border border-amber-200 flex items-center gap-1.5 transition"
+                                            title="Status auf Offen zurücksetzen (Zellinhalte bleiben)"
+                                        >
+                                            <i data-lucide="lock-open" class="w-3.5 h-3.5"></i>
+                                            <span>Öffnen</span>
+                                        </button>
+                                        <button
                                             @click="triggerReset(p.id)"
                                             class="px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold rounded-lg border border-slate-200 flex items-center gap-1.5 transition"
                                             title="Intervall zurücksetzen / Neu planen"
@@ -1947,6 +1956,21 @@
                     });
                 },
                 
+                resetStatusOnly(id) {
+                    if (confirm("Status auf 'Offen' zurücksetzen? Zelleninhalte bleiben erhalten.")) {
+                        fetch('/api/protocols/reset-status/' + id, { method: 'POST' })
+                        .then(r => r.json())
+                        .then(data => {
+                            if (data.success) {
+                                this.triggerToast(data.message, 'success');
+                                this.loadProtocols();
+                            } else {
+                                this.triggerToast(data.error || 'Fehler', 'warning');
+                            }
+                        });
+                    }
+                },
+
                 triggerReset(id) {
                     if (confirm("Möchten Sie diesen Vertrag ins nächste Prüfintervall verschieben? Das aktuelle PDF-Protokoll wird archiviert und die Messwerte geleert.")) {
                         fetch('/api/protocols/reset/' + id, { method: 'POST' })

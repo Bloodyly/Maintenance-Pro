@@ -32,6 +32,9 @@ interface ProtocolDao {
     @Query("DELETE FROM protocols WHERE id = :id")
     suspend fun deleteById(id: String)
 
+    @Query("SELECT * FROM protocols WHERE lastOpenedAt > 0 ORDER BY lastOpenedAt DESC")
+    fun getRecentlyOpenedFlow(): Flow<List<ProtocolEntity>>
+
     @Query("DELETE FROM protocols")
     suspend fun clearAll()
 }

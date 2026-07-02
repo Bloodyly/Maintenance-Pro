@@ -6,9 +6,15 @@ import base64
 import hashlib
 import zipfile
 import io
-from datetime import datetime
+from datetime import datetime, date
 from flask import Flask, request, jsonify, send_file
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+
+def current_quarter() -> str:
+    today = date.today()
+    q = (today.month - 1) // 3 + 1
+    return f"{today.year}-Q{q}"
 
 app = Flask(__name__)
 
@@ -136,7 +142,11 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
-    
+    try:
+        cursor.execute("ALTER TABLE protocols ADD COLUMN synchronized_quarter VARCHAR(20) DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+
     # Populate initial values if empty
     cursor.execute("SELECT COUNT(*) as cnt FROM technicians")
     if cursor.fetchone()["cnt"] == 0:
@@ -259,21 +269,28 @@ def protocols_search():
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+
+    # Auto-reset protocols whose synchronized_quarter is outdated
+    cq = current_quarter()
+    cursor.execute("""
+        UPDATE protocols SET status = 'ready_to_download', synchronized_quarter = ''
+        WHERE status = 'synchronized' AND synchronized_quarter != '' AND synchronized_quarter != ?
+    """, (cq,))
+    conn.commit()
+
     if query:
-        # Search via SQL like wildcard filters
         search_pattern = f"%{query}%"
         cursor.execute("""
-            SELECT id, name, address, contract_number, interval, system_type, status 
-            FROM protocols 
+            SELECT id, name, address, contract_number, interval, system_type, status
+            FROM protocols
             WHERE LOWER(name) LIKE ? OR LOWER(address) LIKE ? OR LOWER(contract_number) LIKE ?
         """, (search_pattern, search_pattern, search_pattern))
     else:
         cursor.execute("SELECT id, name, address, contract_number, interval, system_type, status FROM protocols")
-        
+
     records = cursor.fetchall()
     conn.close()
-    
+
     results = []
     for r in records:
         results.append({
@@ -286,7 +303,7 @@ def protocols_search():
             "status": r["status"],
             "is_live": is_protocol_live(r["id"])
         })
-        
+
     encrypted_resp = encrypt_payload(json.dumps(results), SERVER_CODEWORD)
     return encrypted_resp, 200
 
@@ -805,10 +822,11 @@ def sync_upload_cells():
             updated_protocols.add(p_id)
 
     formatted_date = datetime.now().strftime("%d.%m.%Y")
+    cq = current_quarter()
     for p_id in updated_protocols:
         cursor.execute(
-            "UPDATE protocols SET status='synchronized', last_edited_by=?, last_edited_at=?, updated_at=? WHERE id=?",
-            (auth_details["name"], formatted_date, now, p_id)
+            "UPDATE protocols SET status='synchronized', synchronized_quarter=?, last_edited_by=?, last_edited_at=?, updated_at=? WHERE id=?",
+            (cq, auth_details["name"], formatted_date, now, p_id)
         )
 
     conn.commit()
@@ -818,6 +836,26 @@ def sync_upload_cells():
         json.dumps({"status": "ok", "applied": applied, "sync_version": now}), SERVER_CODEWORD
     )
     return encrypted_resp, 200
+
+
+@app.route("/protocols/reset-status/<id>", methods=["POST"])
+def reset_protocol_status(id):
+    success, auth_details = authenticate_request()
+    if not success:
+        return jsonify(auth_details), 401
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE protocols SET status='ready_to_download', synchronized_quarter='' WHERE id=?",
+            (id,)
+        )
+        conn.commit()
+        conn.close()
+        encrypted_resp = encrypt_payload(json.dumps({"status": "ok", "message": "Status zurückgesetzt"}), SERVER_CODEWORD)
+        return encrypted_resp, 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # --- SHUTDOWN & HEALTH CHECKS ---

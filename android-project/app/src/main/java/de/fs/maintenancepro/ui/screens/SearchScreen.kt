@@ -51,8 +51,9 @@ fun SearchScreen(
     var showFilterOptions by remember { mutableStateOf(false) }
     var filterSystemType by remember { mutableStateOf("Alle") }
     var sortByOption by remember { mutableStateOf("Kunde (Name)") }
+    var showCompleted by remember { mutableStateOf(false) }
 
-    val filteredItems = remember(searchResults, localProtocols, filterSystemType, sortByOption) {
+    val filteredItems = remember(searchResults, localProtocols, filterSystemType, sortByOption, showCompleted) {
         var list = searchResults.map { item ->
             val localItem = localProtocols.find { it.id == item.id }
             if (localItem != null) {
@@ -60,6 +61,11 @@ fun SearchScreen(
             } else {
                 item
             }
+        }
+
+        // Default: hide already completed (synchronized) protocols
+        if (!showCompleted) {
+            list = list.filter { it.status != "synchronized" }
         }
 
         // Filter system type local
@@ -194,6 +200,13 @@ fun SearchScreen(
                             }
                         }
                     }
+
+                    // Erledigte anzeigen toggle
+                    FilterChip(
+                        selected = showCompleted,
+                        onClick = { showCompleted = !showCompleted },
+                        label = { Text("Erledigte", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                    )
                 }
             }
 
