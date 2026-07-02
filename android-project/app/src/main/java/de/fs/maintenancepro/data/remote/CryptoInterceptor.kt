@@ -7,6 +7,7 @@ import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.Response
 import okio.Buffer
 import org.json.JSONObject
@@ -87,17 +88,17 @@ class CryptoInterceptor(
                     val decryptedBody = CryptoManager.decrypt(responseBodyStr, creds.codewordKey)
                     val mediaType = response.body!!.contentType()
                     response.newBuilder()
-                        .body(decryptedBody.toRequestBody(mediaType))
+                        .body(decryptedBody.toResponseBody(mediaType))
                         .build()
                 } catch (e: Exception) {
                     // Decryption failed (bad key or malformed) -> pass through standard raw response
                     response.newBuilder()
-                        .body(responseBodyStr.toRequestBody(response.body!!.contentType()))
+                        .body(responseBodyStr.toResponseBody(response.body!!.contentType()))
                         .build()
                 }
             } else {
                 response.newBuilder()
-                    .body(responseBodyStr.toRequestBody(response.body!!.contentType()))
+                    .body(responseBodyStr.toResponseBody(response.body!!.contentType()))
                     .build()
             }
         }

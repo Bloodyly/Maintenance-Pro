@@ -15,14 +15,19 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.animation.core.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.NetworkCheck
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Wifi
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -43,6 +48,58 @@ import de.fs.maintenancepro.R
 import de.fs.maintenancepro.ui.theme.*
 import de.fs.maintenancepro.ui.viewmodel.MainViewModel
 
+sealed class StepState {
+    object Pending : StepState()
+    object Skipped : StepState()
+    object Ok : StepState()
+    data class Fail(val reason: String) : StepState()
+}
+
+@Composable
+private fun ConnectionTestStep(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    state: StepState
+) {
+    val (tint, statusIcon, detail) = when (state) {
+        is StepState.Ok -> Triple(Color(0xFF16A34A), Icons.Default.Check, null)
+        is StepState.Fail -> Triple(Color(0xFFDC2626), Icons.Default.Close, state.reason)
+        StepState.Skipped -> Triple(Color(0xFF94A3B8), null, null)
+        StepState.Pending -> Triple(Color(0xFF64748B), null, null)
+    }
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                when (state) {
+                    is StepState.Ok -> Color(0xFFF0FDF4)
+                    is StepState.Fail -> Color(0xFFFEF2F2)
+                    else -> Color(0xFFF8FAFC)
+                },
+                RoundedCornerShape(8.dp)
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
+        Text(label, style = MaterialTheme.typography.bodySmall, color = tint, modifier = Modifier.weight(1f))
+        when {
+            state == StepState.Pending -> CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = tint)
+            statusIcon != null -> Icon(statusIcon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
+        }
+    }
+    if (detail != null) {
+        Text(
+            "  $detail",
+            style = MaterialTheme.typography.labelSmall,
+            color = Color(0xFFDC2626),
+            modifier = Modifier.padding(start = 16.dp, bottom = 2.dp)
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -52,15 +109,17 @@ fun SettingsScreen(
     val context = LocalContext.current
     val configState by viewModel.serverConfig.collectAsState(initial = null)
     val isOffline by viewModel.isOffline.collectAsState()
+    val connectionTestState by viewModel.connectionTestState.collectAsState()
+    val coroutineScope = rememberCoroutineScope()
 
-    var serverAddress by remember { mutableStateOf("https://field-service.corp.internal") }
-    var port by remember { mutableStateOf("8443") }
-    var username by remember { mutableStateOf("TECH_UNIT_99283") }
-    var password by remember { mutableStateOf("••••••••••••") }
+    var serverAddress by remember { mutableStateOf("http://eno-nt-remote.dynip.online") }
+    var port by remember { mutableStateOf("3360") }
+    var username by remember { mutableStateOf("tprantl") }
+    var password by remember { mutableStateOf("testpasswort") }
     var codeword by remember { mutableStateOf("77-XJ-900-PLX-22") }
-    
+
     var showPassword by remember { mutableStateOf(false) }
-    
+
     var showQrInputDialog by remember { mutableStateOf(false) }
     var qrInputText by remember { mutableStateOf("") }
 
@@ -155,7 +214,7 @@ fun SettingsScreen(
                     ) {
                         OutlinedTextField(
                             value = serverAddress,
-                            onValueChange = { serverAddress = it },
+                            onValueChange = { serverAddress = it; viewModel.resetConnectionTest() },
                             label = { Text(stringResource(R.string.label_server_address)) },
                             modifier = Modifier.weight(3f),
                             colors = OutlinedTextFieldDefaults.colors(
@@ -166,7 +225,7 @@ fun SettingsScreen(
 
                         OutlinedTextField(
                             value = port,
-                            onValueChange = { port = it },
+                            onValueChange = { port = it; viewModel.resetConnectionTest() },
                             label = { Text(stringResource(R.string.label_port)) },
                             modifier = Modifier.weight(1f),
                             colors = OutlinedTextFieldDefaults.colors(
@@ -178,7 +237,7 @@ fun SettingsScreen(
 
                     OutlinedTextField(
                         value = username,
-                        onValueChange = { username = it },
+                        onValueChange = { username = it; viewModel.resetConnectionTest() },
                         label = { Text(stringResource(R.string.label_username)) },
                         modifier = Modifier.fillMaxWidth(),
                         colors = OutlinedTextFieldDefaults.colors(
@@ -189,7 +248,7 @@ fun SettingsScreen(
 
                     OutlinedTextField(
                         value = password,
-                        onValueChange = { password = it },
+                        onValueChange = { password = it; viewModel.resetConnectionTest() },
                         label = { Text(stringResource(R.string.label_password)) },
                         modifier = Modifier.fillMaxWidth(),
                         visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
@@ -209,7 +268,7 @@ fun SettingsScreen(
 
                     OutlinedTextField(
                         value = codeword,
-                        onValueChange = { codeword = it },
+                        onValueChange = { codeword = it; viewModel.resetConnectionTest() },
                         label = { Text(stringResource(R.string.label_mainkey)) },
                         modifier = Modifier.fillMaxWidth(),
                         colors = OutlinedTextFieldDefaults.colors(
@@ -217,6 +276,85 @@ fun SettingsScreen(
                             focusedLabelColor = IndustrialSecondaryContainer
                         )
                     )
+
+                    HorizontalDivider(color = IndustrialOutlineVariant)
+
+                    // ── Verbindungstest ─────────────────────────────────────
+                    Button(
+                        onClick = {
+                            viewModel.testConnectionWithSettings(
+                                serverAddress.trim(),
+                                port.toIntOrNull() ?: 3000,
+                                username.trim(),
+                                password,
+                                codeword.trim()
+                            )
+                        },
+                        enabled = connectionTestState !is MainViewModel.ConnectionTestState.Testing,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = IndustrialPrimary,
+                            contentColor = Color.White
+                        )
+                    ) {
+                        if (connectionTestState is MainViewModel.ConnectionTestState.Testing) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Teste Verbindung…", fontWeight = FontWeight.Bold)
+                        } else {
+                            Icon(Icons.Default.NetworkCheck, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Verbindung testen", fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    // 3-Stufen-Ergebnis
+                    if (connectionTestState !is MainViewModel.ConnectionTestState.Idle) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            ConnectionTestStep(
+                                icon = Icons.Default.Wifi,
+                                label = "Server erreichbar",
+                                state = when (connectionTestState) {
+                                    is MainViewModel.ConnectionTestState.Testing -> StepState.Pending
+                                    is MainViewModel.ConnectionTestState.Unreachable -> StepState.Fail("Kein Netzwerk oder falsche Adresse")
+                                    else -> StepState.Ok
+                                }
+                            )
+                            ConnectionTestStep(
+                                icon = Icons.Default.Lock,
+                                label = "Verschlüsselung (Codeword)",
+                                state = when (connectionTestState) {
+                                    is MainViewModel.ConnectionTestState.Testing -> StepState.Pending
+                                    is MainViewModel.ConnectionTestState.Unreachable -> StepState.Skipped
+                                    is MainViewModel.ConnectionTestState.WrongKey -> StepState.Fail("Codeword stimmt nicht überein")
+                                    else -> StepState.Ok
+                                }
+                            )
+                            ConnectionTestStep(
+                                icon = Icons.Default.Person,
+                                label = "Zugangsdaten",
+                                state = when (val s = connectionTestState) {
+                                    is MainViewModel.ConnectionTestState.Testing -> StepState.Pending
+                                    is MainViewModel.ConnectionTestState.Unreachable -> StepState.Skipped
+                                    is MainViewModel.ConnectionTestState.WrongKey -> StepState.Skipped
+                                    is MainViewModel.ConnectionTestState.WrongCredentials -> StepState.Fail("Benutzername oder Passwort falsch")
+                                    is MainViewModel.ConnectionTestState.UnknownError -> StepState.Fail("HTTP ${s.code}")
+                                    is MainViewModel.ConnectionTestState.Success -> StepState.Ok
+                                    else -> StepState.Pending
+                                }
+                            )
+                            if (connectionTestState is MainViewModel.ConnectionTestState.Success) {
+                                val name = (connectionTestState as MainViewModel.ConnectionTestState.Success).technicianName
+                                Text(
+                                    "✓ Angemeldet als: $name",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color(0xFF16A34A),
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -262,7 +400,6 @@ fun SettingsScreen(
 
             // Server-Anlagendefinitionen Loading Card
             var isReloadingDefs by remember { mutableStateOf(false) }
-            val coroutineScope = rememberCoroutineScope()
 
             Card(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),

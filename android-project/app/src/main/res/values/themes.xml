@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base application theme. -->
+    <style name="Theme.MaintenancePro" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+        <!-- Customize your light theme here. -->
+    </style>
+
+    <style name="Theme.WithSplash" parent="Theme.MaintenancePro">
+        <!-- You can add splash screen specific attributes here -->
+    </style>
+</resources>

@@ -66,6 +66,49 @@ class MainViewModel @Inject constructor(
     private val _activeProtocolPayload = MutableStateFlow<String?>(null)
     val activeProtocolPayload: StateFlow<String?> = _activeProtocolPayload
 
+    // ── Verbindungstest State ───────────────────────────────────────────────
+    sealed class ConnectionTestState {
+        object Idle : ConnectionTestState()
+        object Testing : ConnectionTestState()
+        data class Success(val technicianName: String) : ConnectionTestState()
+        object Unreachable : ConnectionTestState()
+        object WrongKey : ConnectionTestState()
+        object WrongCredentials : ConnectionTestState()
+        data class UnknownError(val code: Int, val detail: String) : ConnectionTestState()
+    }
+
+    private val _connectionTestState = MutableStateFlow<ConnectionTestState>(ConnectionTestState.Idle)
+    val connectionTestState: StateFlow<ConnectionTestState> = _connectionTestState
+
+    fun resetConnectionTest() {
+        _connectionTestState.value = ConnectionTestState.Idle
+    }
+
+    fun testConnectionWithSettings(address: String, portVal: Int, user: String, pass: String, key: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _connectionTestState.value = ConnectionTestState.Testing
+            sessionManager.setNetworkConfig(address, portVal)
+            sessionManager.setSession(user, pass.toCharArray(), key.toCharArray())
+            try {
+                val response = apiService.checkAuth()
+                if (response.isSuccessful && response.body() != null) {
+                    _connectionTestState.value = ConnectionTestState.Success(
+                        response.body()!!.name.ifBlank { user }
+                    )
+                } else {
+                    val errBody = response.errorBody()?.string() ?: ""
+                    _connectionTestState.value = when {
+                        errBody.contains("DECRYPTION_FAILED") -> ConnectionTestState.WrongKey
+                        errBody.contains("INVALID_CREDENTIALS") -> ConnectionTestState.WrongCredentials
+                        else -> ConnectionTestState.UnknownError(response.code(), errBody)
+                    }
+                }
+            } catch (e: Exception) {
+                _connectionTestState.value = ConnectionTestState.Unreachable
+            }
+        }
+    }
+
     // ── Offline-Sync State ──────────────────────────────────────────────────
     sealed class SyncState {
         object Idle : SyncState()
@@ -129,12 +172,7 @@ class MainViewModel @Inject constructor(
     fun searchRemoteProtocols(query: String) {
         viewModelScope.launch(Dispatchers.IO) {
             if (_isOffline.value || !_isServerAvailable.value) {
-                // Return local mock items if offline
-                _searchResults.value = getOfflineFallbackMockItems().filter {
-                    it.name.contains(query, ignoreCase = true) ||
-                    it.address.contains(query, ignoreCase = true) ||
-                    it.contract_number.contains(query, ignoreCase = true)
-                }
+                _searchResults.value = searchLocalOrEmpty(query)
                 return@launch
             }
             try {
@@ -142,20 +180,27 @@ class MainViewModel @Inject constructor(
                 if (response.isSuccessful && response.body() != null) {
                     _searchResults.value = response.body()!!
                 } else {
-                    _searchResults.value = getOfflineFallbackMockItems().filter {
-                        it.name.contains(query, ignoreCase = true) ||
-                        it.address.contains(query, ignoreCase = true) ||
-                        it.contract_number.contains(query, ignoreCase = true)
-                    }
+                    _searchResults.value = searchLocalOrEmpty(query)
                 }
             } catch (e: Exception) {
-                _searchResults.value = getOfflineFallbackMockItems().filter {
-                    it.name.contains(query, ignoreCase = true) ||
-                    it.address.contains(query, ignoreCase = true) ||
-                    it.contract_number.contains(query, ignoreCase = true)
-                }
+                _searchResults.value = searchLocalOrEmpty(query)
             }
         }
+    }
+
+    private suspend fun searchLocalOrEmpty(query: String): List<ProtocolItemDto> {
+        val pat = "%${query}%"
+        val localResults = protocolDao.search(pat)
+        if (localResults.isNotEmpty()) {
+            return localResults.map { e ->
+                ProtocolItemDto(
+                    id = e.id, name = e.name, address = e.address,
+                    contract_number = e.contractNumber, interval = e.interval,
+                    system_type = e.systemType, status = e.localStatus
+                )
+            }
+        }
+        return emptyList()
     }
 
     fun saveConfig(address: String, portVal: Int, user: String, passHex: String, keyHex: String) {

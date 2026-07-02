@@ -17,7 +17,10 @@ SERVER_START_TIME = datetime.utcnow()
 
 # Load config from env
 PORT = int(os.environ.get("PORT", 3000))
-DB_PATH = os.environ.get("DB_PATH", "/shared_db/protocols.db")
+DB_PATH = os.environ.get(
+    "DB_PATH",
+    os.path.join(os.path.dirname(__file__), "..", "protocol_db", "protocols.db")
+)
 SERVER_CODEWORD = os.environ.get("SERVER_CODEWORD", "77-XJ-900-PLX-22")
 
 # --- LIVE SESSION TRACKING ---
@@ -171,7 +174,7 @@ def derive_key(codeword: str) -> bytes:
 
 def encrypt_payload(plain_text: str, codeword: str) -> str:
     key = derive_key(codeword)
-    iv = AESGCM.generate_nonce(12)
+    iv = os.urandom(12)
     aesgcm = AESGCM(key)
     ciphertext_with_tag = aesgcm.encrypt(iv, plain_text.encode("utf-8"), None)
     return base64.b64encode(iv + ciphertext_with_tag).decode("utf-8")
@@ -224,17 +227,17 @@ def auth_check():
     success, auth_details = authenticate_request()
     if not success:
         return jsonify(auth_details), 401
-    
-    # Authorized response payload
-    response_data = {
-        "status": "authorized",
-        "technician_id": auth_details["id"],
-        "name": auth_details["name"]
-    }
-    
-    # Return AES-GCM encrypted response
-    encrypted_resp = encrypt_payload(json.dumps(response_data), SERVER_CODEWORD)
-    return encrypted_resp, 200
+
+    try:
+        response_data = {
+            "status": "authorized",
+            "technician_id": auth_details["id"],
+            "name": auth_details["name"]
+        }
+        encrypted_resp = encrypt_payload(json.dumps(response_data), SERVER_CODEWORD)
+        return encrypted_resp, 200
+    except Exception as e:
+        return jsonify({"error": "RESPONSE_ENCRYPT_FAILED", "message": str(e)}), 500
 
 @app.route("/protocols/search", methods=["POST"])
 def protocols_search():
@@ -385,7 +388,7 @@ def protocol_download(id):
     # Encrypt raw ZIP byte stream with AESGCM
     raw_zip_bytes = zip_buffer.getvalue()
     key = derive_key(SERVER_CODEWORD)
-    iv = AESGCM.generate_nonce(12)
+    iv = os.urandom(12)
     aesgcm = AESGCM(key)
     ciphertext = aesgcm.encrypt(iv, raw_zip_bytes, None)
     

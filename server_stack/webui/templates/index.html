@@ -1105,8 +1105,8 @@
         >
             <div class="border-b border-indigo-100 bg-slate-50 px-6 py-4 flex justify-between items-center">
                 <div>
-                    <h3 class="text-base font-bold text-[#003D9B]" x-text="editorMode === 'create' ? 'Neuen Wartungsvertrag entwerfen' : 'Protokoll strukturieren & pflegen'"></h3>
-                    <p class="text-xs text-slate-500 mt-1">Spezifizierung der Meldergruppen, Linien, und Messpunkte</p>
+                    <h3 class="text-base font-bold text-[#003D9B]" x-text="editorMode === 'create' ? 'Neuen Wartungsvertrag anlegen' : 'Wartungsvertrag bearbeiten'"></h3>
+                    <p class="text-xs text-slate-500 mt-1">Stammdaten und Anlagen des Vertrags pflegen</p>
                 </div>
                 <button @click="isEditorOpen = false" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg border border-slate-200/60 flex items-center gap-1.5 transition">
                     <i data-lucide="arrow-left" class="w-4 h-4"></i>
@@ -1208,126 +1208,6 @@
                     </div>
                 </template>
 
-                <!-- IMPORT FILE MODULE -->
-                <div class="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
-                    <div class="flex items-center gap-2">
-                        <i data-lucide="import" class="w-4.5 h-4.5 text-[#003D9B]"></i>
-                        <h4 class="text-xs font-bold text-[#003D9B] uppercase tracking-wider">Muster-Import-Assistent</h4>
-                    </div>
-                    <div class="flex flex-col md:flex-row items-start md:items-center gap-4 text-xs font-sans">
-                        <div class="flex items-center gap-1.5">
-                            <span class="text-slate-500">Dateityp:</span>
-                            <select x-model="editorImportFileType" class="border border-slate-200 bg-white rounded px-2 py-1">
-                                <option value="esser">ESSER .etb (Werksprogrammierung)</option>
-                                <option value="csv">CSV-Tabelle (Gruppe;Name;Slot;Typ;Wert)</option>
-                                <option value="notifier">NOTIFIER Schema (Import-Simulat)</option>
-                                <option value="hekatron">HEKATRON Schema (Import-Simulat)</option>
-                            </select>
-                        </div>
-                        <input type="file" @change="importProtocolFile($event)" class="text-xs file:mr-4 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-[#003D9B] hover:file:bg-indigo-100">
-                    </div>
-                    <p class="text-[10px] text-slate-400">Automatische Dekodierung und Übertragung der Daten direkt aus dem Admin-Importprozess.</p>
-                </div>
-
-                <!-- Matrix Canvas drawing settings -->
-                <div class="bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-center gap-4">
-                    <div class="flex items-center gap-1.5 border-r border-slate-200 pr-4">
-                        <i data-lucide="paintbrush" class="w-4 h-4 text-slate-400"></i>
-                        <span class="text-xs font-bold text-slate-800">Muster-Pinselfunktionen:</span>
-                    </div>
-
-                    <div class="flex items-center gap-3 text-xs">
-                        <span class="text-slate-500">Modus:</span>
-                        <label class="inline-flex items-center gap-1">
-                            <input type="radio" value="type" x-model="paintTool" class="text-blue-600 focus:ring-0"> Splittyp pinseln
-                        </label>
-                        <label class="inline-flex items-center gap-1">
-                            <input type="radio" value="trigger" x-model="paintTool" class="text-blue-600 focus:ring-0"> Ergebnis pinseln
-                        </label>
-                    </div>
-
-                    <div class="flex items-center gap-1 bg-slate-50 p-1 rounded-lg border border-slate-200">
-                        <template x-if="paintTool === 'type'">
-                            <select x-model="paintValue" class="bg-transparent border-none text-xs font-bold focus:outline-none focus:ring-0">
-                                <template x-for="t in editorData.detector_types" :key="t">
-                                    <option :value="t" x-text="t"></option>
-                                </template>
-                            </select>
-                        </template>
-                        <template x-if="paintTool === 'trigger'">
-                            <select x-model="paintValue" class="bg-transparent border-none text-xs font-bold focus:outline-none focus:ring-0">
-                                <option value="">(Leeren)</option>
-                                <template x-for="val in editorData.applicable_values" :key="val">
-                                    <option :value="val" x-text="val"></option>
-                                </template>
-                            </select>
-                        </template>
-                    </div>
-                    <span class="text-[10px] text-slate-400">Pinsel aktivieren und einfach auf die Felder der Melder-Matrix tippen um Werte zügig zu vergeben.</span>
-                </div>
-
-                <!-- LIVE GRID MATRIX EDITOR -->
-                <div class="space-y-3">
-                    <div class="flex justify-between items-center">
-                        <h4 class="text-xs font-bold text-slate-800 uppercase tracking-widest">Meldergruppen & Linien-Layout</h4>
-                        <div class="flex gap-2">
-                            <button @click="addEditorColumn()" class="px-2.5 py-1.5 border border-slate-200 text-xs text-slate-700 bg-slate-50 rounded-lg hover:bg-slate-100 font-bold flex items-center gap-1">
-                                Spalte anlegen (Slot)
-                            </button>
-                            <button @click="removeEditorColumn()" class="px-2.5 py-1.5 border border-slate-200 text-xs text-slate-700 bg-slate-50 rounded-lg hover:bg-slate-100 font-bold flex items-center gap-1">
-                                Spalte löschen
-                            </button>
-                        </div>
-                    </div>
-
-                    <div class="overflow-x-auto border border-slate-200 rounded-xl max-h-96">
-                        <table class="w-full text-left border-collapse font-mono text-xs">
-                             <thead>
-                                <tr class="bg-slate-50 border-b border-secondary">
-                                    <th class="px-4 py-3 text-slate-400 text-[10px] w-24 uppercase">Gruppe ID</th>
-                                    <th class="px-4 py-3 text-slate-400 text-[10px] w-48 uppercase">Linien / Gruppenname</th>
-                                    <template x-for="col in (getCurrentSub() ? getCurrentSub().columns : [])" :key="col">
-                                        <th class="px-2 py-3 text-center text-slate-500 font-bold" x-text="'M' + col.padStart(2, '0')"></th>
-                                    </template>
-                                    <th class="px-3 py-3 w-10 text-right"></th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <template x-for="(row, rIndex) in (getCurrentSub() ? getCurrentSub().rows : [])" :key="rIndex">
-                                    <tr class="hover:bg-slate-50">
-                                        <td class="px-4 py-3 font-semibold text-slate-600">
-                                            <input type="text" x-model="row.groupId" class="border border-slate-200 rounded px-1.5 py-1 w-20 text-xs font-bold font-mono">
-                                        </td>
-                                        <td class="px-4 py-3">
-                                            <input type="text" x-model="row.groupName" class="border border-slate-200 rounded px-1.5 py-1 w-full text-xs font-sans">
-                                        </td>
-                                        <template x-for="cell in row.cells.filter(c => c.slotKey !== '__grid__')" :key="cell.slotKey">
-                                            <td class="px-2 py-3 text-center">
-                                                <button
-                                                    @click="paintCell(cell)"
-                                                    class="inline-flex flex-col items-center justify-center p-1.5 rounded transition min-w-10 border border-dashed border-slate-200"
-                                                    :class="cell.value === 'Def.' ? 'bg-red-50 text-red-600 border border-red-200' : (cell.value ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-slate-50 text-slate-400 hover:bg-slate-100')"
-                                                >
-                                                    <span class="text-[9px] font-semibold tracking-wider opacity-60" x-text="cell.detectorType"></span>
-                                                    <span class="text-xs font-bold mt-0.5" x-text="cell.value || '•'"></span>
-                                                </button>
-                                            </td>
-                                        </template>
-                                        <td class="px-3 py-3 text-right">
-                                            <button @click="removeEditorRow(rIndex)" class="p-1 hover:text-red-600 text-slate-300">
-                                                <i data-lucide="trash" class="w-4.5 h-4.5"></i>
-                                            </button>
-                                        </td>
-                                    </tr>
-                                </template>
-                            </tbody>
-                        </table>
-                    </div>
-                    <button @click="addEditorRow()" class="px-4 py-2.5 bg-slate-50 hover:bg-slate-100 border border-dashed border-slate-300 text-xs text-slate-600 rounded-xl w-full font-semibold flex items-center justify-center gap-1.5">
-                        <i data-lucide="plus" class="w-4 h-4"></i>
-                        <span>Meldergruppe manuell anlegen</span>
-                    </button>
-                </div>
             </div>
 
             <!-- Modal and actions -->

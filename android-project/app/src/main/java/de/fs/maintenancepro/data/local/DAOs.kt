@@ -11,6 +11,18 @@ interface ProtocolDao {
     @Query("SELECT * FROM protocols WHERE id = :id")
     suspend fun getProtocolById(id: String): ProtocolEntity?
 
+    @Query("SELECT COUNT(*) FROM protocols")
+    suspend fun count(): Int
+
+    @Query("""
+        SELECT * FROM protocols WHERE
+        LOWER(name) LIKE LOWER(:pat) OR
+        LOWER(address) LIKE LOWER(:pat) OR
+        LOWER(contractNumber) LIKE LOWER(:pat)
+        ORDER BY name ASC
+    """)
+    suspend fun search(pat: String): List<ProtocolEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertOrUpdate(protocol: ProtocolEntity)
 
