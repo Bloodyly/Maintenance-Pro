@@ -278,15 +278,21 @@ def protocols_search():
     """, (cq,))
     conn.commit()
 
+    has_cells_subq = "EXISTS(SELECT 1 FROM group_cells gc WHERE gc.protocol_id = protocols.id)"
     if query:
         search_pattern = f"%{query}%"
-        cursor.execute("""
-            SELECT id, name, address, contract_number, interval, system_type, status
+        cursor.execute(f"""
+            SELECT id, name, address, contract_number, interval, system_type, status,
+                   ({has_cells_subq}) AS has_cells
             FROM protocols
             WHERE LOWER(name) LIKE ? OR LOWER(address) LIKE ? OR LOWER(contract_number) LIKE ?
         """, (search_pattern, search_pattern, search_pattern))
     else:
-        cursor.execute("SELECT id, name, address, contract_number, interval, system_type, status FROM protocols")
+        cursor.execute(f"""
+            SELECT id, name, address, contract_number, interval, system_type, status,
+                   ({has_cells_subq}) AS has_cells
+            FROM protocols
+        """)
 
     records = cursor.fetchall()
     conn.close()
@@ -301,7 +307,8 @@ def protocols_search():
             "interval": r["interval"],
             "system_type": r["system_type"],
             "status": r["status"],
-            "is_live": is_protocol_live(r["id"])
+            "is_live": is_protocol_live(r["id"]),
+            "has_cells": bool(r["has_cells"])
         })
 
     encrypted_resp = encrypt_payload(json.dumps(results), SERVER_CODEWORD)
@@ -359,46 +366,69 @@ def protocol_download(id):
     groups = cursor.fetchall()
     
     rows_data = []
+    grid_n_cols = 0  # track for column definition
     for g in groups:
         cursor.execute("SELECT * FROM group_cells WHERE protocol_id = ? AND group_id = ?", (id, g["group_id"]))
         cells = cursor.fetchall()
-        cells_list = []
-        for c in cells:
-            if c["slot_key"] == "__grid__" and c["detector_type"] == "GRID_V1":
-                # Expand grid matrix into flat cells so the app can render them directly
-                try:
-                    grid_data = json.loads(c["value"])
-                    types_map = grid_data.get("types", {})
-                    values_map = grid_data.get("values", {})
-                    for slot_key, det_type in types_map.items():
-                        cells_list.append({
-                            "slot_key": slot_key,
+        grid_cell = next((c for c in cells if c["slot_key"] == "__grid__" and c["detector_type"] == "GRID_V1"), None)
+        if grid_cell:
+            # Expand full grid matrix: groups list + row_col keyed types/values
+            try:
+                gd = json.loads(grid_cell["value"])
+                groups_list = gd.get("groups", [])
+                n_cols = gd.get("n_cols", 0)
+                types_map = gd.get("types", {})
+                values_map = gd.get("values", {})
+                grid_n_cols = max(grid_n_cols, n_cols)
+                for row_idx, grp_info in enumerate(groups_list, 1):
+                    grp_num = str(grp_info[0]) if grp_info else str(row_idx)
+                    grp_name = str(grp_info[1]) if len(grp_info) > 1 else ""
+                    row_cells = []
+                    for col_idx in range(1, n_cols + 1):
+                        key = f"{row_idx}_{col_idx}"
+                        det_type = types_map.get(key, "-")
+                        row_cells.append({
+                            "slot_key": str(col_idx),
                             "detector_type": det_type,
-                            "value": values_map.get(slot_key, "")
+                            "value": values_map.get(key, "")
                         })
-                except Exception:
-                    pass
-            else:
-                cells_list.append({
-                    "slot_key": c["slot_key"],
-                    "detector_type": c["detector_type"],
-                    "value": c["value"]
+                    rows_data.append({
+                        "group_id": grp_num,
+                        "group_name": grp_name,
+                        "group_type": "NAM",
+                        "anlage_id": g.get("anlage_id", "") or "",
+                        "anlage_name": g.get("anlage_name", "") or "",
+                        "anlage_type": g.get("anlage_type", "") or "",
+                        "cells": row_cells
+                    })
+            except Exception:
+                pass
+        else:
+            # Flat (non-grid) cells
+            flat_cells = [{"slot_key": c["slot_key"], "detector_type": c["detector_type"], "value": c["value"]}
+                          for c in cells if c["slot_key"] != "__grid__"]
+            if flat_cells:
+                rows_data.append({
+                    "group_id": g["group_id"],
+                    "group_name": g["group_name"],
+                    "group_type": g.get("group_type", "NAM"),
+                    "anlage_id": g.get("anlage_id", "") or "",
+                    "anlage_name": g.get("anlage_name", "") or "",
+                    "anlage_type": g.get("anlage_type", "") or "",
+                    "cells": flat_cells
                 })
-        if not cells_list:
-            continue  # Skip groups with no renderable cells
-        rows_data.append({
-            "group_id": g["group_id"],
-            "group_name": g["group_name"],
-            "group_type": g.get("group_type", "NAM"),
-            "anlage_id": g.get("anlage_id", "") or "",
-            "anlage_name": g.get("anlage_name", "") or "",
-            "anlage_type": g.get("anlage_type", "") or "",
-            "cells": cells_list
-        })
     
     conn.close()
     
-    # Form protocol.json data
+    # Build column definitions: for grid protocols use grid_n_cols, otherwise use DB columns
+    if grid_n_cols > 0:
+        col_keys = [str(i) for i in range(1, grid_n_cols + 1)]
+    else:
+        try:
+            col_keys = json.loads(p["columns"])
+        except Exception:
+            col_keys = []
+
     protocol_json = {
         "protocol_id": p["id"],
         "client_name": p["name"],
@@ -406,7 +436,7 @@ def protocol_download(id):
         "interval": p["interval"],
         "system_type": p["system_type"],
         "definition": {
-            "columns": [{"key": c, "label": f"Slot {c}"} for c in json.loads(p["columns"])],
+            "columns": [{"key": c, "label": str(c)} for c in col_keys],
             "applicable_values": [{"value": v, "label": v, "is_defect": v == "Def."} for v in json.loads(p["applicable_values"])],
             "detector_types": json.loads(p["detector_types"])
         },
@@ -658,56 +688,70 @@ def _build_protocol_sync_payload(cursor, p):
     groups = cursor.fetchall()
 
     rows_data = []
+    sync_n_cols = 0
     for g in groups:
         cursor.execute(
             "SELECT slot_key, detector_type, value, updated_at FROM group_cells "
             "WHERE protocol_id = ? AND group_id = ?", (p_id, g["group_id"])
         )
         cells = cursor.fetchall()
-        if not cells:
-            continue
-        expanded_cells = []
-        for c in cells:
-            if c["slot_key"] == "__grid__" and c["detector_type"] == "GRID_V1":
-                try:
-                    grid_data = json.loads(c["value"])
-                    types_map = grid_data.get("types", {})
-                    values_map = grid_data.get("values", {})
-                    ts = c["updated_at"] or 0
-                    for slot_key, det_type in types_map.items():
-                        expanded_cells.append({
-                            "slot_key": slot_key,
+        grid_cell = next((c for c in cells if c["slot_key"] == "__grid__" and c["detector_type"] == "GRID_V1"), None)
+        if grid_cell:
+            try:
+                gd = json.loads(grid_cell["value"])
+                groups_list = gd.get("groups", [])
+                n_cols = gd.get("n_cols", 0)
+                types_map = gd.get("types", {})
+                values_map = gd.get("values", {})
+                ts = grid_cell["updated_at"] or 0
+                sync_n_cols = max(sync_n_cols, n_cols)
+                for row_idx, grp_info in enumerate(groups_list, 1):
+                    grp_num = str(grp_info[0]) if grp_info else str(row_idx)
+                    grp_name = str(grp_info[1]) if len(grp_info) > 1 else ""
+                    row_cells = []
+                    for col_idx in range(1, n_cols + 1):
+                        key = f"{row_idx}_{col_idx}"
+                        det_type = types_map.get(key, "-")
+                        row_cells.append({
+                            "slot_key": str(col_idx),
                             "detector_type": det_type,
-                            "value": values_map.get(slot_key, ""),
+                            "value": values_map.get(key, ""),
                             "updated_at": ts
                         })
-                except Exception:
-                    pass
-            else:
-                expanded_cells.append({
-                    "slot_key": c["slot_key"],
-                    "detector_type": c["detector_type"],
-                    "value": c["value"],
-                    "updated_at": c["updated_at"] or 0
+                    rows_data.append({
+                        "group_id": grp_num,
+                        "group_name": grp_name,
+                        "group_type": "NAM",
+                        "anlage_id": g["anlage_id"] if "anlage_id" in g.keys() else "",
+                        "anlage_name": g["anlage_name"] if "anlage_name" in g.keys() else "",
+                        "anlage_type": g["anlage_type"] if "anlage_type" in g.keys() else "",
+                        "anlage_interval": (g["anlage_interval"] if "anlage_interval" in g.keys() else "") or "Halbjährlich",
+                        "cells": row_cells
+                    })
+            except Exception:
+                pass
+        else:
+            flat = [{"slot_key": c["slot_key"], "detector_type": c["detector_type"],
+                     "value": c["value"], "updated_at": c["updated_at"] or 0}
+                    for c in cells if c["slot_key"] != "__grid__"]
+            if flat:
+                rows_data.append({
+                    "group_id": g["group_id"],
+                    "group_name": g["group_name"],
+                    "group_type": g["group_type"] or "NAM",
+                    "anlage_id": g["anlage_id"] if "anlage_id" in g.keys() else "",
+                    "anlage_name": g["anlage_name"] if "anlage_name" in g.keys() else "",
+                    "anlage_type": g["anlage_type"] if "anlage_type" in g.keys() else "",
+                    "anlage_interval": (g["anlage_interval"] if "anlage_interval" in g.keys() else "") or "Halbjährlich",
+                    "cells": flat
                 })
-        if not expanded_cells:
-            continue
-        rows_data.append({
-            "group_id": g["group_id"],
-            "group_name": g["group_name"],
-            "group_type": g["group_type"] or "NAM",
-            "anlage_id": g["anlage_id"] if "anlage_id" in g.keys() else "default",
-            "anlage_name": g["anlage_name"] if "anlage_name" in g.keys() else "",
-            "anlage_type": g["anlage_type"] if "anlage_type" in g.keys() else "",
-            "anlage_interval": (g["anlage_interval"] if "anlage_interval" in g.keys() else "") or "Halbjährlich",
-            "cells": expanded_cells
-        })
-
-    if not rows_data:
-        return None
 
     try:
-        cols = [{"key": c, "label": f"Slot {c}"} for c in json.loads(p["columns"])]
+        if sync_n_cols > 0:
+            col_keys = [str(i) for i in range(1, sync_n_cols + 1)]
+        else:
+            col_keys = json.loads(p["columns"])
+        cols = [{"key": c, "label": str(c)} for c in col_keys]
         app_vals = [{"value": v, "label": v, "is_defect": v == "Def."} for v in json.loads(p["applicable_values"])]
         det_types = json.loads(p["detector_types"])
     except Exception:

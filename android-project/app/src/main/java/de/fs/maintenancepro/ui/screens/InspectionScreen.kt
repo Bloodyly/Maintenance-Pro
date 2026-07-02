@@ -87,11 +87,6 @@ fun InspectionScreen(
                 val o = colsObj.getJSONObject(i)
                 ColumnModel(o.getString("key"), o.getString("label"))
             }
-            val appValsObj = def.getJSONArray("applicable_values")
-            val applicableValues = List(appValsObj.length()) { i ->
-                val o = appValsObj.getJSONObject(i)
-                ValueModel(o.getString("value"), o.getString("label"), o.optBoolean("is_defect", false))
-            }
             val rowsObj = root.getJSONArray("rows")
             val rows = List(rowsObj.length()) { i ->
                 val rowO = rowsObj.getJSONObject(i)
@@ -103,43 +98,60 @@ fun InspectionScreen(
                         detectorType = cellO.getString("detector_type"),
                         value = cellO.optString("value", "")
                     )
-                }.filter { it.slotKey != "__grid__" } // skip raw grid sentinel (server should expand, but guard here)
+                }.filter { it.slotKey != "__grid__" }
                 RowModel(
                     groupId = rowO.getString("group_id"),
-                    groupName = rowO.optString("anlage_name", "").ifBlank {
-                        rowO.optString("group_name", "")
+                    groupName = rowO.optString("group_name", "").ifBlank {
+                        rowO.optString("anlage_name", "")
                     },
                     cells = cells
                 )
-            }.filter { it.cells.isNotEmpty() } // skip groups that have no renderable cells
-            Triple(columns, rows, applicableValues)
+            }.filter { it.cells.isNotEmpty() }
+            Pair(columns, rows)
         } catch (e: Exception) {
-            Triple(emptyList<ColumnModel>(), emptyList<RowModel>(), emptyList<ValueModel>())
+            Pair(emptyList<ColumnModel>(), emptyList<RowModel>())
         }
     }
 
     val columnsList = tableData.first
     val rowsList = tableData.second
-    val applicableValuesList = tableData.third
+
+    // Derive period-based applicable values from interval, ignoring server-provided list
+    val (periodValues, defaultPeriod) = remember(intervalText) {
+        val month = java.util.Calendar.getInstance().get(java.util.Calendar.MONTH) + 1
+        when {
+            intervalText.contains("Vierteljährlich", ignoreCase = true) -> {
+                val q = (month - 1) / 3 + 1
+                listOf(
+                    ValueModel("Q1", "Q1", false), ValueModel("Q2", "Q2", false),
+                    ValueModel("Q3", "Q3", false), ValueModel("Q4", "Q4", false),
+                    ValueModel("Def.", "Def.", true)
+                ) to "Q$q"
+            }
+            intervalText.contains("Halbjährlich", ignoreCase = true) -> {
+                val h = if (month <= 6) "H1" else "H2"
+                listOf(
+                    ValueModel("H1", "H1", false), ValueModel("H2", "H2", false),
+                    ValueModel("Def.", "Def.", true)
+                ) to h
+            }
+            else -> { // Jährlich or anything else
+                listOf(ValueModel("J", "J", false), ValueModel("Def.", "Def.", true)) to "J"
+            }
+        }
+    }
 
     // Selected Row GRP for expanding into the rich hardware details sub-table below the main table
     var selectedGroupIdForSubTable by remember { mutableStateOf<String?>(null) }
 
-    // Active Selection Choice (H1, H2, Q1, Def etc.)
-    var activeSelectVal by remember { mutableStateOf("H1") }
+    // Active Selection Choice — preselected to the current period (Q3 in Jul-Sep, H2 in Jul-Dec, etc.)
+    var activeSelectVal by remember(defaultPeriod) { mutableStateOf(defaultPeriod) }
     var expandedFabMenu by remember { mutableStateOf(false) }
 
     // Pinch-to-zoom factor support (replaces XML library Zoom behavior natively on GPU layers)
     var zoomScale by remember { mutableStateOf(1.0f) }
     val transformState = rememberTransformableState { zoomChange, _, _ ->
         zoomScale = (zoomScale * zoomChange).coerceIn(0.6f, 1.8f)
-    }
-
-    // Synchronize default selection value based on loaded definitions
-    LaunchedEffect(applicableValuesList) {
-        if (applicableValuesList.isNotEmpty()) {
-            activeSelectVal = applicableValuesList.first().value
-        }
     }
 
     val totalColumns = columnsList.size
@@ -187,7 +199,7 @@ fun InspectionScreen(
                                 modifier = Modifier.padding(8.dp),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                applicableValuesList.forEach { valModel ->
+                                periodValues.forEach { valModel ->
                                     val isSelected = activeSelectVal == valModel.value
 
                                     Box(
@@ -234,10 +246,7 @@ fun InspectionScreen(
                         elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            var activeLabel = activeSelectVal
-                            applicableValuesList.find { it.value == activeSelectVal }?.let {
-                                activeLabel = it.label
-                            }
+                            val activeLabel = periodValues.find { it.value == activeSelectVal }?.label ?: activeSelectVal
                             Text(text = "Aktion: $activeLabel", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         }
                     }

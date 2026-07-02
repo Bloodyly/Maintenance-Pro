@@ -18,6 +18,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import dagger.hilt.android.AndroidEntryPoint
@@ -39,10 +40,15 @@ class MainActivity : ComponentActivity() {
                 // Bottom Tab selection state
                 var selectedTab by remember { mutableStateOf(0) }
 
+                // Hide bottom navigation bar when inside InspectionScreen
+                val navBackStackEntry by navController.currentBackStackEntryAsState()
+                val currentRoute = navBackStackEntry?.destination?.route ?: ""
+                val showBottomBar = !currentRoute.startsWith("inspection/") && !currentRoute.startsWith("edit/")
+
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
                     bottomBar = {
-                        NavigationBar(containerColor = LightSurfaceLow) {
+                        if (showBottomBar) NavigationBar(containerColor = LightSurfaceLow) {
                             NavigationBarItem(
                                 selected = selectedTab == 0,
                                 onClick = {

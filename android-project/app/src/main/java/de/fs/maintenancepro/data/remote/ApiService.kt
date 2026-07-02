@@ -70,7 +70,8 @@ data class ProtocolItemDto(
     val interval: String,
     val system_type: String,
     val status: String,
-    val is_live: Boolean? = false
+    val is_live: Boolean? = false,
+    val has_cells: Boolean = true
 )
 
 data class UploadResponseDto(val status: String, val version: Int, val message: String)

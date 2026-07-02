@@ -42,13 +42,19 @@ fun SearchScreen(
     var filterSystemType by remember { mutableStateOf("Alle") }
     var sortByOption by remember { mutableStateOf("Kunde (Name)") }
     var showCompleted by remember { mutableStateOf(false) }
+    var showWithoutCells by remember { mutableStateOf(false) }
     var activeDetailsPayload by remember { mutableStateOf<String?>(null) }
 
-    val filteredItems = remember(searchResults, localProtocols, filterSystemType, sortByOption, showCompleted) {
+    val filteredItems = remember(searchResults, localProtocols, filterSystemType, sortByOption, showCompleted, showWithoutCells) {
         var list = searchResults.map { item ->
             val local = localProtocols.find { it.id == item.id }
             if (local != null) item.copy(status = local.localStatus) else item
         }
+        // Default: hide protocols without Auslöseliste
+        if (!showWithoutCells) {
+            list = list.filter { it.has_cells }
+        }
+        // Hide synchronized/erledigte unless toggled on
         if (!showCompleted) {
             list = list.filter { it.status != "synchronized" }
         }
@@ -172,6 +178,12 @@ fun SearchScreen(
                         onClick = { showCompleted = !showCompleted },
                         label = { Text("Erledigte", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
                     )
+
+                    FilterChip(
+                        selected = showWithoutCells,
+                        onClick = { showWithoutCells = !showWithoutCells },
+                        label = { Text("Ohne Liste", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                    )
                 }
             }
 
@@ -188,9 +200,7 @@ fun SearchScreen(
                         item = item,
                         localEntity = localEntity,
                         onEdit = { onNavigateToInspection(item.id) },
-                        onDownloadAndEdit = {
-                            viewModel.downloadProtocol(item)
-                        },
+                        onDownloadAndEdit = { viewModel.downloadProtocol(item) },
                         onShowDetails = {
                             if (localEntity != null) activeDetailsPayload = localEntity.decryptedPayloadJson
                         }
@@ -222,6 +232,7 @@ private fun SearchProtocolCard(
 ) {
     val isLocal = localEntity != null
     val isLive = item.is_live == true
+    val hasCells = item.has_cells
 
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
@@ -299,37 +310,49 @@ private fun SearchProtocolCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (isLocal) {
-                    Button(
-                        onClick = onEdit,
-                        colors = ButtonDefaults.buttonColors(containerColor = IndustrialPrimary),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("Anpassen", fontWeight = FontWeight.Bold)
+                when {
+                    !hasCells -> {
+                        // No Auslöseliste on server — nothing to open
+                        Text(
+                            text = "Keine Auslöseliste",
+                            fontSize = 12.sp,
+                            color = IndustrialOutline,
+                            fontWeight = FontWeight.Medium
+                        )
                     }
-                } else {
-                    OutlinedButton(
-                        onClick = onDownloadAndEdit,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = IndustrialPrimary),
-                        shape = RoundedCornerShape(8.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, IndustrialPrimary)
-                    ) {
-                        Text("Laden", fontWeight = FontWeight.Bold)
+                    isLocal -> {
+                        Button(
+                            onClick = onEdit,
+                            colors = ButtonDefaults.buttonColors(containerColor = IndustrialPrimary),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("Anpassen", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    else -> {
+                        OutlinedButton(
+                            onClick = onDownloadAndEdit,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = IndustrialPrimary),
+                            shape = RoundedCornerShape(8.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, IndustrialPrimary)
+                        ) {
+                            Text("Laden", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
 
                 IconButton(
                     onClick = onShowDetails,
-                    enabled = isLocal,
+                    enabled = isLocal && hasCells,
                     modifier = Modifier
                         .size(40.dp)
-                        .border(1.dp, if (isLocal) IndustrialOutlineVariant else IndustrialOutlineVariant.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                        .border(1.dp, if (isLocal && hasCells) IndustrialOutlineVariant else IndustrialOutlineVariant.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
                         .background(Color.White, RoundedCornerShape(8.dp))
                 ) {
                     Icon(
                         imageVector = Icons.Default.Info,
                         contentDescription = "Ansehen",
-                        tint = if (isLocal) IndustrialPrimary else IndustrialOutline.copy(alpha = 0.4f),
+                        tint = if (isLocal && hasCells) IndustrialPrimary else IndustrialOutline.copy(alpha = 0.4f),
                         modifier = Modifier.size(20.dp)
                     )
                 }
