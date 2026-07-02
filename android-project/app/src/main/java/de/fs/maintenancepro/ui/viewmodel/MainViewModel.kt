@@ -57,6 +57,9 @@ class MainViewModel @Inject constructor(
     private val _searchResults = MutableStateFlow<List<ProtocolItemDto>>(emptyList())
     val searchResults: StateFlow<List<ProtocolItemDto>> = _searchResults
 
+    private val _isSyncing = MutableStateFlow(false)
+    val isSyncing: StateFlow<Boolean> = _isSyncing
+
     private val _liveModusEnabled = MutableStateFlow(false)
     val liveModusEnabled: StateFlow<Boolean> = _liveModusEnabled
 
@@ -151,6 +154,34 @@ class MainViewModel @Inject constructor(
             try {
                 apiService.resetProtocolStatus(id)
             } catch (_: Exception) {}
+        }
+    }
+
+    /** Pull-only delta sync: holt Änderungen vom Server, lädt nichts hoch. */
+    fun pullServerUpdates() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (_isOffline.value || _isSyncing.value) return@launch
+            _isSyncing.value = true
+            try {
+                // Refresh search results from server
+                searchRemoteProtocols(_searchQuery.value)
+
+                // Update status of locally cached protocols from server delta
+                val response = apiService.syncDelta(SyncDeltaRequestDto(since = 0L))
+                if (response.isSuccessful && response.body() != null) {
+                    for (proto in response.body()!!.protocols) {
+                        val existing = protocolDao.getProtocolById(proto.id) ?: continue
+                        // Only overwrite status if server has reset it (e.g. new quarter)
+                        if (existing.localStatus == "synchronized" && proto.status == "ready_to_download") {
+                            protocolDao.insertOrUpdate(existing.copy(localStatus = "ready_to_download"))
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // Offline or unreachable — search will show cached results
+            } finally {
+                _isSyncing.value = false
+            }
         }
     }
 

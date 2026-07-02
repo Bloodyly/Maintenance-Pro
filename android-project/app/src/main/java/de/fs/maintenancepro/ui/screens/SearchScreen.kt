@@ -1,20 +1,14 @@
 package de.fs.maintenancepro.ui.screens
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CloudDownload
-import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
@@ -23,12 +17,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import de.fs.maintenancepro.R
+import de.fs.maintenancepro.data.local.ProtocolEntity
 import de.fs.maintenancepro.data.remote.ProtocolItemDto
 import de.fs.maintenancepro.ui.components.StatusHeaderBadge
 import de.fs.maintenancepro.ui.theme.*
@@ -42,60 +34,53 @@ fun SearchScreen(
     onNavigateToSettings: () -> Unit
 ) {
     val searchQuery by viewModel.searchQuery.collectAsState()
-    val isOffline by viewModel.isOffline.collectAsState()
-    val liveModusEnabled by viewModel.liveModusEnabled.collectAsState()
     val searchResults by viewModel.searchResults.collectAsState()
     val localProtocols by viewModel.protocols.collectAsState(initial = emptyList())
-    var activeDetailsPayload by remember { mutableStateOf<String?>(null) }
+    val isSyncing by viewModel.isSyncing.collectAsState()
 
     var showFilterOptions by remember { mutableStateOf(false) }
     var filterSystemType by remember { mutableStateOf("Alle") }
     var sortByOption by remember { mutableStateOf("Kunde (Name)") }
     var showCompleted by remember { mutableStateOf(false) }
+    var activeDetailsPayload by remember { mutableStateOf<String?>(null) }
 
     val filteredItems = remember(searchResults, localProtocols, filterSystemType, sortByOption, showCompleted) {
         var list = searchResults.map { item ->
-            val localItem = localProtocols.find { it.id == item.id }
-            if (localItem != null) {
-                item.copy(status = localItem.localStatus)
-            } else {
-                item
-            }
+            val local = localProtocols.find { it.id == item.id }
+            if (local != null) item.copy(status = local.localStatus) else item
         }
-
-        // Default: hide already completed (synchronized) protocols
         if (!showCompleted) {
             list = list.filter { it.status != "synchronized" }
         }
-
-        // Filter system type local
         if (filterSystemType != "Alle") {
             list = list.filter { it.system_type == filterSystemType }
         }
-
-        // Sort option local
         list = when (sortByOption) {
             "Adresse" -> list.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.address })
             "Vertragsnummer" -> list.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.contract_number })
             else -> list.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
         }
-
         list
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.title_search), color = IndustrialPrimary, fontWeight = FontWeight.Bold) },
+                title = { Text("Suche", color = IndustrialPrimary, fontWeight = FontWeight.Bold) },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White),
                 navigationIcon = {
-                    IconButton(onClick = { viewModel.processSyncQueue() }) {
-                        Icon(Icons.Default.Sync, contentDescription = null, tint = IndustrialPrimary)
+                    IconButton(
+                        onClick = { viewModel.pullServerUpdates() },
+                        enabled = !isSyncing
+                    ) {
+                        if (isSyncing) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = IndustrialPrimary)
+                        } else {
+                            Icon(Icons.Default.Sync, contentDescription = "Aktualisieren", tint = IndustrialPrimary)
+                        }
                     }
                 },
-                actions = {
-                    StatusHeaderBadge(viewModel)
-                }
+                actions = { StatusHeaderBadge(viewModel) }
             )
         },
         containerColor = IndustrialBackground
@@ -105,7 +90,7 @@ fun SearchScreen(
                 .padding(innerPadding)
                 .fillMaxSize()
         ) {
-            // Search Input Row
+            // Search + Filter bar
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -125,9 +110,9 @@ fun SearchScreen(
                         focusedContainerColor = Color.White,
                         unfocusedContainerColor = Color.White,
                         focusedBorderColor = IndustrialPrimary
-                    )
+                    ),
+                    singleLine = true
                 )
-
                 IconButton(
                     onClick = { showFilterOptions = !showFilterOptions },
                     modifier = Modifier
@@ -139,69 +124,49 @@ fun SearchScreen(
                 }
             }
 
-            // Quick Filters Bar
             if (showFilterOptions) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(LightSurfaceLow)
                         .padding(horizontal = 12.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // System Type Selector
                     var typeExpanded by remember { mutableStateOf(false) }
                     Box {
                         Button(
                             onClick = { typeExpanded = true },
                             colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.DarkGray),
-                            border = BorderStroke(1.dp, IndustrialOutlineVariant),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, IndustrialOutlineVariant),
                             shape = RoundedCornerShape(20.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                             modifier = Modifier.height(32.dp)
-                        ) {
-                            Text("Typ: $filterSystemType", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
+                        ) { Text("Typ: $filterSystemType", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
                         DropdownMenu(expanded = typeExpanded, onDismissRequest = { typeExpanded = false }) {
                             listOf("Alle", "BMA", "EMA", "ELA", "LIRA", "SLA").forEach { t ->
-                                DropdownMenuItem(
-                                    text = { Text(t) },
-                                    onClick = {
-                                        filterSystemType = t
-                                        typeExpanded = false
-                                    }
-                                )
+                                DropdownMenuItem(text = { Text(t) }, onClick = { filterSystemType = t; typeExpanded = false })
                             }
                         }
                     }
 
-                    // Sort By Selector
                     var sortExpanded by remember { mutableStateOf(false) }
                     Box {
                         Button(
                             onClick = { sortExpanded = true },
                             colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.DarkGray),
-                            border = BorderStroke(1.dp, IndustrialOutlineVariant),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, IndustrialOutlineVariant),
                             shape = RoundedCornerShape(20.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                             modifier = Modifier.height(32.dp)
-                        ) {
-                            Text("Sort: $sortByOption", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
+                        ) { Text("Sort: $sortByOption", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
                         DropdownMenu(expanded = sortExpanded, onDismissRequest = { sortExpanded = false }) {
                             listOf("Kunde (Name)", "Adresse", "Vertragsnummer").forEach { s ->
-                                DropdownMenuItem(
-                                    text = { Text(s) },
-                                    onClick = {
-                                        sortByOption = s
-                                        sortExpanded = false
-                                    }
-                                )
+                                DropdownMenuItem(text = { Text(s) }, onClick = { sortByOption = s; sortExpanded = false })
                             }
                         }
                     }
 
-                    // Erledigte anzeigen toggle
                     FilterChip(
                         selected = showCompleted,
                         onClick = { showCompleted = !showCompleted },
@@ -214,28 +179,26 @@ fun SearchScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
                 contentPadding = PaddingValues(vertical = 16.dp)
             ) {
-                items(filteredItems) { item ->
-                    ProtocolCard(
+                items(filteredItems, key = { it.id }) { item ->
+                    val localEntity = localProtocols.find { it.id == item.id }
+                    SearchProtocolCard(
                         item = item,
-                        isLiveEditing = (liveModusEnabled && item.is_live == true),
-                        onDownload = { viewModel.downloadProtocol(item) },
+                        localEntity = localEntity,
                         onEdit = { onNavigateToInspection(item.id) },
+                        onDownloadAndEdit = {
+                            viewModel.downloadProtocol(item)
+                        },
                         onShowDetails = {
-                            val local = localProtocols.find { it.id == item.id }
-                            if (local != null) {
-                                activeDetailsPayload = local.decryptedPayloadJson
-                            }
+                            if (localEntity != null) activeDetailsPayload = localEntity.decryptedPayloadJson
                         }
                     )
                 }
 
                 if (filteredItems.isEmpty()) {
-                    item {
-                        EmptyStateItem()
-                    }
+                    item { SearchEmptyState() }
                 }
             }
         }
@@ -250,45 +213,50 @@ fun SearchScreen(
 }
 
 @Composable
-fun ProtocolCard(
+private fun SearchProtocolCard(
     item: ProtocolItemDto,
-    isLiveEditing: Boolean = false,
-    onDownload: () -> Unit,
+    localEntity: ProtocolEntity?,
     onEdit: () -> Unit,
-    onShowDetails: () -> Unit = {}
+    onDownloadAndEdit: () -> Unit,
+    onShowDetails: () -> Unit
 ) {
-    Card(
+    val isLocal = localEntity != null
+    val isLive = item.is_live == true
+
+    ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
-        border = BorderStroke(2.dp, IndustrialOutlineVariant)
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+
+            // Header: name + system type badge
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.Top
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(text = item.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, color = IndustrialOnSurface)
+                    Text(
+                        text = item.name,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = IndustrialOnSurface
+                    )
                     Text(text = item.address, style = MaterialTheme.typography.labelMedium, color = IndustrialOutline)
                 }
-                
-                Spacer(modifier = Modifier.width(8.dp))
-
-                // System Type Badge
                 Box(
                     modifier = Modifier
                         .background(IndustrialPrimaryContainer, RoundedCornerShape(4.dp))
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
-                    Text(text = item.system_type, color = IndustrialOnPrimaryContainer, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text(text = item.system_type, color = IndustrialOnPrimaryContainer, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
-            if (isLiveEditing) {
+            // Live-Warnung
+            if (isLive) {
+                Spacer(Modifier.height(8.dp))
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -298,120 +266,72 @@ fun ProtocolCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Warning,
-                        contentDescription = null,
-                        tint = Color(0xFFEF4444),
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Text(
-                        text = "Dieses Protokoll wird gerade live von einem Kollegen bearbeitet!",
-                        color = Color(0xFFB91C1C),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(14.dp))
+                    Text("Wird gerade von einem Kollegen bearbeitet", color = Color(0xFFB91C1C), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
 
-            // Divider dashed style simulated
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(1.dp)
-                    .background(IndustrialOutlineVariant)
-            )
+            Spacer(Modifier.height(10.dp))
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
+            // Contract number + status
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Column {
-                    Text(text = "VERTRAGSNUMMER", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = IndustrialOutline)
-                    Text(text = item.contract_number, style = MaterialTheme.typography.labelMedium)
+                    Text("VERTRAGSNUMMER", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = IndustrialOutline)
+                    Text(text = item.contract_number, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                 }
-                Column {
-                    Text(text = "WARTUNGSINTERVALL", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = IndustrialOutline)
-                    Text(text = item.interval, style = MaterialTheme.typography.labelMedium)
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("STATUS", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = IndustrialOutline)
+                    val (statusText, statusColor) = when (item.status) {
+                        "upload_pending" -> "Upload ausstehend" to Color(0xFFB45309)
+                        "synchronized"   -> "Erledigt" to Color(0xFF15803D)
+                        "downloaded"     -> "Geladen" to IndustrialPrimary
+                        else             -> "Verfügbar" to IndustrialOutline
+                    }
+                    Text(text = statusText, style = MaterialTheme.typography.labelMedium, color = statusColor, fontWeight = FontWeight.Bold)
                 }
             }
 
+            Spacer(Modifier.height(12.dp))
+
+            // Action buttons
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                when (item.status) {
-                    "ready_to_download" -> {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.clickable { onDownload() }
-                        ) {
-                            Icon(Icons.Default.CloudDownload, contentDescription = null, tint = IndustrialOutline)
-                            Text(text = stringResource(R.string.status_ready_to_download), style = MaterialTheme.typography.labelMedium, color = IndustrialOutline)
-                        }
-                        
-                        Button(
-                            onClick = onDownload,
-                            colors = ButtonDefaults.buttonColors(containerColor = IndustrialPrimary),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Icon(Icons.Default.Download, contentDescription = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text(stringResource(R.string.btn_download), fontWeight = FontWeight.Bold)
-                        }
+                if (isLocal) {
+                    Button(
+                        onClick = onEdit,
+                        colors = ButtonDefaults.buttonColors(containerColor = IndustrialPrimary),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Anpassen", fontWeight = FontWeight.Bold)
                     }
-                    "downloaded", "upload_pending" -> {
-                        Box(
-                            modifier = Modifier
-                                .background(Color(0xFFDCFCE7), RoundedCornerShape(4.dp))
-                                .padding(horizontal = 12.dp, vertical = 8.dp)
-                        ) {
-                            Text(
-                                text = if (item.status == "upload_pending") "Ausstehend" else stringResource(R.string.status_downloaded),
-                                color = IndustrialGreen,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
+                } else {
+                    OutlinedButton(
+                        onClick = onDownloadAndEdit,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = IndustrialPrimary),
+                        shape = RoundedCornerShape(8.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, IndustrialPrimary)
+                    ) {
+                        Text("Laden", fontWeight = FontWeight.Bold)
+                    }
+                }
 
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            IconButton(
-                                onClick = onShowDetails,
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .border(1.dp, IndustrialOutlineVariant, RoundedCornerShape(8.dp))
-                                    .background(Color.White, RoundedCornerShape(8.dp))
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Info,
-                                    contentDescription = "Details",
-                                    tint = IndustrialPrimary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-
-                            Button(
-                                onClick = onEdit,
-                                colors = ButtonDefaults.buttonColors(containerColor = IndustrialPrimary),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text("Bearbeiten", fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-                    else -> { // Synchronized
-                        Text(text = "Synchronisiert (12.05.)", style = MaterialTheme.typography.labelMedium, color = IndustrialOutline)
-                        Button(
-                            onClick = {},
-                            enabled = false,
-                            colors = ButtonDefaults.buttonColors(containerColor = IndustrialOutlineVariant)
-                        ) {
-                            Text(stringResource(R.string.status_archived))
-                        }
-                    }
+                IconButton(
+                    onClick = onShowDetails,
+                    enabled = isLocal,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .border(1.dp, if (isLocal) IndustrialOutlineVariant else IndustrialOutlineVariant.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                        .background(Color.White, RoundedCornerShape(8.dp))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = "Ansehen",
+                        tint = if (isLocal) IndustrialPrimary else IndustrialOutline.copy(alpha = 0.4f),
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
             }
         }
@@ -419,15 +339,16 @@ fun ProtocolCard(
 }
 
 @Composable
-fun EmptyStateItem() {
+private fun SearchEmptyState() {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 32.dp),
+            .padding(vertical = 48.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Icon(Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(48.dp), tint = IndustrialOutline)
-        Text(text = stringResource(R.string.empty_results), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(48.dp), tint = IndustrialOutline)
+        Text("Keine Anlagen gefunden", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = IndustrialOnSurface)
+        Text("Suchbegriff anpassen oder Aktualisieren tippen", fontSize = 13.sp, color = IndustrialOutline)
     }
 }
