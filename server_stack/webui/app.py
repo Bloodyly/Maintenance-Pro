@@ -278,7 +278,7 @@ def get_protocols():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    defect_subq = "EXISTS(SELECT 1 FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.slot_key != '__grid__' AND (gc.value = 'Def.' OR gc.value = 'Fehler'))"
+    defect_subq = "EXISTS(SELECT 1 FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.slot_key NOT IN ('__grid__', '__rows__') AND (gc.value = 'Def.' OR gc.value = 'Fehler'))"
 
     # Build active-type SQL placeholders (parameterised)
     if active_types:
@@ -347,8 +347,8 @@ def get_protocols():
             p.last_edited_by, p.last_edited_at,
             CASE WHEN {defect_subq} THEN 1 ELSE 0 END AS has_defect,
             {device_summary_subq} AS device_summary,
-            (SELECT COUNT(*) FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.slot_key != '__grid__' AND gc.value != '' AND gc.value IS NOT NULL) AS filled_cells,
-            (SELECT COUNT(*) FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.slot_key != '__grid__') AS total_cells
+            (SELECT COUNT(*) FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.slot_key NOT IN ('__grid__', '__rows__') AND gc.value != '' AND gc.value IS NOT NULL) AS filled_cells,
+            (SELECT COUNT(*) FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.slot_key NOT IN ('__grid__', '__rows__')) AS total_cells
         FROM protocols p
         {main_where}
         ORDER BY p.name COLLATE NOCASE
@@ -438,8 +438,8 @@ def get_protocol_detail(p_id):
         cells = cursor.fetchall()
         cells_list = []
         for c in cells:
-            if c["slot_key"] == "__grid__":
-                continue  # Grid data belongs in the cells editor, not the structure editor
+            if c["slot_key"] in ("__grid__", "__rows__"):
+                continue  # Matrix/registry metadata belongs in the cells editor, not the structure editor
             cells_list.append({
                 "slotKey": c["slot_key"],
                 "detectorType": c["detector_type"],
@@ -493,12 +493,13 @@ def get_protocol_detail(p_id):
             if c["slotKey"] not in sub_systems_map[a_id]["columns"]:
                 sub_systems_map[a_id]["columns"].append(c["slotKey"])
 
-    # Pre-fetch cell stats per group for progress display (flat format only)
+    # Pre-fetch cell stats per group for progress display (real Melder rows only --
+    # excludes both the legacy compact grid blob and the unified format's registry cell)
     cursor.execute(
         "SELECT group_id, COUNT(*) as total, "
         "SUM(CASE WHEN value != '' AND value IS NOT NULL THEN 1 ELSE 0 END) as filled, "
         "SUM(CASE WHEN value IN ('Def.', 'Fehler') THEN 1 ELSE 0 END) as defects "
-        "FROM group_cells WHERE protocol_id = ? AND slot_key != '__grid__' GROUP BY group_id",
+        "FROM group_cells WHERE protocol_id = ? AND slot_key NOT IN ('__grid__', '__rows__') GROUP BY group_id",
         (p_id,)
     )
     cell_stats_by_group = {row["group_id"]: dict(row) for row in cursor.fetchall()}
@@ -932,6 +933,166 @@ def api_delete_anlagentyp(type_id):
 
 # ----------------- CELLS (AUSLÖSELISTEN) API -----------------
 
+# ── Unified per-device storage ──────────────────────────────────────────────────
+#
+# One protocol_groups row = one Gerät (a whole system, e.g. "BMA Hauptgebäude"),
+# regardless of source (TAIFUN import, ETB import, manual drawing). Its internal
+# Melder-Gruppen live in group_cells under that SAME group_id: a '__rows__' cell
+# holds the registry [[grp_num, grp_name], ...], and every real Melder is its own
+# row keyed slot_key = "{grp_num}_{melder_nr}" with its own value/type/updated_at.
+#
+# Mirrors netlink/main.py's identical helpers -- kept in sync manually since webui
+# and netlink are separate deployables that only share the SQLite file, not code.
+
+def _device_registry(cursor, protocol_id, group_id):
+    """Returns (registry, cells) for one device, lazily migrating legacy storage
+    (GRID_V1 blob or old flat single-index cells) to the unified format in place."""
+    cursor.execute(
+        "SELECT slot_key, detector_type, value, updated_at FROM group_cells WHERE protocol_id = ? AND group_id = ?",
+        (protocol_id, group_id)
+    )
+    cells = cursor.fetchall()
+    if not cells:
+        return [], []
+
+    registry_cell = next((c for c in cells if c["slot_key"] == "__rows__"), None)
+    if registry_cell:
+        try:
+            registry = json.loads(registry_cell["value"])
+        except Exception:
+            registry = []
+        return registry, [c for c in cells if c["slot_key"] != "__rows__"]
+
+    now = int(datetime.now().timestamp())
+    grid_cell = next((c for c in cells if c["slot_key"] == "__grid__" and c["detector_type"] == "GRID_V1"), None)
+
+    if grid_cell:
+        try:
+            gd = json.loads(grid_cell["value"])
+        except Exception:
+            return [], []
+        groups_list = gd.get("groups", [])
+        types_map = gd.get("types", {})
+        values_map = gd.get("values", {})
+        n_cols = gd.get("n_cols", 0)
+
+        registry = [[str(g[0]) if g else str(i), str(g[1]) if len(g) > 1 else ""] for i, g in enumerate(groups_list, 1)]
+        for row_idx, g in enumerate(groups_list, 1):
+            grp_num = str(g[0]) if g else str(row_idx)
+            for col_idx in range(1, n_cols + 1):
+                key = f"{row_idx}_{col_idx}"
+                det_type = types_map.get(key, "-")
+                val = values_map.get(key, "")
+                if det_type == "-" and not val:
+                    continue
+                cursor.execute("""
+                    INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(protocol_id, group_id, slot_key) DO NOTHING
+                """, (protocol_id, group_id, f"{grp_num}_{col_idx}", det_type, val, now))
+        cursor.execute(
+            "DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = '__grid__'",
+            (protocol_id, group_id)
+        )
+    else:
+        registry = [["1", ""]]
+        old_slot_keys = [c["slot_key"] for c in cells]
+        for c in cells:
+            cursor.execute("""
+                INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(protocol_id, group_id, slot_key) DO NOTHING
+            """, (protocol_id, group_id, f"1_{c['slot_key']}", c["detector_type"], c["value"], c["updated_at"] or now))
+        for old_key in old_slot_keys:
+            cursor.execute(
+                "DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = ?",
+                (protocol_id, group_id, old_key)
+            )
+
+    cursor.execute(
+        "INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at) "
+        "VALUES (?, ?, '__rows__', '-', ?, ?) "
+        "ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET value = EXCLUDED.value",
+        (protocol_id, group_id, json.dumps(registry), now)
+    )
+    cursor.execute(
+        "SELECT slot_key, detector_type, value, updated_at FROM group_cells WHERE protocol_id = ? AND group_id = ?",
+        (protocol_id, group_id)
+    )
+    cells = cursor.fetchall()
+    return registry, [c for c in cells if c["slot_key"] != "__rows__"]
+
+
+def _device_registry_to_grid(registry, cells):
+    """Rebuilds the {v,n_groups,n_cols,groups,types,values} grid JSON shape the WebUI's
+    grid-drawing editor expects, from the unified per-device storage."""
+    cells_by_grp = {}
+    for c in cells:
+        if "_" not in c["slot_key"]:
+            continue
+        grp_num, melder_nr = c["slot_key"].split("_", 1)
+        cells_by_grp.setdefault(grp_num, {})[melder_nr] = c
+
+    n_cols = 0
+    types, values = {}, {}
+    for row_idx, entry in enumerate(registry, 1):
+        grp_num = str(entry[0])
+        for melder_nr, c in cells_by_grp.get(grp_num, {}).items():
+            try:
+                col_idx = int(melder_nr)
+            except ValueError:
+                continue
+            n_cols = max(n_cols, col_idx)
+            key = f"{row_idx}_{col_idx}"
+            if c["detector_type"] and c["detector_type"] != "-":
+                types[key] = c["detector_type"]
+            if c["value"]:
+                values[key] = c["value"]
+
+    return {
+        "v": 1,
+        "n_groups": len(registry),
+        "n_cols": n_cols or 8,
+        "groups": [[str(g[0]), g[1] if len(g) > 1 else ""] for g in registry],
+        "types": types,
+        "values": values,
+    }
+
+
+def _grid_to_device_registry(cursor, protocol_id, group_id, grid):
+    """Persists a {groups,types,values} grid JSON (WebUI grid editor or ETB import
+    preview) into the unified per-device storage under the SAME device group_id --
+    never creates a new top-level protocol_groups row, so one Gerät stays one Gerät."""
+    groups_list = grid.get("groups", [])
+    types_map = grid.get("types", {})
+    values_map = grid.get("values", {})
+    n_cols = grid.get("n_cols", 0)
+    now = int(datetime.now().timestamp())
+
+    registry = [[str(g[0]) if g else str(i), str(g[1]) if len(g) > 1 else ""] for i, g in enumerate(groups_list, 1)]
+
+    cursor.execute("DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ?", (protocol_id, group_id))
+    cursor.execute(
+        "INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at) "
+        "VALUES (?, ?, '__rows__', '-', ?, ?)",
+        (protocol_id, group_id, json.dumps(registry), now)
+    )
+    for row_idx, g in enumerate(groups_list, 1):
+        grp_num = str(g[0]) if g else str(row_idx)
+        for col_idx in range(1, n_cols + 1):
+            key = f"{row_idx}_{col_idx}"
+            det_type = types_map.get(key, "-")
+            val = values_map.get(key, "")
+            if det_type == "-" and not val:
+                continue
+            cursor.execute(
+                "INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (protocol_id, group_id, f"{grp_num}_{col_idx}", det_type, val, now)
+            )
+    return len(registry)
+
+
 @app.route("/api/cells/<protocol_id>/<group_id>", methods=["GET"])
 def get_cells(protocol_id, group_id):
     conn = get_db_connection()
@@ -945,11 +1106,9 @@ def get_cells(protocol_id, group_id):
         conn.close()
         return jsonify({"success": False, "error": "Gerät nicht gefunden."}), 404
 
-    cursor.execute(
-        "SELECT slot_key, detector_type, value FROM group_cells WHERE protocol_id = ? AND group_id = ? ORDER BY CAST(slot_key AS INTEGER)",
-        (protocol_id, group_id)
-    )
-    rows = cursor.fetchall()
+    registry, cells = _device_registry(cursor, protocol_id, group_id)
+    conn.commit()  # persist any lazy migration performed while reading
+    grid_data = _device_registry_to_grid(registry, cells)
     conn.close()
 
     anlage_type = dev["anlage_type"] or "BMA"
@@ -966,33 +1125,10 @@ def get_cells(protocol_id, group_id):
                 mp_def = at.get("meldepunkt_definitionen")
                 break
 
-    # Check for grid format row
-    grid_row = next((r for r in rows if r["slot_key"] == "__grid__" and r["detector_type"] == "GRID_V1"), None)
-    if grid_row:
-        try:
-            grid_data = json.loads(grid_row["value"])
-            return jsonify({
-                "success": True,
-                "format": "grid",
-                "grid": grid_data,
-                "group_name": dev["group_name"],
-                "anlage_type": anlage_type,
-                "anlage_interval": dev["anlage_interval"] or "Halbjährlich",
-                "meldepunkt_definitionen": mp_def
-            })
-        except Exception:
-            pass  # Fall through to flat format if JSON parse fails
-
-    # Flat format (legacy)
-    cells = []
-    for c in rows:
-        if c["slot_key"] != "__grid__":
-            cells.append({"slot_key": c["slot_key"], "detector_type": c["detector_type"], "value": c["value"] or ""})
-
     return jsonify({
         "success": True,
-        "format": "flat",
-        "cells": cells,
+        "format": "grid",
+        "grid": grid_data,
         "group_name": dev["group_name"],
         "anlage_type": anlage_type,
         "anlage_interval": dev["anlage_interval"] or "Halbjährlich",
@@ -1007,32 +1143,21 @@ def save_cells(protocol_id, group_id):
     cursor = conn.cursor()
     try:
         if "grid" in data:
-            # Grid format: store as single __grid__ GRID_V1 row
-            grid_json = json.dumps(data["grid"], ensure_ascii=False)
-            cursor.execute(
-                "DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = '__grid__'",
-                (protocol_id, group_id)
-            )
-            cursor.execute("""
-                INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
-                VALUES (?, ?, '__grid__', 'GRID_V1', ?, ?)
-            """, (protocol_id, group_id, grid_json, int(datetime.now().timestamp())))
-            conn.commit()
-            conn.close()
-            return jsonify({"success": True, "count": 1})
+            count = _grid_to_device_registry(cursor, protocol_id, group_id, data["grid"])
         else:
-            # Flat format (legacy): DELETE all + re-INSERT
+            # Flat list of cells (legacy client state) -> one default Melder-Gruppe "1"
             cells = data.get("cells", [])
-            cursor.execute("DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ?", (protocol_id, group_id))
-            for c in cells:
-                cursor.execute("""
-                    INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (protocol_id, group_id, c["slot_key"], c["detector_type"], c.get("value", ""),
-                      int(datetime.now().timestamp())))
-            conn.commit()
-            conn.close()
-            return jsonify({"success": True, "count": len(cells)})
+            numeric_keys = [int(c["slot_key"]) for c in cells if str(c.get("slot_key", "")).isdigit()]
+            grid = {
+                "groups": [["1", ""]],
+                "n_cols": max(numeric_keys, default=len(cells)),
+                "types": {f"1_{c['slot_key']}": c["detector_type"] for c in cells if c.get("detector_type", "-") != "-"},
+                "values": {f"1_{c['slot_key']}": c.get("value", "") for c in cells if c.get("value")},
+            }
+            count = _grid_to_device_registry(cursor, protocol_id, group_id, grid)
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "count": count})
     except Exception as e:
         conn.rollback()
         conn.close()

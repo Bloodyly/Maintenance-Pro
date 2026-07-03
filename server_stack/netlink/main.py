@@ -17,50 +17,199 @@ def current_quarter() -> str:
     return f"{today.year}-Q{q}"
 
 
-def load_grid_owners(cursor, protocol_id):
-    """
-    Finds every GRID_V1 compact-matrix cell belonging to this protocol and returns, for
-    each, its parsed JSON blob plus a {grp_num -> row_idx} lookup so incoming expanded
-    rows/cells (which use the grid's internal row numbers as group_id, see
-    protocol_download) can be mapped back to where they live inside the blob.
-    """
-    cursor.execute("""
-        SELECT pg.group_id, gc.value
-        FROM protocol_groups pg
-        JOIN group_cells gc ON gc.protocol_id = pg.protocol_id AND gc.group_id = pg.group_id
-        WHERE pg.protocol_id = ? AND gc.slot_key = '__grid__' AND gc.detector_type = 'GRID_V1'
-    """, (protocol_id,))
-    owners = []
-    for row in cursor.fetchall():
+# ── Unified per-device storage ──────────────────────────────────────────────────
+#
+# One protocol_groups row = one "Gerät" (a whole system, e.g. "BMA Hauptgebäude"),
+# regardless of where it came from (TAIFUN import, ETB import, manual entry). Its
+# internal Melder-Gruppen live entirely inside group_cells under that SAME group_id:
+#   - a '__rows__' cell holds the registry [[grp_num, grp_name], ...]
+#   - every real Melder is its own row: slot_key = f"{grp_num}_{melder_nr}",
+#     each with its own detector_type/value/updated_at for correct delta-sync.
+#
+# On the wire (download/sync to the app), each Melder-Gruppe still appears as its own
+# row for the app's grid UI, with group_id namespaced as "{device_group_id}::{grp_num}"
+# so an upload can be routed back to the exact device+group deterministically, with no
+# guessing/scanning needed.
+
+def _device_registry(cursor, protocol_id, group_id):
+    """Returns (registry: [[grp_num, grp_name], ...], other_cells: [Row]) for one device,
+    lazily migrating legacy storage (GRID_V1 blob or old flat single-index cells) to the
+    unified format in place the first time it's touched."""
+    cursor.execute(
+        "SELECT slot_key, detector_type, value, updated_at FROM group_cells WHERE protocol_id = ? AND group_id = ?",
+        (protocol_id, group_id)
+    )
+    cells = cursor.fetchall()
+    if not cells:
+        return [], []
+
+    registry_cell = next((c for c in cells if c["slot_key"] == "__rows__"), None)
+    if registry_cell:
         try:
-            gd = json.loads(row["value"])
+            registry = json.loads(registry_cell["value"])
         except Exception:
-            continue
-        row_idx_by_grp_num = {}
-        for i, info in enumerate(gd.get("groups", []), 1):
-            grp_num = str(info[0]) if info else str(i)
-            row_idx_by_grp_num[grp_num] = i
-        owners.append({"group_id": row["group_id"], "grid": gd, "row_idx_by_grp_num": row_idx_by_grp_num})
-    return owners
+            registry = []
+        return registry, [c for c in cells if c["slot_key"] != "__rows__"]
 
+    # Not yet unified -- migrate lazily, once, in place.
+    now = int(datetime.utcnow().timestamp() * 1000)
+    grid_cell = next((c for c in cells if c["slot_key"] == "__grid__" and c["detector_type"] == "GRID_V1"), None)
 
-def find_grid_owner_for_group(owners, group_id):
-    """Returns (owner, row_idx) if `group_id` is one of a grid's internal row numbers."""
-    g_id = str(group_id)
-    for owner in owners:
-        row_idx = owner["row_idx_by_grp_num"].get(g_id)
-        if row_idx is not None:
-            return owner, row_idx
-    return None, None
+    if grid_cell:
+        try:
+            gd = json.loads(grid_cell["value"])
+        except Exception:
+            return [], []
+        groups_list = gd.get("groups", [])
+        types_map = gd.get("types", {})
+        values_map = gd.get("values", {})
+        n_cols = gd.get("n_cols", 0)
 
-
-def save_grid_owners(cursor, protocol_id, owners):
-    """Persists any grids that were merged into back to their single compact cell."""
-    for owner in owners:
+        registry = [[str(g[0]) if g else str(i), str(g[1]) if len(g) > 1 else ""] for i, g in enumerate(groups_list, 1)]
+        for row_idx, g in enumerate(groups_list, 1):
+            grp_num = str(g[0]) if g else str(row_idx)
+            for col_idx in range(1, n_cols + 1):
+                key = f"{row_idx}_{col_idx}"
+                det_type = types_map.get(key, "-")
+                val = values_map.get(key, "")
+                if det_type == "-" and not val:
+                    continue
+                cursor.execute("""
+                    INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(protocol_id, group_id, slot_key) DO NOTHING
+                """, (protocol_id, group_id, f"{grp_num}_{col_idx}", det_type, val, now))
         cursor.execute(
-            "UPDATE group_cells SET value = ? WHERE protocol_id = ? AND group_id = ? AND slot_key = '__grid__'",
-            (json.dumps(owner["grid"]), protocol_id, owner["group_id"])
+            "DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = '__grid__'",
+            (protocol_id, group_id)
         )
+    else:
+        # Legacy flat device: a single row of simple-indexed cells becomes Melder-Gruppe "1".
+        registry = [["1", ""]]
+        old_slot_keys = [c["slot_key"] for c in cells]
+        for c in cells:
+            cursor.execute("""
+                INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(protocol_id, group_id, slot_key) DO NOTHING
+            """, (protocol_id, group_id, f"1_{c['slot_key']}", c["detector_type"], c["value"], c["updated_at"] or now))
+        for old_key in old_slot_keys:
+            cursor.execute(
+                "DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = ?",
+                (protocol_id, group_id, old_key)
+            )
+
+    cursor.execute(
+        "INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at) "
+        "VALUES (?, ?, '__rows__', '-', ?, ?) "
+        "ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET value = EXCLUDED.value",
+        (protocol_id, group_id, json.dumps(registry), now)
+    )
+    cursor.execute(
+        "SELECT slot_key, detector_type, value, updated_at FROM group_cells WHERE protocol_id = ? AND group_id = ?",
+        (protocol_id, group_id)
+    )
+    cells = cursor.fetchall()
+    return registry, [c for c in cells if c["slot_key"] != "__rows__"]
+
+
+def build_device_rows_payload(cursor, protocol_id):
+    """Expands every device of a protocol into wire-format rows (one per Melder-Gruppe),
+    namespacing group_id as '{device_group_id}::{grp_num}'. Returns (rows_data, max_cols)."""
+    cursor.execute("SELECT * FROM protocol_groups WHERE protocol_id = ?", (protocol_id,))
+    devices = cursor.fetchall()
+
+    rows_data = []
+    max_cols = 0
+
+    for dev in devices:
+        registry, cells = _device_registry(cursor, protocol_id, dev["group_id"])
+        if not registry:
+            continue  # empty shell (e.g. TAIFUN-created device with no Auslöseliste yet)
+
+        cells_by_grp = {}
+        for c in cells:
+            if "_" not in c["slot_key"]:
+                continue
+            grp_num, melder_nr = c["slot_key"].split("_", 1)
+            cells_by_grp.setdefault(grp_num, []).append((melder_nr, c))
+
+        for grp_num, grp_name in registry:
+            grp_num = str(grp_num)
+            row_cells = []
+            for melder_nr, c in cells_by_grp.get(grp_num, []):
+                row_cells.append({
+                    "slot_key": melder_nr,
+                    "detector_type": c["detector_type"],
+                    "value": c["value"],
+                    "updated_at": c["updated_at"] or 0
+                })
+            max_cols = max(max_cols, len(row_cells))
+            rows_data.append({
+                "group_id": f"{dev['group_id']}::{grp_num}",
+                "group_name": grp_name,
+                "group_type": (dev["group_type"] if "group_type" in dev.keys() else "") or "NAM",
+                "anlage_id": (dev["anlage_id"] if "anlage_id" in dev.keys() else "") or "",
+                "anlage_name": (dev["anlage_name"] if "anlage_name" in dev.keys() else "") or "",
+                "anlage_type": (dev["anlage_type"] if "anlage_type" in dev.keys() else "") or "",
+                "anlage_interval": (dev["anlage_interval"] if "anlage_interval" in dev.keys() else "") or "",
+                "cells": row_cells
+            })
+
+    return rows_data, max_cols
+
+
+def apply_wire_row_to_device(cursor, protocol_id, wire_group_id, cells, group_name=None):
+    """
+    Writes an uploaded wire-row's cells back into the owning device's unified storage.
+    `wire_group_id` is "{device_group_id}::{grp_num}" as produced by
+    build_device_rows_payload -- no scanning/guessing needed to find the owner.
+    `cells` is a list of dicts with slot_key/detector_type/value(/updated_at).
+    Returns True if applied, False if wire_group_id wasn't in the expected shape.
+    """
+    if "::" not in str(wire_group_id):
+        return False
+    device_group_id, grp_num = str(wire_group_id).split("::", 1)
+
+    registry, _ = _device_registry(cursor, protocol_id, device_group_id)
+    existing = next((g for g in registry if str(g[0]) == grp_num), None)
+    registry_changed = False
+    if existing is None:
+        registry.append([grp_num, group_name or ""])
+        registry_changed = True
+    elif group_name is not None and existing[1] != group_name:
+        existing[1] = group_name
+        registry_changed = True
+
+    if registry_changed:
+        # Device may not have any cells yet at all (e.g. a brand-new TAIFUN device
+        # with no Auslöseliste) -- upsert rather than UPDATE so the registry cell
+        # is created if it's missing, not just updated if present.
+        cursor.execute("""
+            INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
+            VALUES (?, ?, '__rows__', '-', ?, ?)
+            ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET value = EXCLUDED.value
+        """, (protocol_id, device_group_id, json.dumps(registry), int(datetime.utcnow().timestamp() * 1000)))
+
+    for cell in cells:
+        slot_key = f"{grp_num}_{cell.get('slot_key')}"
+        det_type = cell.get("detector_type", "-")
+        val = cell.get("value", "")
+        ts = cell.get("updated_at")
+        if ts is not None:
+            cursor.execute("""
+                INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(protocol_id, group_id, slot_key)
+                DO UPDATE SET detector_type = EXCLUDED.detector_type, value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+            """, (protocol_id, device_group_id, slot_key, det_type, val, ts))
+        else:
+            cursor.execute("""
+                INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET detector_type = EXCLUDED.detector_type, value = EXCLUDED.value
+            """, (protocol_id, device_group_id, slot_key, det_type, val))
+    return True
 
 
 app = Flask(__name__)
@@ -408,68 +557,15 @@ def protocol_download(id):
         conn.close()
         return jsonify({"error": "PROTOCOL_NOT_FOUND", "message": "Das gesuchte Protokoll existiert nicht."}), 404
         
-    # Fetch rows
-    cursor.execute("SELECT * FROM protocol_groups WHERE protocol_id = ?", (id,))
-    groups = cursor.fetchall()
-    
-    rows_data = []
-    grid_n_cols = 0  # track for column definition
-    for g in groups:
-        cursor.execute("SELECT * FROM group_cells WHERE protocol_id = ? AND group_id = ?", (id, g["group_id"]))
-        cells = cursor.fetchall()
-        grid_cell = next((c for c in cells if c["slot_key"] == "__grid__" and c["detector_type"] == "GRID_V1"), None)
-        if grid_cell:
-            # Expand full grid matrix: groups list + row_col keyed types/values
-            try:
-                gd = json.loads(grid_cell["value"])
-                groups_list = gd.get("groups", [])
-                n_cols = gd.get("n_cols", 0)
-                types_map = gd.get("types", {})
-                values_map = gd.get("values", {})
-                grid_n_cols = max(grid_n_cols, n_cols)
-                for row_idx, grp_info in enumerate(groups_list, 1):
-                    grp_num = str(grp_info[0]) if grp_info else str(row_idx)
-                    grp_name = str(grp_info[1]) if len(grp_info) > 1 else ""
-                    row_cells = []
-                    for col_idx in range(1, n_cols + 1):
-                        key = f"{row_idx}_{col_idx}"
-                        det_type = types_map.get(key, "-")
-                        row_cells.append({
-                            "slot_key": str(col_idx),
-                            "detector_type": det_type,
-                            "value": values_map.get(key, "")
-                        })
-                    rows_data.append({
-                        "group_id": grp_num,
-                        "group_name": grp_name,
-                        "group_type": "NAM",
-                        "anlage_id": (g["anlage_id"] if "anlage_id" in g.keys() else "") or "",
-                        "anlage_name": (g["anlage_name"] if "anlage_name" in g.keys() else "") or "",
-                        "anlage_type": (g["anlage_type"] if "anlage_type" in g.keys() else "") or "",
-                        "cells": row_cells
-                    })
-            except Exception:
-                pass
-        else:
-            # Flat (non-grid) cells
-            flat_cells = [{"slot_key": c["slot_key"], "detector_type": c["detector_type"], "value": c["value"]}
-                          for c in cells if c["slot_key"] != "__grid__"]
-            if flat_cells:
-                rows_data.append({
-                    "group_id": g["group_id"],
-                    "group_name": g["group_name"],
-                    "group_type": (g["group_type"] if "group_type" in g.keys() else "") or "NAM",
-                    "anlage_id": (g["anlage_id"] if "anlage_id" in g.keys() else "") or "",
-                    "anlage_name": (g["anlage_name"] if "anlage_name" in g.keys() else "") or "",
-                    "anlage_type": (g["anlage_type"] if "anlage_type" in g.keys() else "") or "",
-                    "cells": flat_cells
-                })
-    
+    # Every device (Gerät) expands into one wire-row per Melder-Gruppe; storage is
+    # unified regardless of source (TAIFUN/ETB/manual) -- see build_device_rows_payload.
+    rows_data, max_cols = build_device_rows_payload(cursor, id)
+    conn.commit()  # persist any lazy migration performed while reading
     conn.close()
-    
-    # Build column definitions: for grid protocols use grid_n_cols, otherwise use DB columns
-    if grid_n_cols > 0:
-        col_keys = [str(i) for i in range(1, grid_n_cols + 1)]
+
+    # Build column definitions: for matrix-style devices use max_cols, otherwise DB columns
+    if max_cols > 0:
+        col_keys = [str(i) for i in range(1, max_cols + 1)]
     else:
         try:
             col_keys = json.loads(p["columns"])
@@ -538,14 +634,6 @@ def protocol_upload(id):
         
     # Transactional Update of values
     try:
-        # ETB/TAIFUN imports can store a whole detector matrix compactly in a single
-        # '__grid__' cell under one protocol_groups row. The client only ever sees/edits
-        # the EXPANDED per-row view (see protocol_download) and uploads that view back
-        # using the grid's internal row numbers as group_id. Those must be merged back
-        # into the compact grid cell, never upserted as their own protocol_groups rows --
-        # otherwise every upload fragments one device into dozens of phantom ones.
-        grid_owners = load_grid_owners(cursor, id)
-
         # Update overall status and timestamp
         formatted_date = datetime.now().strftime("%d.%m.%Y")
         cursor.execute("""
@@ -554,40 +642,18 @@ def protocol_upload(id):
             WHERE id = ?
         """, (auth_details["name"], formatted_date, id))
 
-        # Merge updated rows and cells
+        # Each uploaded row's group_id is namespaced "{device_group_id}::{grp_num}"
+        # (see build_device_rows_payload) so it routes straight back to the exact
+        # device + Melder-Gruppe it belongs to -- never creates a new top-level device.
         for row in rows:
-            g_id = row.get("group_id")
-            g_name = row.get("group_name", "")
-            g_type = row.get("group_type", "NAM")
+            applied = apply_wire_row_to_device(
+                cursor, id, row.get("group_id"), row.get("cells", []), group_name=row.get("group_name")
+            )
+            if not applied:
+                # Not a recognized namespaced id (shouldn't normally happen) -- ignore rather
+                # than silently fragmenting a new top-level device out of a malformed upload.
+                continue
 
-            owner, row_idx = find_grid_owner_for_group(grid_owners, g_id)
-            if owner is not None:
-                types_map = owner["grid"].setdefault("types", {})
-                values_map = owner["grid"].setdefault("values", {})
-                for cell in row.get("cells", []):
-                    key = f"{row_idx}_{cell.get('slot_key')}"
-                    types_map[key] = cell.get("detector_type", types_map.get(key, "-"))
-                    values_map[key] = cell.get("value", "")
-                continue  # absorbed into the compact grid cell -- no standalone row for this
-
-            cursor.execute("""
-                INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(protocol_id, group_id) DO UPDATE SET group_name = EXCLUDED.group_name, group_type = EXCLUDED.group_type
-            """, (id, g_id, g_name, g_type))
-
-            for cell in row.get("cells", []):
-                slot_key = cell.get("slot_key")
-                det_type = cell.get("detector_type", "-")
-                val = cell.get("value", "")
-
-                cursor.execute("""
-                    INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET detector_type = EXCLUDED.detector_type, value = EXCLUDED.value
-                """, (id, g_id, slot_key, det_type, val))
-
-        save_grid_owners(cursor, id, grid_owners)
         conn.commit()
     except Exception as ex:
         conn.rollback()
@@ -646,81 +712,50 @@ def protocols_live_sync(id):
                 merged_cols.append(ck)
         cursor.execute("UPDATE protocols SET columns = ? WHERE id = ?", (json.dumps(merged_cols), id))
         
-    # 2. Merge cells and rows on-the-fly
+    # 2. Merge cells on-the-fly. Each row's group_id is namespaced
+    # "{device_group_id}::{grp_num}" (see build_device_rows_payload) so it routes
+    # straight back to the exact device + Melder-Gruppe -- never creates a new
+    # top-level device. Last-write-wins per cell, same semantics as before.
     rows = client_payload.get("rows", [])
     for row in rows:
         g_id = row.get("group_id")
-        g_name = row.get("group_name", "")
-        g_type = row.get("group_type", "NAM")
-        
-        cursor.execute("""
-            INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(protocol_id, group_id) DO UPDATE SET group_name = EXCLUDED.group_name, group_type = EXCLUDED.group_type
-        """, (id, g_id, g_name, g_type))
-        
+        if "::" not in str(g_id):
+            continue
+        device_group_id, grp_num = str(g_id).split("::", 1)
+
+        cells_to_apply = []
         for cell in row.get("cells", []):
             slot_key = cell.get("slot_key")
             det_type = cell.get("detector_type", "-")
             val = cell.get("value", "")
             up_at = cell.get("updated_at", 0)
-            
-            # Fetch existing cell db values
-            cursor.execute("""
-                SELECT value, updated_at FROM group_cells 
-                WHERE protocol_id = ? AND group_id = ? AND slot_key = ?
-            """, (id, g_id, slot_key))
+
+            cursor.execute(
+                "SELECT value, updated_at FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = ?",
+                (id, device_group_id, f"{grp_num}_{slot_key}")
+            )
             existing_c = cursor.fetchone()
-            
-            should_update = False
-            if not existing_c:
-                should_update = True
-            else:
+            should_update = existing_c is None
+            if existing_c is not None:
                 db_up_at = existing_c["updated_at"] or 0
                 db_val = existing_c["value"] or ""
-                # Update if incoming updated_at is greater
-                if up_at > db_up_at:
+                if up_at > db_up_at or (up_at == db_up_at and val != db_val):
                     should_update = True
-                # If timestamps are identical but values differ, let the non-empty win
-                elif up_at == db_up_at and val != db_val:
-                    should_update = True
-                    
             if should_update:
-                cursor.execute("""
-                    INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(protocol_id, group_id, slot_key) 
-                    DO UPDATE SET detector_type = EXCLUDED.detector_type, value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
-                """, (id, g_id, slot_key, det_type, val, up_at))
-                
+                cells_to_apply.append(cell)
+
+        if cells_to_apply:
+            apply_wire_row_to_device(cursor, id, g_id, cells_to_apply, group_name=row.get("group_name"))
+
     conn.commit()
-    
+
     # 3. Pull newest fresh state out of DBMS
     cursor.execute("SELECT * FROM protocols WHERE id = ?", (id,))
     p = cursor.fetchone()
-    
-    cursor.execute("SELECT * FROM protocol_groups WHERE protocol_id = ?", (id,))
-    groups = cursor.fetchall()
-    
-    rows_data = []
-    for g in groups:
-        cursor.execute("SELECT * FROM group_cells WHERE protocol_id = ? AND group_id = ?", (id, g["group_id"]))
-        cells = cursor.fetchall()
-        cells_list = []
-        for c in cells:
-            cells_list.append({
-                "slot_key": c["slot_key"],
-                "detector_type": c["detector_type"],
-                "value": c["value"],
-                "updated_at": c["updated_at"]
-            })
-        rows_data.append({
-            "group_id": g["group_id"],
-            "group_name": g["group_name"],
-            "group_type": g["group_type"],
-            "cells": cells_list
-        })
-        
+
+    rows_data, _ = build_device_rows_payload(cursor, id)
+    conn.commit()  # persist any lazy migration performed while rebuilding
+
     conn.close()
     
     response_json = {
@@ -750,67 +785,11 @@ def protocols_live_sync(id):
 def _build_protocol_sync_payload(cursor, p):
     """Shared helper: build the full sync payload dict for a protocol row."""
     p_id = p["id"]
-    cursor.execute("SELECT * FROM protocol_groups WHERE protocol_id = ?", (p_id,))
-    groups = cursor.fetchall()
 
-    rows_data = []
-    sync_n_cols = 0
-    for g in groups:
-        cursor.execute(
-            "SELECT slot_key, detector_type, value, updated_at FROM group_cells "
-            "WHERE protocol_id = ? AND group_id = ?", (p_id, g["group_id"])
-        )
-        cells = cursor.fetchall()
-        grid_cell = next((c for c in cells if c["slot_key"] == "__grid__" and c["detector_type"] == "GRID_V1"), None)
-        if grid_cell:
-            try:
-                gd = json.loads(grid_cell["value"])
-                groups_list = gd.get("groups", [])
-                n_cols = gd.get("n_cols", 0)
-                types_map = gd.get("types", {})
-                values_map = gd.get("values", {})
-                ts = grid_cell["updated_at"] or 0
-                sync_n_cols = max(sync_n_cols, n_cols)
-                for row_idx, grp_info in enumerate(groups_list, 1):
-                    grp_num = str(grp_info[0]) if grp_info else str(row_idx)
-                    grp_name = str(grp_info[1]) if len(grp_info) > 1 else ""
-                    row_cells = []
-                    for col_idx in range(1, n_cols + 1):
-                        key = f"{row_idx}_{col_idx}"
-                        det_type = types_map.get(key, "-")
-                        row_cells.append({
-                            "slot_key": str(col_idx),
-                            "detector_type": det_type,
-                            "value": values_map.get(key, ""),
-                            "updated_at": ts
-                        })
-                    rows_data.append({
-                        "group_id": grp_num,
-                        "group_name": grp_name,
-                        "group_type": "NAM",
-                        "anlage_id": g["anlage_id"] if "anlage_id" in g.keys() else "",
-                        "anlage_name": g["anlage_name"] if "anlage_name" in g.keys() else "",
-                        "anlage_type": g["anlage_type"] if "anlage_type" in g.keys() else "",
-                        "anlage_interval": (g["anlage_interval"] if "anlage_interval" in g.keys() else "") or "Halbjährlich",
-                        "cells": row_cells
-                    })
-            except Exception:
-                pass
-        else:
-            flat = [{"slot_key": c["slot_key"], "detector_type": c["detector_type"],
-                     "value": c["value"], "updated_at": c["updated_at"] or 0}
-                    for c in cells if c["slot_key"] != "__grid__"]
-            if flat:
-                rows_data.append({
-                    "group_id": g["group_id"],
-                    "group_name": g["group_name"],
-                    "group_type": g["group_type"] or "NAM",
-                    "anlage_id": g["anlage_id"] if "anlage_id" in g.keys() else "",
-                    "anlage_name": g["anlage_name"] if "anlage_name" in g.keys() else "",
-                    "anlage_type": g["anlage_type"] if "anlage_type" in g.keys() else "",
-                    "anlage_interval": (g["anlage_interval"] if "anlage_interval" in g.keys() else "") or "Halbjährlich",
-                    "cells": flat
-                })
+    # Every device (Gerät) expands into one wire-row per Melder-Gruppe; storage is
+    # unified regardless of source (TAIFUN/ETB/manual) -- see build_device_rows_payload.
+    # (May lazily migrate legacy storage in place -- caller must conn.commit() afterward.)
+    rows_data, sync_n_cols = build_device_rows_payload(cursor, p_id)
 
     try:
         if sync_n_cols > 0:
@@ -860,6 +839,7 @@ def sync_full():
         if payload:
             result.append(payload)
 
+    conn.commit()  # persist any lazy migration performed while reading
     conn.close()
 
     encrypted_resp = encrypt_payload(json.dumps({"sync_version": sync_version, "protocols": result}), SERVER_CODEWORD)
@@ -897,26 +877,14 @@ def sync_delta():
     result = []
     for p in protocols:
         p_id = p["id"]
-        # For delta: only send cells that actually changed since 'since'
-        cursor.execute("SELECT * FROM protocol_groups WHERE protocol_id = ?", (p_id,))
-        groups = cursor.fetchall()
-
+        # Build the full unified payload (also lazily migrates legacy storage), then
+        # keep only cells that actually changed since 'since', dropping empty rows.
+        full_rows, _ = build_device_rows_payload(cursor, p_id)
         rows_data = []
-        for g in groups:
-            cursor.execute(
-                "SELECT slot_key, detector_type, value, updated_at FROM group_cells "
-                "WHERE protocol_id = ? AND group_id = ? AND updated_at > ?",
-                (p_id, g["group_id"], since)
-            )
-            cells = cursor.fetchall()
-            if cells:
-                rows_data.append({
-                    "group_id": g["group_id"],
-                    "group_name": g["group_name"],
-                    "group_type": g["group_type"] or "NAM",
-                    "cells": [{"slot_key": c["slot_key"], "detector_type": c["detector_type"],
-                               "value": c["value"], "updated_at": c["updated_at"] or 0} for c in cells]
-                })
+        for row in full_rows:
+            changed_cells = [c for c in row["cells"] if (c.get("updated_at") or 0) > since]
+            if changed_cells:
+                rows_data.append({**row, "cells": changed_cells})
 
         result.append({
             "id": p["id"], "name": p["name"], "address": p["address"],
@@ -926,6 +894,7 @@ def sync_delta():
             "rows": rows_data,
         })
 
+    conn.commit()  # persist any lazy migration performed while reading
     conn.close()
     encrypted_resp = encrypt_payload(json.dumps({"sync_version": sync_version, "protocols": result}), SERVER_CODEWORD)
     return encrypted_resp, 200
@@ -952,15 +921,10 @@ def sync_upload_cells():
     now = int(datetime.utcnow().timestamp() * 1000)
     updated_protocols = set()
 
-    # Pre-load any legacy GRID_V1 compact matrices, per distinct protocol touched. Cell
-    # changes whose group_id is one of a grid's internal row numbers must be merged back
-    # into that single compact cell, never upserted as their own group_cells row --
-    # otherwise every sync fragments one device into dozens of phantom ones.
-    grid_owners_by_protocol = {
-        pid: load_grid_owners(cursor, pid)
-        for pid in {c.get("protocol_id") for c in changes if c.get("protocol_id")}
-    }
-
+    # Each change's group_id is namespaced "{device_group_id}::{grp_num}" (see
+    # build_device_rows_payload), so it routes straight back to the owning device's
+    # Melder-Gruppe -- last-write-wins per cell is enforced inside apply_wire_row_to_device
+    # via the same ON CONFLICT ... DO UPDATE semantics used elsewhere, keyed by updated_at.
     for change in changes:
         p_id = change.get("protocol_id")
         g_id = change.get("group_id")
@@ -969,33 +933,23 @@ def sync_upload_cells():
         val = change.get("value", "")
         ts = int(change.get("updated_at", now))
 
-        owner, row_idx = find_grid_owner_for_group(grid_owners_by_protocol.get(p_id, []), g_id)
-        if owner is not None:
-            key = f"{row_idx}_{slot}"
-            owner["grid"].setdefault("types", {})[key] = det_type
-            owner["grid"].setdefault("values", {})[key] = val
-            applied += 1
-            updated_protocols.add(p_id)
+        if "::" not in str(g_id):
             continue
+        device_group_id, grp_num = str(g_id).split("::", 1)
+        composite_slot = f"{grp_num}_{slot}"
 
         cursor.execute(
             "SELECT updated_at FROM group_cells WHERE protocol_id=? AND group_id=? AND slot_key=?",
-            (p_id, g_id, slot)
+            (p_id, device_group_id, composite_slot)
         )
         existing = cursor.fetchone()
+        if existing is not None and (existing["updated_at"] or 0) > ts:
+            continue  # a newer value already stored -- last-write-wins keeps it
 
-        if existing is None or (existing["updated_at"] or 0) <= ts:
-            cursor.execute("""
-                INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(protocol_id, group_id, slot_key)
-                DO UPDATE SET detector_type=EXCLUDED.detector_type, value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
-            """, (p_id, g_id, slot, det_type, val, ts))
-            applied += cursor.rowcount
-            updated_protocols.add(p_id)
-
-    for pid, owners in grid_owners_by_protocol.items():
-        save_grid_owners(cursor, pid, owners)
+        applied += apply_wire_row_to_device(
+            cursor, p_id, g_id, [{"slot_key": slot, "detector_type": det_type, "value": val, "updated_at": ts}]
+        )
+        updated_protocols.add(p_id)
 
     formatted_date = datetime.now().strftime("%d.%m.%Y")
     cq = current_quarter()
