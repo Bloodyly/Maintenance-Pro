@@ -75,7 +75,14 @@ fun InspectionScreen(
         try { JSONObject(protocolEntity.decryptedPayloadJson).optString("system_type", "BMA") } catch (e: Exception) { "BMA" }
     }
     val intervalText = remember(protocolEntity.decryptedPayloadJson) {
-        try { JSONObject(protocolEntity.decryptedPayloadJson).optString("interval", "Jährlich") } catch (e: Exception) { "Jährlich" }
+        try {
+            val root = JSONObject(protocolEntity.decryptedPayloadJson)
+            // TAIFUN imports set anlage_interval on rows (e.g. "Quartalsweise") but leave
+            // the contract-level interval at the default "Halbjährlich". Prefer row-level value.
+            val anlagenInterval = root.optJSONArray("rows")?.optJSONObject(0)
+                ?.optString("anlage_interval", "") ?: ""
+            anlagenInterval.ifBlank { root.optString("interval", "Jährlich") }
+        } catch (e: Exception) { "Jährlich" }
     }
 
     val tableData = remember(protocolEntity.decryptedPayloadJson) {
@@ -120,7 +127,9 @@ fun InspectionScreen(
     val (periodValues, defaultPeriod) = remember(intervalText) {
         val month = java.util.Calendar.getInstance().get(java.util.Calendar.MONTH) + 1
         when {
-            intervalText.contains("Vierteljährlich", ignoreCase = true) -> {
+            intervalText.contains("Vierteljährlich", ignoreCase = true) ||
+            intervalText.contains("Quartalsweise", ignoreCase = true) ||
+            intervalText.contains("Quartal", ignoreCase = true) -> {
                 val q = (month - 1) / 3 + 1
                 listOf(
                     ValueModel("Q1", "Q1", false), ValueModel("Q2", "Q2", false),
@@ -135,7 +144,7 @@ fun InspectionScreen(
                     ValueModel("Def.", "Def.", true)
                 ) to h
             }
-            else -> { // Jährlich or anything else
+            else -> { // Jährlich, Monatlich oder unbekannt → J + Def.
                 listOf(ValueModel("J", "J", false), ValueModel("Def.", "Def.", true)) to "J"
             }
         }
@@ -279,15 +288,38 @@ fun InspectionScreen(
                     Text(text = "Intervall: $intervalText", color = IndustrialOutline, fontSize = 12.sp)
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (!protocolEntity.isArchived) {
+                    var showAbschliessenDialog by remember { mutableStateOf(false) }
+
                     Button(
-                        onClick = {
-                            viewModel.synchronizeProtocol(protocolId)
-                            Toast.makeText(context, "Inspektions-Upload gestartet.", Toast.LENGTH_SHORT).show()
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = IndustrialSecondaryContainer, contentColor = IndustrialOnSecondaryContainer)
+                        onClick = { showAbschliessenDialog = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF15803D), contentColor = Color.White),
+                        shape = RoundedCornerShape(8.dp)
                     ) {
-                        Text("Sync Sync", fontWeight = FontWeight.Bold)
+                        Text("Abschließen", fontWeight = FontWeight.Bold)
+                    }
+
+                    if (showAbschliessenDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showAbschliessenDialog = false },
+                            title = { Text("Protokoll abschließen?") },
+                            text = { Text("Alle Einträge werden zum Server übertragen und das Protokoll als erledigt markiert.") },
+                            confirmButton = {
+                                Button(
+                                    onClick = {
+                                        showAbschliessenDialog = false
+                                        viewModel.synchronizeProtocol(protocolId)
+                                        onNavigateBack()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF15803D))
+                                ) { Text("Abschließen") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showAbschliessenDialog = false }) {
+                                    Text("Abbrechen")
+                                }
+                            }
+                        )
                     }
                 }
             }
@@ -357,88 +389,85 @@ fun InspectionScreen(
                 // Dimensions dynamically scaled at layout-level by zoomScale to resolve all scroll issues
                 val cellWidth = (72 * zoomScale).dp
                 val cellHeight = (48 * zoomScale).dp
-                val groupCellWidth = (100 * zoomScale).dp
+                val grpColWidth = (44 * zoomScale).dp        // frozen: group number only
+                val bezeichnungColWidth = (110 * zoomScale).dp  // frozen: group name
                 val headerRowHeight = (44 * zoomScale).dp
 
                 val headerFontSize = (12 * zoomScale).sp
                 val cellFontSize = (11 * zoomScale).sp
                 val subFontSize = (8 * zoomScale).sp
 
-                // 1. LEFT COLUMN: Frozen Row Headers (GRP Corner + Group IDs)
-                Column(
-                    modifier = Modifier
-                        .width(groupCellWidth)
-                        .fillMaxHeight()
-                ) {
-                    // Corner GRP Cell (Frozen left-and-top)
-                    Box(
-                        modifier = Modifier
-                            .width(groupCellWidth)
-                            .height(headerRowHeight)
-                            .background(LightSurfaceHigh)
-                            .border(0.5.dp, IndustrialOutlineVariant)
-                            .padding(horizontal = 12.dp),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        Text(
-                            text = "GRP",
-                            fontWeight = FontWeight.ExtraBold,
-                            color = IndustrialOutline,
-                            fontSize = headerFontSize
-                        )
-                    }
-
-                    // Vertical scrollable Group IDs (synchronized with main vertical scrollbar)
-                    Column(
-                        modifier = Modifier
-                            .width(groupCellWidth)
-                            .weight(1f)
-                            .verticalScroll(verticalScrollState)
-                    ) {
-                        rowsList.forEach { row ->
-                            Box(
-                                modifier = Modifier
-                                    .width(groupCellWidth)
-                                    .height(cellHeight)
-                                    .background(LightSurfaceLow)
-                                    .border(0.5.dp, IndustrialOutlineVariant)
-                                    .clickable {
-                                        if (!protocolEntity.isArchived) {
-                                            val validCells = row.cells.filter { it.detectorType != "-" }
-                                            val targetCells = validCells.filter { it.value.isEmpty() || it.value == activeSelectVal }
-                                            val hasEmptyTargets = targetCells.any { it.value.isEmpty() }
-                                            
-                                            val batchValues = if (hasEmptyTargets) {
-                                                targetCells.filter { it.value.isEmpty() }.associate { it.slotKey to activeSelectVal }
-                                            } else {
-                                                targetCells.filter { it.value == activeSelectVal }.associate { it.slotKey to "" }
-                                            }
-
-                                            if (batchValues.isNotEmpty()) {
-                                                viewModel.batchEditGroupCells(protocolId, row.groupId, batchValues)
-                                            } else {
-                                                Toast.makeText(context, "Keine änderbaren Felder in dieser Reihe", Toast.LENGTH_SHORT).show()
-                                            }
-                                        }
-                                    }
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                                contentAlignment = Alignment.CenterStart
-                            ) {
-                                Column {
+                // 1. LEFT FROZEN COLUMNS: GRP (number) + Bezeichnung (name), both non-scrolling horizontally
+                Row(modifier = Modifier.fillMaxHeight()) {
+                    // 1a. GRP column — narrow, shows group number only
+                    Column(modifier = Modifier.width(grpColWidth).fillMaxHeight()) {
+                        Box(
+                            modifier = Modifier.width(grpColWidth).height(headerRowHeight)
+                                .background(LightSurfaceHigh).border(0.5.dp, IndustrialOutlineVariant),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("GRP", fontWeight = FontWeight.ExtraBold, color = IndustrialOutline, fontSize = headerFontSize)
+                        }
+                        Column(modifier = Modifier.width(grpColWidth).weight(1f).verticalScroll(verticalScrollState)) {
+                            rowsList.forEach { row ->
+                                Box(
+                                    modifier = Modifier.width(grpColWidth).height(cellHeight)
+                                        .background(LightSurfaceLow).border(0.5.dp, IndustrialOutlineVariant),
+                                    contentAlignment = Alignment.Center
+                                ) {
                                     Text(
                                         text = row.groupId,
                                         fontWeight = FontWeight.Bold,
                                         color = IndustrialPrimary,
                                         fontSize = cellFontSize
                                     )
-                                    if (row.groupName.isNotBlank()) {
-                                        Text(
-                                            text = row.groupName,
-                                            color = IndustrialOutline,
-                                            fontSize = (cellFontSize.value * 0.8f).sp,
-                                            maxLines = 1
-                                        )
-                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 1b. Bezeichnung column — shows group name, clickable for batch-fill
+                    Column(modifier = Modifier.width(bezeichnungColWidth).fillMaxHeight()) {
+                        Box(
+                            modifier = Modifier.width(bezeichnungColWidth).height(headerRowHeight)
+                                .background(LightSurfaceHigh).border(0.5.dp, IndustrialOutlineVariant)
+                                .padding(horizontal = 8.dp),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            Text("Bezeichnung", fontWeight = FontWeight.ExtraBold, color = IndustrialOutline, fontSize = headerFontSize)
+                        }
+                        Column(modifier = Modifier.width(bezeichnungColWidth).weight(1f).verticalScroll(verticalScrollState)) {
+                            rowsList.forEach { row ->
+                                Box(
+                                    modifier = Modifier
+                                        .width(bezeichnungColWidth).height(cellHeight)
+                                        .background(LightSurfaceLow).border(0.5.dp, IndustrialOutlineVariant)
+                                        .clickable {
+                                            if (!protocolEntity.isArchived) {
+                                                val validCells = row.cells.filter { it.detectorType != "-" }
+                                                val targetCells = validCells.filter { it.value.isEmpty() || it.value == activeSelectVal }
+                                                val hasEmptyTargets = targetCells.any { it.value.isEmpty() }
+                                                val batchValues = if (hasEmptyTargets) {
+                                                    targetCells.filter { it.value.isEmpty() }.associate { it.slotKey to activeSelectVal }
+                                                } else {
+                                                    targetCells.filter { it.value == activeSelectVal }.associate { it.slotKey to "" }
+                                                }
+                                                if (batchValues.isNotEmpty()) {
+                                                    viewModel.batchEditGroupCells(protocolId, row.groupId, batchValues)
+                                                } else {
+                                                    Toast.makeText(context, "Keine änderbaren Felder in dieser Reihe", Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        }
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    contentAlignment = Alignment.CenterStart
+                                ) {
+                                    Text(
+                                        text = row.groupName.ifBlank { "—" },
+                                        color = IndustrialOnSurface,
+                                        fontSize = cellFontSize,
+                                        maxLines = 2
+                                    )
                                 }
                             }
                         }
