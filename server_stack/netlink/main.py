@@ -17,74 +17,50 @@ def current_quarter() -> str:
     return f"{today.year}-Q{q}"
 
 
-def migrate_grid_protocol_to_flat(cursor, protocol_id):
+def load_grid_owners(cursor, protocol_id):
     """
-    ETB/TAIFUN imports can store a whole detector matrix compactly in a single
-    '__grid__' cell (GRID_V1 format) under one protocol_groups row. Clients only
-    ever see/edit the EXPANDED per-row view (see protocol_download), and uploads
-    send that expanded view back using the grid's internal row numbers as group_id.
-    Naively upserting those by group_id doesn't match the original single group's
-    group_id, so every upload created brand-new phantom protocol_groups rows
-    instead of updating the real one -- fragmenting one device into many.
-    Fix: expand the grid into real flat rows once, on first write, so subsequent
-    upserts by group_id land on the real existing rows instead of creating new ones.
+    Finds every GRID_V1 compact-matrix cell belonging to this protocol and returns, for
+    each, its parsed JSON blob plus a {grp_num -> row_idx} lookup so incoming expanded
+    rows/cells (which use the grid's internal row numbers as group_id, see
+    protocol_download) can be mapped back to where they live inside the blob.
     """
     cursor.execute("""
-        SELECT pg.group_id, pg.anlage_id, pg.anlage_name, pg.anlage_type, gc.value
+        SELECT pg.group_id, gc.value
         FROM protocol_groups pg
         JOIN group_cells gc ON gc.protocol_id = pg.protocol_id AND gc.group_id = pg.group_id
         WHERE pg.protocol_id = ? AND gc.slot_key = '__grid__' AND gc.detector_type = 'GRID_V1'
     """, (protocol_id,))
-    grid_rows = cursor.fetchall()
-    if not grid_rows:
-        return
-
-    for g in grid_rows:
-        old_group_id = g["group_id"]
+    owners = []
+    for row in cursor.fetchall():
         try:
-            gd = json.loads(g["value"])
+            gd = json.loads(row["value"])
         except Exception:
             continue
-        groups_list = gd.get("groups", [])
-        n_cols = gd.get("n_cols", 0)
-        types_map = gd.get("types", {})
-        values_map = gd.get("values", {})
+        row_idx_by_grp_num = {}
+        for i, info in enumerate(gd.get("groups", []), 1):
+            grp_num = str(info[0]) if info else str(i)
+            row_idx_by_grp_num[grp_num] = i
+        owners.append({"group_id": row["group_id"], "grid": gd, "row_idx_by_grp_num": row_idx_by_grp_num})
+    return owners
 
-        for row_idx, grp_info in enumerate(groups_list, 1):
-            grp_num = str(grp_info[0]) if grp_info else str(row_idx)
-            grp_name = str(grp_info[1]) if len(grp_info) > 1 else ""
 
-            cursor.execute("""
-                INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type, anlage_id, anlage_name, anlage_type)
-                VALUES (?, ?, ?, 'NAM', ?, ?, ?)
-                ON CONFLICT(protocol_id, group_id) DO UPDATE SET group_name = EXCLUDED.group_name
-            """, (protocol_id, grp_num, grp_name, g["anlage_id"] or "", g["anlage_name"] or "", g["anlage_type"] or ""))
+def find_grid_owner_for_group(owners, group_id):
+    """Returns (owner, row_idx) if `group_id` is one of a grid's internal row numbers."""
+    g_id = str(group_id)
+    for owner in owners:
+        row_idx = owner["row_idx_by_grp_num"].get(g_id)
+        if row_idx is not None:
+            return owner, row_idx
+    return None, None
 
-            for col_idx in range(1, n_cols + 1):
-                key = f"{row_idx}_{col_idx}"
-                det_type = types_map.get(key, "-")
-                val = values_map.get(key, "")
-                cursor.execute("""
-                    INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(protocol_id, group_id, slot_key) DO NOTHING
-                """, (protocol_id, grp_num, str(col_idx), det_type, val))
 
-        # Remove the compact grid cell now that its data lives in flat rows.
+def save_grid_owners(cursor, protocol_id, owners):
+    """Persists any grids that were merged into back to their single compact cell."""
+    for owner in owners:
         cursor.execute(
-            "DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = '__grid__'",
-            (protocol_id, old_group_id)
+            "UPDATE group_cells SET value = ? WHERE protocol_id = ? AND group_id = ? AND slot_key = '__grid__'",
+            (json.dumps(owner["grid"]), protocol_id, owner["group_id"])
         )
-        # If the original group row is now empty (no grp_num reused its id), drop it too.
-        cursor.execute(
-            "SELECT COUNT(*) as cnt FROM group_cells WHERE protocol_id = ? AND group_id = ?",
-            (protocol_id, old_group_id)
-        )
-        if cursor.fetchone()["cnt"] == 0:
-            cursor.execute(
-                "DELETE FROM protocol_groups WHERE protocol_id = ? AND group_id = ?",
-                (protocol_id, old_group_id)
-            )
 
 
 app = Flask(__name__)
@@ -562,9 +538,13 @@ def protocol_upload(id):
         
     # Transactional Update of values
     try:
-        # Flatten any legacy GRID_V1 group first, otherwise the upsert below would create
-        # new phantom protocol_groups (one per grid row) instead of updating the real device.
-        migrate_grid_protocol_to_flat(cursor, id)
+        # ETB/TAIFUN imports can store a whole detector matrix compactly in a single
+        # '__grid__' cell under one protocol_groups row. The client only ever sees/edits
+        # the EXPANDED per-row view (see protocol_download) and uploads that view back
+        # using the grid's internal row numbers as group_id. Those must be merged back
+        # into the compact grid cell, never upserted as their own protocol_groups rows --
+        # otherwise every upload fragments one device into dozens of phantom ones.
+        grid_owners = load_grid_owners(cursor, id)
 
         # Update overall status and timestamp
         formatted_date = datetime.now().strftime("%d.%m.%Y")
@@ -579,24 +559,35 @@ def protocol_upload(id):
             g_id = row.get("group_id")
             g_name = row.get("group_name", "")
             g_type = row.get("group_type", "NAM")
-            
+
+            owner, row_idx = find_grid_owner_for_group(grid_owners, g_id)
+            if owner is not None:
+                types_map = owner["grid"].setdefault("types", {})
+                values_map = owner["grid"].setdefault("values", {})
+                for cell in row.get("cells", []):
+                    key = f"{row_idx}_{cell.get('slot_key')}"
+                    types_map[key] = cell.get("detector_type", types_map.get(key, "-"))
+                    values_map[key] = cell.get("value", "")
+                continue  # absorbed into the compact grid cell -- no standalone row for this
+
             cursor.execute("""
                 INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(protocol_id, group_id) DO UPDATE SET group_name = EXCLUDED.group_name, group_type = EXCLUDED.group_type
             """, (id, g_id, g_name, g_type))
-            
+
             for cell in row.get("cells", []):
                 slot_key = cell.get("slot_key")
                 det_type = cell.get("detector_type", "-")
                 val = cell.get("value", "")
-                
+
                 cursor.execute("""
                     INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value)
                     VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET detector_type = EXCLUDED.detector_type, value = EXCLUDED.value
                 """, (id, g_id, slot_key, det_type, val))
-                
+
+        save_grid_owners(cursor, id, grid_owners)
         conn.commit()
     except Exception as ex:
         conn.rollback()
@@ -961,10 +952,14 @@ def sync_upload_cells():
     now = int(datetime.utcnow().timestamp() * 1000)
     updated_protocols = set()
 
-    # Flatten any legacy GRID_V1 group up front, per distinct protocol touched, otherwise
-    # cell changes keyed by the grid's expanded group_id would never match a real row.
-    for pid_to_migrate in {c.get("protocol_id") for c in changes if c.get("protocol_id")}:
-        migrate_grid_protocol_to_flat(cursor, pid_to_migrate)
+    # Pre-load any legacy GRID_V1 compact matrices, per distinct protocol touched. Cell
+    # changes whose group_id is one of a grid's internal row numbers must be merged back
+    # into that single compact cell, never upserted as their own group_cells row --
+    # otherwise every sync fragments one device into dozens of phantom ones.
+    grid_owners_by_protocol = {
+        pid: load_grid_owners(cursor, pid)
+        for pid in {c.get("protocol_id") for c in changes if c.get("protocol_id")}
+    }
 
     for change in changes:
         p_id = change.get("protocol_id")
@@ -973,6 +968,15 @@ def sync_upload_cells():
         det_type = change.get("detector_type", "-")
         val = change.get("value", "")
         ts = int(change.get("updated_at", now))
+
+        owner, row_idx = find_grid_owner_for_group(grid_owners_by_protocol.get(p_id, []), g_id)
+        if owner is not None:
+            key = f"{row_idx}_{slot}"
+            owner["grid"].setdefault("types", {})[key] = det_type
+            owner["grid"].setdefault("values", {})[key] = val
+            applied += 1
+            updated_protocols.add(p_id)
+            continue
 
         cursor.execute(
             "SELECT updated_at FROM group_cells WHERE protocol_id=? AND group_id=? AND slot_key=?",
@@ -989,6 +993,9 @@ def sync_upload_cells():
             """, (p_id, g_id, slot, det_type, val, ts))
             applied += cursor.rowcount
             updated_protocols.add(p_id)
+
+    for pid, owners in grid_owners_by_protocol.items():
+        save_grid_owners(cursor, pid, owners)
 
     formatted_date = datetime.now().strftime("%d.%m.%Y")
     cq = current_quarter()
