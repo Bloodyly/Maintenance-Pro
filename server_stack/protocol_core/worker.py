@@ -6,316 +6,450 @@ import json
 import sqlite3
 import shutil
 from datetime import datetime
-from reportlab.lib.pagesizes import letter
+
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.units import mm
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.pdfgen import canvas as pdfcanvas
 
 DB_PATH = os.environ.get("DB_PATH", "/shared_db/protocols.db")
 SAMBA_SHARE_PATH = os.environ.get("SAMBA_SHARE_PATH", "/samba_shares")
+# Drop a logo.png/logo.jpg into the Samba share to brand the PDFs -- no rebuild needed.
+LOGO_PATH_CANDIDATES = [
+    os.environ.get("LOGO_PATH", ""),
+    os.path.join(SAMBA_SHARE_PATH, "logo.png"),
+    os.path.join(SAMBA_SHARE_PATH, "logo.jpg"),
+]
+COMPANY_NAME = os.environ.get("COMPANY_NAME", "Firmenname GmbH")
+COMPANY_SUBTITLE = os.environ.get("COMPANY_SUBTITLE", "Brandschutz & Sicherheitstechnik")
+
+# ── Palette (matches the approved "Raster-Matrix" mockup) ───────────────────────
+INK = colors.HexColor("#1c2530")
+ACCENT = colors.HexColor("#c1481f")   # defects only
+OK_GREEN = colors.HexColor("#3d6b52")  # geprüft / i.O.
+MUTED = colors.HexColor("#736b5c")
+LINE = colors.HexColor("#dbd6c9")
+PAPER = colors.HexColor("#f7f5f0")
+ROW_ALT = colors.HexColor("#f1efe8")
+
 
 def get_db_connection():
-    return sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-def get_half_year_str(date_str):
-    # Determines 'Halbjahr_1' or 'Halbjahr_2' from date (usually DD.MM.YYYY formatted)
+
+def ensure_schema(cursor):
+    """Tracks when a protocol was last turned into a PDF, so re-synchronizations
+    (a new quarter, a corrected value) reliably trigger a fresh document instead of
+    the previous 'skip if a file already exists' check, which could never re-fire."""
     try:
-        parts = date_str.split(".")
-        if len(parts) == 3:
-            month = int(parts[1])
-            return "H1" if month <= 6 else "H2"
-    except Exception:
+        cursor.execute("ALTER TABLE protocols ADD COLUMN pdf_generated_at INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
         pass
-    
-    # Fallback to current system month
-    return "H1" if datetime.now().month <= 6 else "H2"
 
-def get_year_str(date_str):
-    try:
-        parts = date_str.split(".")
-        if len(parts) == 3:
-            return parts[2]
-    except Exception:
-        pass
-    return str(datetime.now().year)
 
-def archive_existing_protocol(contract_number, date_str):
-    """
-    If a protocol under /Protokolle/{contract_number}.pdf already exists,
-    move it to /Archiv/{contract_number}/{Jahr}/{Halbjahr}/{contract_number}_v{timestamp_or_idx}.pdf
-    """
+def find_logo_path():
+    for candidate in LOGO_PATH_CANDIDATES:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
+
+
+# ── Unified per-device storage expansion (mirrors netlink/main.py's ────────────
+# build_device_rows_payload -- kept in sync manually since protocol_core is a
+# separate deployable that only shares the SQLite file, not code, with netlink.)
+
+def device_rows(cursor, protocol_id):
+    """One protocol_groups row is one Gerät; its Melder-Gruppen live in group_cells
+    via a '__rows__' registry cell plus real per-Melder rows keyed
+    slot_key="{grp_num}_{melder_nr}". Returns (rows, max_cols) with one row per
+    Melder-Gruppe across ALL devices of the protocol, ready for the matrix table."""
+    cursor.execute("SELECT * FROM protocol_groups WHERE protocol_id = ?", (protocol_id,))
+    devices = cursor.fetchall()
+
+    rows = []
+    max_cols = 0
+
+    for dev in devices:
+        cursor.execute(
+            "SELECT slot_key, detector_type, value FROM group_cells WHERE protocol_id = ? AND group_id = ?",
+            (protocol_id, dev["group_id"])
+        )
+        cells = cursor.fetchall()
+
+        registry_cell = next((c for c in cells if c["slot_key"] == "__rows__"), None)
+        if not registry_cell:
+            continue  # device shell without an Auslöseliste yet -- nothing to print
+        try:
+            registry = json.loads(registry_cell["value"])
+        except Exception:
+            continue
+
+        cells_by_grp = {}
+        for c in cells:
+            if c["slot_key"] == "__rows__" or "_" not in c["slot_key"]:
+                continue
+            grp_num, melder_nr = c["slot_key"].split("_", 1)
+            cells_by_grp.setdefault(grp_num, {})[melder_nr] = c
+
+        for entry in registry:
+            grp_num = str(entry[0])
+            grp_name = entry[1] if len(entry) > 1 else ""
+            grp_cells = cells_by_grp.get(grp_num, {})
+
+            by_col_idx = {}
+            for melder_nr, c in grp_cells.items():
+                try:
+                    col_idx = int(melder_nr)
+                except ValueError:
+                    continue
+                by_col_idx[col_idx] = c
+                max_cols = max(max_cols, col_idx)
+
+            rows.append({
+                "group_id": grp_num,
+                "group_name": grp_name,
+                "group_type": dev["group_type"] or "NAM",
+                "cells_by_col": by_col_idx,
+            })
+
+    return rows, max_cols
+
+
+def get_year_half_year():
+    now = datetime.now()
+    return str(now.year), ("H1" if now.month <= 6 else "H2")
+
+
+def archive_existing_protocol(contract_number):
+    """Moves the currently active PDF (if any) to Archiv/<Vertrag>/<Jahr>/<H1|H2>/
+    before a new one takes its place under Protokolle/."""
     active_pdf_path = os.path.join(SAMBA_SHARE_PATH, "Protokolle", f"{contract_number}.pdf")
     if not os.path.exists(active_pdf_path):
-        return # Nothing to archive
+        return
 
-    year = get_year_str(date_str)
-    half_year = get_half_year_str(date_str)
-
-    # Establish archive folder /Archiv/vertrag/jahr/halbjahr/
+    year, half_year = get_year_half_year()
     archive_dir = os.path.join(SAMBA_SHARE_PATH, "Archiv", contract_number, year, half_year)
     os.makedirs(archive_dir, exist_ok=True)
 
-    # Calculate version index
     existing_files = [f for f in os.listdir(archive_dir) if f.startswith(contract_number) and f.endswith(".pdf")]
     next_version = len(existing_files) + 1
-    archive_filename = f"{contract_number}_V{next_version}.pdf"
-    archived_pdf_path = os.path.join(archive_dir, archive_filename)
+    archived_pdf_path = os.path.join(archive_dir, f"{contract_number}_V{next_version}.pdf")
 
-    print(f"[ARCHIVER] Archiving existing file to: {archived_pdf_path}")
+    print(f"[ARCHIVER] Archiving previous version to: {archived_pdf_path}")
     shutil.move(active_pdf_path, archived_pdf_path)
 
-def generate_pdf(protocol_id, p_info, rows_data):
-    """
-    Generates a beautifully styled ReportLab PDF containing:
-    - Master table
-    - Customer Info Box
-    - Colorized statuses
-    - Custom stamp and summary
-    """
+
+class FooterCanvas(pdfcanvas.Canvas):
+    """Standard ReportLab two-pass trick to print 'Seite N von M' footers --
+    SimpleDocTemplate only knows the current page number as it draws, not the
+    eventual total, so every page's canvas state is buffered and re-drawn once
+    the total is known."""
+    def __init__(self, *args, **kwargs):
+        pdfcanvas.Canvas.__init__(self, *args, **kwargs)
+        self._saved_states = []
+        self._footer_text = kwargs.pop("footer_text", "")
+
+    def showPage(self):
+        # Buffer this page's state and reset for the next one WITHOUT emitting it yet
+        # (that's what the real showPage() would do) -- otherwise save() below would
+        # flush every page a second time, doubling the page count.
+        self._saved_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        total_pages = len(self._saved_states)
+        for i, state in enumerate(self._saved_states, start=1):
+            self.__dict__.update(state)
+            self._draw_footer(i, total_pages)
+            pdfcanvas.Canvas.showPage(self)
+        pdfcanvas.Canvas.save(self)
+
+    def _draw_footer(self, page_num, total_pages):
+        width, _ = landscape(A4)
+        self.setStrokeColor(LINE)
+        self.setLineWidth(0.5)
+        self.line(20 * mm, 14 * mm, width - 20 * mm, 14 * mm)
+        self.setFont("Courier", 7.5)
+        self.setFillColor(MUTED)
+        self.drawString(20 * mm, 9 * mm, getattr(self, "_footer_left", ""))
+        self.drawRightString(width - 20 * mm, 9 * mm, f"Seite {page_num} von {total_pages}")
+
+
+def build_styles():
+    return {
+        "doc_kind": ParagraphStyle("DocKind", fontName="Helvetica-Bold", fontSize=9,
+                                    textColor=ACCENT, alignment=TA_RIGHT, leading=11),
+        "doc_title": ParagraphStyle("DocTitle", fontName="Helvetica-Bold", fontSize=15,
+                                     textColor=INK, alignment=TA_RIGHT, leading=18),
+        "company_name": ParagraphStyle("CompanyName", fontName="Helvetica-Bold", fontSize=13,
+                                        textColor=INK, leading=15),
+        "company_sub": ParagraphStyle("CompanySub", fontName="Helvetica", fontSize=7.5,
+                                       textColor=MUTED, leading=10),
+        "m_label": ParagraphStyle("MLabel", fontName="Helvetica-Bold", fontSize=6.5,
+                                   textColor=MUTED, leading=9),
+        "m_value": ParagraphStyle("MValue", fontName="Helvetica-Bold", fontSize=10,
+                                   textColor=INK, leading=13),
+        "summary_head": ParagraphStyle("SumHead", fontName="Helvetica-Bold", fontSize=10, textColor=INK),
+        "summary_body": ParagraphStyle("SumBody", fontName="Helvetica", fontSize=9.5, textColor=INK, leading=14),
+    }
+
+
+def build_letterhead(styles, p_info, logo_path):
+    if logo_path:
+        logo_cell = Image(logo_path, width=26 * mm, height=18 * mm, kind="proportional")
+    else:
+        logo_cell = Table(
+            [[""]], colWidths=[10 * mm], rowHeights=[10 * mm],
+            style=TableStyle([
+                ("BOX", (0, 0), (-1, -1), 1.4, INK),
+                ("LINEBELOW", (0, 0), (-1, -1), 0, INK),
+            ])
+        )
+
+    company_block = Table(
+        [[logo_cell, Table(
+            [[Paragraph(COMPANY_NAME, styles["company_name"])],
+             [Paragraph(COMPANY_SUBTITLE, styles["company_sub"])]],
+            colWidths=[70 * mm], style=TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 6),
+                                                     ("TOPPADDING", (0, 0), (-1, -1), 0),
+                                                     ("BOTTOMPADDING", (0, 0), (-1, -1), 0)])
+        )]],
+        colWidths=[14 * mm, 74 * mm],
+        style=TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (0, 0), 0)])
+    )
+
+    title_block = Table(
+        [[Paragraph("Wartungsprotokoll", styles["doc_kind"])],
+         [Paragraph(f"{p_info['system_type']}-Anlage", styles["doc_title"])]],
+        colWidths=[110 * mm],
+        style=TableStyle([("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0)])
+    )
+
+    header = Table([[company_block, title_block]], colWidths=[None, None])
+    header.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LINEBELOW", (0, 0), (-1, -1), 1.4, INK),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    return header
+
+
+def build_meta_grid(styles, p_info):
+    def cell(label, value):
+        return [Paragraph(label, styles["m_label"]), Paragraph(str(value), styles["m_value"])]
+
+    data = [
+        cell("KUNDE / OBJEKT", p_info["name"]) + cell("VERTRAGS-NR.", p_info["contract_number"]),
+        cell("ADRESSE", p_info["address"] or "–") + cell("INTERVALL", p_info["interval"]),
+        cell("TECHNIKER", p_info["last_edited_by"] or "–") + cell("PRÜFDATUM", p_info["last_edited_at"] or "–"),
+    ]
+    t = Table(data, colWidths=[38 * mm, 60 * mm, 38 * mm, 60 * mm])
+    t.setStyle(TableStyle([
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    return t
+
+
+def build_matrix_table(rows_data, max_cols):
+    col_span = max(1, max_cols)
+    header = ["Grp.", "Bezeichnung"] + [str(i) for i in range(1, col_span + 1)]
+    table_data = [header]
+    cell_styles = []  # list of (row_idx, col_idx, color) overrides, applied after table build
+
+    for r_idx, row in enumerate(rows_data, start=1):
+        line = [row["group_id"], row["group_name"]]
+        for col in range(1, col_span + 1):
+            c = row["cells_by_col"].get(col)
+            if c is None:
+                line.append("")
+                continue
+            if c["detector_type"] == "-":
+                line.append("–")
+            elif c["value"] == "":
+                line.append("?")
+                cell_styles.append((r_idx, col + 1, MUTED, None))
+            elif c["value"] in ("Def.", "Fehler"):
+                line.append("Def.")
+                cell_styles.append((r_idx, col + 1, ACCENT, colors.white))
+            else:
+                line.append(c["value"])
+                cell_styles.append((r_idx, col + 1, OK_GREEN, None))
+        table_data.append(line)
+
+    col_widths = [11 * mm, 44 * mm] + [max(7 * mm, (218 * mm - 55 * mm) / col_span)] * col_span
+    t = Table(table_data, colWidths=col_widths, repeatRows=1)
+
+    style = [
+        ("BACKGROUND", (0, 0), (-1, 0), INK),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Courier-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 7),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("ALIGN", (1, 1), (1, -1), "LEFT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.4, LINE),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, ROW_ALT]),
+        ("FONTNAME", (0, 1), (0, -1), "Courier-Bold"),
+        ("FONTNAME", (1, 1), (1, -1), "Helvetica-Bold"),
+        ("FONTNAME", (2, 1), (-1, -1), "Courier"),
+        ("FONTSIZE", (0, 1), (-1, -1), 7.5),
+        ("TEXTCOLOR", (0, 1), (0, -1), MUTED),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]
+    for r_idx, c_idx, fg, bg in cell_styles:
+        style.append(("TEXTCOLOR", (c_idx, r_idx), (c_idx, r_idx), fg))
+        style.append(("FONTNAME", (c_idx, r_idx), (c_idx, r_idx), "Helvetica-Bold"))
+        if bg is not None:
+            style.append(("BACKGROUND", (c_idx, r_idx), (c_idx, r_idx), fg))
+            style.append(("TEXTCOLOR", (c_idx, r_idx), (c_idx, r_idx), bg))
+
+    t.setStyle(TableStyle(style))
+    return t
+
+
+def build_summary(styles, rows_data):
+    total_groups = len(rows_data)
+    active = triggered = defective = 0
+    for row in rows_data:
+        for c in row["cells_by_col"].values():
+            if c["detector_type"] == "-":
+                continue
+            active += 1
+            if c["value"] == "":
+                continue
+            elif c["value"] in ("Def.", "Fehler"):
+                defective += 1
+            else:
+                triggered += 1
+
+    quota = f"{(triggered / active * 100):.1f}%" if active else "–"
+    summary_text = (
+        f"<b>Zusammenfassung:</b> {total_groups} Meldergruppen, {active} Melder aktiv, "
+        f"{triggered} geprüft ({quota}). "
+        f"<font color='{'#c1481f' if defective else '#3d6b52'}'><b>{defective} Defekt(e)</b></font> festgestellt."
+    )
+    box = Table([[Paragraph(summary_text, styles["summary_body"])]], colWidths=[218 * mm])
+    box.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), PAPER),
+        ("BOX", (0, 0), (-1, -1), 1, LINE),
+        ("PADDING", (0, 0), (-1, -1), 8),
+    ]))
+    return box, defective
+
+
+def build_signature_block():
+    t = Table(
+        [["", ""], ["Techniker", "Auftraggeber (Gegenzeichnung)"]],
+        colWidths=[109 * mm, 109 * mm], rowHeights=[14 * mm, 5 * mm]
+    )
+    t.setStyle(TableStyle([
+        ("LINEABOVE", (0, 0), (0, 0), 0, colors.white),
+        ("LINEBELOW", (0, 0), (0, 0), 0.8, INK),
+        ("LINEBELOW", (1, 0), (1, 0), 0.8, INK),
+        ("FONTNAME", (0, 1), (-1, 1), "Courier"),
+        ("FONTSIZE", (0, 1), (-1, 1), 7),
+        ("TEXTCOLOR", (0, 1), (-1, 1), MUTED),
+        ("TOPPADDING", (0, 1), (-1, 1), 3),
+    ]))
+    return t
+
+
+def generate_pdf(p_info, rows_data, max_cols):
     contract_number = p_info["contract_number"]
-    
-    # Archive any stale old file if found beforehand
-    archive_existing_protocol(contract_number, p_info["last_edited_at"] or "")
+    archive_existing_protocol(contract_number)
 
     output_dir = os.path.join(SAMBA_SHARE_PATH, "Protokolle")
     os.makedirs(output_dir, exist_ok=True)
     pdf_path = os.path.join(output_dir, f"{contract_number}.pdf")
 
-    print(f"[CORE-WORKER] Generating PDF for Contract '{contract_number}' at: {pdf_path}")
+    print(f"[CORE-WORKER] Generating PDF for Vertrag '{contract_number}' at: {pdf_path}")
 
-    # Initialize ReportLab document
-    doc = SimpleDocTemplate(pdf_path, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
-    story = []
-    
-    styles = getSampleStyleSheet()
-    
-    # Custom Typography Styles
-    title_style = ParagraphStyle(
-        'DocTitle',
-        parent=styles['Heading1'],
-        fontName='Helvetica-Bold',
-        fontSize=20,
-        textColor=colors.HexColor('#003d9b'),
-        spaceAfter=15
-    )
-    
-    subtitle_style = ParagraphStyle(
-        'DocSubtitle',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=11,
-        textColor=colors.HexColor('#434654'),
-        spaceAfter=4
+    page_size = landscape(A4)
+    doc = SimpleDocTemplate(
+        pdf_path, pagesize=page_size,
+        leftMargin=20 * mm, rightMargin=20 * mm, topMargin=14 * mm, bottomMargin=18 * mm
     )
 
-    body_style = ParagraphStyle(
-        'DocBody',
-        parent=styles['Normal'],
-        fontName='Helvetica',
-        fontSize=10,
-        textColor=colors.HexColor('#1e293b'),
-        spaceAfter=3
-    )
+    styles = build_styles()
+    logo_path = find_logo_path()
 
-    meta_label_style = ParagraphStyle(
-        'MetaLabel',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=9,
-        textColor=colors.HexColor('#64748b')
-    )
-
-    meta_val_style = ParagraphStyle(
-        'MetaVal',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=10,
-        textColor=colors.HexColor('#003d9b')
-    )
-
-    # 1. Title Banner
-    story.append(Paragraph(f"INSPEKTIONSPROTOKOLL: {p_info['system_type']}", title_style))
-    story.append(Paragraph("Sicherheitsgeprüftes, rechtssicheres Revisionsdokument", subtitle_style))
-    story.append(Spacer(1, 10))
-
-    # 2. Customer details meta-grid
-    meta_data = [
-        [Paragraph("Kunde/Objekt:", meta_label_style), Paragraph(p_info["name"], meta_val_style),
-         Paragraph("Vertragsnummer:", meta_label_style), Paragraph(p_info["contract_number"], meta_val_style)],
-        [Paragraph("Adresse:", meta_label_style), Paragraph(p_info["address"], body_style),
-         Paragraph("Intervall:", meta_label_style), Paragraph(p_info["interval"], body_style)],
-        [Paragraph("Systemtyp:", meta_label_style), Paragraph(p_info["system_type"], meta_val_style),
-         Paragraph("Synchronisiert am:", meta_label_style), Paragraph(p_info["last_edited_at"] or "", body_style)],
-        [Paragraph("Techniker:", meta_label_style), Paragraph(p_info["last_edited_by"] or "Thomas Prantl", body_style),
-         Paragraph("Status:", meta_label_style), Paragraph("✓ SYNCHRONISIERT", ParagraphStyle('GreenBold', parent=body_style, fontName='Helvetica-Bold', textColor=colors.HexColor('#055f46')))]
+    story = [
+        build_letterhead(styles, p_info, logo_path),
+        Spacer(1, 6 * mm),
+        build_meta_grid(styles, p_info),
+        Spacer(1, 5 * mm),
+        build_matrix_table(rows_data, max_cols),
+        Spacer(1, 5 * mm),
     ]
-
-    meta_table = Table(meta_data, colWidths=[90, 180, 110, 160])
-    meta_table.setStyle(TableStyle([
-        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-        ('VALIGN', (0,0), (-1,-1), 'TOP'),
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#f8fafc')),
-        ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#cbd5e1')),
-        ('INNERGRID', (0,0), (-1,-1), 0.5, colors.HexColor('#f1f5f9')),
-        ('TOPPADDING', (0,0), (-1,-1), 6),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-    ]))
-    story.append(meta_table)
-    story.append(Spacer(1, 20))
-
-    # 3. Detector Groups Table
-    headers = ["Gruppe", "Bezeichnung", "Typ"]
-    columns = json.loads(p_info["columns"])
-    for col in columns:
-        headers.append(f"Pt. {col}")
-
-    table_data = [headers]
-
-    for row in rows_data:
-        row_cells = [row["group_id"], row["group_name"], row["group_type"]]
-        # Fill matched slot values
-        cell_dict = {c["slot_key"]: c for c in row["cells"]}
-        for col in columns:
-            cell_info = cell_dict.get(col)
-            if cell_info:
-                val = cell_info["value"]
-                det_type = cell_info["detector_type"]
-                if det_type == "-":
-                    row_cells.append("-")
-                elif val == "":
-                    row_cells.append(f"{det_type}\n[ ]")
-                else:
-                    row_cells.append(f"{det_type}\n[{val}]")
-            else:
-                row_cells.append("-")
-        table_data.append(row_cells)
-
-    # Dynamic Column Widths Estimation
-    col_widths = [50, 140, 40] + [40] * len(columns)
-    
-    # Build Table
-    main_table = Table(table_data, colWidths=col_widths, repeatRows=1)
-    
-    # Custom grid style mirroring WebUI
-    grid_style = [
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#003d9b')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('ALIGN', (1, 1), (1, -1), 'LEFT'), # Left align name
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 9),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-        ('TOPPADDING', (0, 0), (-1, 0), 8),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
-        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 1), (-1, -1), 8),
-    ]
-
-    # Color alternate columns or cells dynamically
-    # Apply ReportLab Table style modifications
-    main_table.setStyle(TableStyle(grid_style))
-    story.append(main_table)
-    story.append(Spacer(1, 20))
-
-    # 4. Summary & Verification box
-    total_slots = 0
-    active_slots = 0
-    triggered_slots = 0
-    defective_slots = 0
-
-    for r in rows_data:
-        for c in r["cells"]:
-            if c["detector_type"] != "-":
-                total_slots += 1
-                active_slots += 1
-                if c["value"] != "" and c["value"] != "Def.":
-                    triggered_slots += 1
-                if c["value"] == "Def.":
-                    defective_slots += 1
-
-    summary_headline_style = ParagraphStyle(
-        'SumHeadline', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=11, textColor=colors.HexColor('#0f172a')
-    )
-    
-    summary_text = f"<b>Inspektions-Zusammenfassung:</b><br/>" \
-                   f"Insgesamt getestete Melderkoppelungen: <b>{triggered_slots} von {active_slots}</b> erfolgreich ausgelöst.<br/>" \
-                   f"Defekte bzw. instandzusetzende Bauteile verzeichnet: " \
-                   f"<font color='{'red' if defective_slots > 0 else 'green'}'><b>{defective_slots}</b></font>."
-
-    summary_para = Paragraph(summary_text, body_style)
-    
-    summary_box_data = [
-        [Paragraph("AUTOMATISCH GENERIERTER WAHRHEITSBEWEIS", summary_headline_style)],
-        [summary_para]
-    ]
-    summary_box = Table(summary_box_data, colWidths=[540])
-    summary_box.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#eff6ff')),
-        ('BOX', (0,0), (-1,-1), 1.5, colors.HexColor('#bfdbfe')),
-        ('PADDING', (0,0), (-1,-1), 12),
-        ('BOTTOMPADDING', (0,0), (-1,0), 0),
-    ]))
+    summary_box, defective_count = build_summary(styles, rows_data)
     story.append(summary_box)
+    story.append(Spacer(1, 8 * mm))
+    story.append(build_signature_block())
 
-    # Build the PDF document
-    doc.build(story)
-    print(f"[CORE-WORKER] PDF built successfully for contract '{contract_number}'")
+    footer_left = f"{COMPANY_NAME} · Prüfbericht Nr. {contract_number}-{p_info['last_edited_at'] or ''}"
+
+    def _make_canvas(*args, **kwargs):
+        c = FooterCanvas(*args, **kwargs)
+        c._footer_left = footer_left
+        return c
+
+    doc.build(story, canvasmaker=_make_canvas)
+    print(f"[CORE-WORKER] PDF built for '{contract_number}' — {len(rows_data)} Meldergruppen, {defective_count} Defekt(e).")
+
 
 def run_worker_cycle():
-    """
-    Looks up protocols where status = 'synchronized'.
-    If no active PDF exists for it under /Protokolle, generates it.
-    Also handles incremental SQLite statuses so it doesn't process endlessly.
-    """
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        # Pull synchronized protocols
-        cursor.execute("SELECT * FROM protocols WHERE status = 'synchronized'")
+        ensure_schema(cursor)
+
+        # A protocol needs a (re-)generated PDF whenever it's synchronized AND has
+        # changed since the last PDF was built -- not just "no file exists yet",
+        # which could never re-fire after a quarter reset or a corrected value.
+        cursor.execute("""
+            SELECT * FROM protocols
+            WHERE status = 'synchronized'
+              AND updated_at > COALESCE(pdf_generated_at, 0)
+              AND EXISTS (SELECT 1 FROM group_cells gc WHERE gc.protocol_id = protocols.id)
+        """)
         protocols = cursor.fetchall()
-        
+
         for p in protocols:
             p_id = p["id"]
-            contract_num = p["contract_number"]
-            pdf_path = os.path.join(SAMBA_SHARE_PATH, "Protokolle", f"{contract_num}.pdf")
-            
-            # If the PDF does not exist yet under /Protokolle, generate it from sqlite records
-            if not os.path.exists(pdf_path):
-                print(f"[CORE-WORKER] Found synchronized protocol '{p_id}' without active PDF share. Creating...")
-                
-                # Fetch rows
-                cursor.execute("SELECT * FROM protocol_groups WHERE protocol_id = ?", (p_id,))
-                groups = cursor.fetchall()
-                
-                rows_data = []
-                for g in groups:
-                    cursor.execute("SELECT * FROM group_cells WHERE protocol_id = ? AND group_id = ?", (p_id, g["group_id"]))
-                    cells = cursor.fetchall()
-                    rows_data.append({
-                        "group_id": g["group_id"],
-                        "group_name": g["group_name"],
-                        "group_type": g["group_type"],
-                        "cells": [{"slot_key": c["slot_key"], "detector_type": c["detector_type"], "value": c["value"]} for c in cells]
-                    })
-                
-                # Create detailed report PDF
-                generate_pdf(p_id, dict(p), rows_data)
-                
+            try:
+                rows_data, max_cols = device_rows(cursor, p_id)
+                if not rows_data:
+                    continue  # synchronized but no Auslöseliste content to print yet
+                generate_pdf(dict(p), rows_data, max_cols)
+                cursor.execute(
+                    "UPDATE protocols SET pdf_generated_at = ? WHERE id = ?",
+                    (int(datetime.utcnow().timestamp() * 1000), p_id)
+                )
+                conn.commit()
+            except Exception as e:
+                print(f"[CORE-WORKER] Failed to generate PDF for '{p_id}': {e}", file=sys.stderr)
+
         conn.close()
     except Exception as e:
         print(f"[CORE-WORKER] SQL ERROR/CORE PIPELINE FAILURE: {str(e)}", file=sys.stderr)
 
+
 if __name__ == "__main__":
-    print("[CORE-WORKER] ProtocolCore automated daemon started successfully. Monitoring SQLite for sync state triggers...")
-    
-    # Establish base directory structures in Samba Share path at mount init
+    print("[CORE-WORKER] ProtocolCore automated daemon started. Monitoring SQLite for sync events...")
+
     os.makedirs(os.path.join(SAMBA_SHARE_PATH, "Melderlisten"), exist_ok=True)
     os.makedirs(os.path.join(SAMBA_SHARE_PATH, "Protokolle"), exist_ok=True)
     os.makedirs(os.path.join(SAMBA_SHARE_PATH, "Archiv"), exist_ok=True)
 
     while True:
         run_worker_cycle()
-        time.sleep(5) # Watch every 5 seconds for newly sync'd packets
+        time.sleep(5)

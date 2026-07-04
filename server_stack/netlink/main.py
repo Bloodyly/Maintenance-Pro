@@ -634,13 +634,16 @@ def protocol_upload(id):
         
     # Transactional Update of values
     try:
-        # Update overall status and timestamp
+        # Update overall status and timestamp. updated_at is what protocol_core polls
+        # against pdf_generated_at to know a fresh PDF is due -- without it, completions
+        # via this endpoint (the app's "Abschließen" button) would never trigger one.
         formatted_date = datetime.now().strftime("%d.%m.%Y")
+        now_ms = int(datetime.utcnow().timestamp() * 1000)
         cursor.execute("""
             UPDATE protocols
-            SET status = 'synchronized', last_edited_by = ?, last_edited_at = ?
+            SET status = 'synchronized', last_edited_by = ?, last_edited_at = ?, updated_at = ?
             WHERE id = ?
-        """, (auth_details["name"], formatted_date, id))
+        """, (auth_details["name"], formatted_date, now_ms, id))
 
         # Each uploaded row's group_id is namespaced "{device_group_id}::{grp_num}"
         # (see build_device_rows_payload) so it routes straight back to the exact
