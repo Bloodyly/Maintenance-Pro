@@ -6,7 +6,7 @@ import base64
 import hashlib
 import zipfile
 import io
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from flask import Flask, request, jsonify, send_file
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -52,7 +52,7 @@ def _device_registry(cursor, protocol_id, group_id):
         return registry, [c for c in cells if c["slot_key"] != "__rows__"]
 
     # Not yet unified -- migrate lazily, once, in place.
-    now = int(datetime.utcnow().timestamp() * 1000)
+    now = int(datetime.now(timezone.utc).timestamp() * 1000)
     grid_cell = next((c for c in cells if c["slot_key"] == "__grid__" and c["detector_type"] == "GRID_V1"), None)
 
     if grid_cell:
@@ -189,7 +189,7 @@ def apply_wire_row_to_device(cursor, protocol_id, wire_group_id, cells, group_na
             INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
             VALUES (?, ?, '__rows__', '-', ?, ?)
             ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET value = EXCLUDED.value
-        """, (protocol_id, device_group_id, json.dumps(registry), int(datetime.utcnow().timestamp() * 1000)))
+        """, (protocol_id, device_group_id, json.dumps(registry), int(datetime.now(timezone.utc).timestamp() * 1000)))
 
     for cell in cells:
         slot_key = f"{grp_num}_{cell.get('slot_key')}"
@@ -638,7 +638,7 @@ def protocol_upload(id):
         # against pdf_generated_at to know a fresh PDF is due -- without it, completions
         # via this endpoint (the app's "Abschließen" button) would never trigger one.
         formatted_date = datetime.now().strftime("%d.%m.%Y")
-        now_ms = int(datetime.utcnow().timestamp() * 1000)
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         cursor.execute("""
             UPDATE protocols
             SET status = 'synchronized', last_edited_by = ?, last_edited_at = ?, updated_at = ?
@@ -826,7 +826,7 @@ def sync_full():
     if not success:
         return jsonify(auth_details), 401
 
-    sync_version = int(datetime.utcnow().timestamp() * 1000)
+    sync_version = int(datetime.now(timezone.utc).timestamp() * 1000)
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -863,7 +863,7 @@ def sync_delta():
     except Exception as e:
         return jsonify({"error": "DECRYPTION_FAILED", "message": str(e)}), 400
 
-    sync_version = int(datetime.utcnow().timestamp() * 1000)
+    sync_version = int(datetime.now(timezone.utc).timestamp() * 1000)
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -921,7 +921,7 @@ def sync_upload_cells():
     cursor = conn.cursor()
 
     applied = 0
-    now = int(datetime.utcnow().timestamp() * 1000)
+    now = int(datetime.now(timezone.utc).timestamp() * 1000)
     updated_protocols = set()
 
     # Each change's group_id is namespaced "{device_group_id}::{grp_num}" (see

@@ -13,6 +13,7 @@ import shutil
 import uuid
 import tempfile
 import subprocess
+import time
 from datetime import datetime, date
 from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
 
@@ -774,6 +775,37 @@ def reset_protocol_status(p_id):
     conn.commit()
     conn.close()
     return jsonify({"success": True, "message": "Status zurückgesetzt."})
+
+
+@app.route("/api/protocols/<p_id>/devices/<group_id>/request-blank-pdf", methods=["POST"])
+def request_blank_pdf(p_id, group_id):
+    """Flags one Gerät for on-demand Blanko-PDF generation. webui and protocol_core
+    are separate containers with no shared code, so this DB flag (polled every 5s
+    by the core worker) is the bridge between the 'Druck Blanko' button and the
+    actual ReportLab rendering."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id FROM protocol_groups WHERE protocol_id = ? AND group_id = ?", (p_id, group_id)
+    )
+    if not cursor.fetchone():
+        conn.close()
+        return jsonify({"success": False, "error": "Gerät nicht gefunden."}), 404
+
+    try:
+        cursor.execute(
+            "ALTER TABLE protocol_groups ADD COLUMN blank_pdf_requested_at INTEGER DEFAULT 0"
+        )
+    except sqlite3.OperationalError:
+        pass
+
+    cursor.execute(
+        "UPDATE protocol_groups SET blank_pdf_requested_at = ? WHERE protocol_id = ? AND group_id = ?",
+        (int(time.time() * 1000), p_id, group_id)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "message": "Blanko-Protokoll wird erstellt und in Kürze im Samba-Share abgelegt."})
 
 # ----------------- TECHNICIANS ROUTES -----------------
 
