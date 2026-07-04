@@ -322,11 +322,19 @@
                                     </div>
  
                                     <!-- Details expander indicator -->
-                                    <button 
+                                    <button
                                         class="p-1.5 rounded-lg border transition"
                                         :class="expandedContractId === p.id ? 'rotate-180 bg-slate-700 border-slate-600 text-white shadow-sm' : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-500'"
                                     >
-                                        <i data-lucide="chevron-down" class="w-4 h-4"></i>
+                                        <template x-if="loadingContractId === p.id">
+                                            <svg class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                            </svg>
+                                        </template>
+                                        <template x-if="loadingContractId !== p.id">
+                                            <i data-lucide="chevron-down" class="w-4 h-4"></i>
+                                        </template>
                                     </button>
                                 </div>
                             </div>
@@ -1687,6 +1695,7 @@
                 activeSystemTypes: [],
                 activeFilterTab: 'offen',
                 expandedContractId: null,
+                loadingContractId: null,
                 expandedProtocolDetails: null,
                 expandedProtocolArchives: [],
                 activeSubViews: {},
@@ -1845,21 +1854,32 @@
                         this.expandedProtocolDetails = null;
                         this.expandedProtocolArchives = [];
                         this.activeSubViews = {};
-                    } else {
-                        this.expandedContractId = id;
-                        this.expandedProtocolDetails = null;
-                        this.expandedProtocolArchives = [];
-                        this.activeSubViews = {};
-                        fetch('/api/protocols/' + id)
-                        .then(r => r.json())
-                        .then(data => {
-                            if (data.success) {
-                                this.expandedProtocolDetails = data.protocol;
-                                this.expandedProtocolArchives = data.archives || [];
-                                setTimeout(() => { this.safeCreateIcons(); }, 100);
-                            }
-                        });
+                        return;
                     }
+                    // Collapse any other open card immediately, but don't trigger the
+                    // x-collapse expand for the new one until its data has arrived --
+                    // otherwise it animates open to the tiny "loading" height and then
+                    // jumps to the real (larger) content height once the fetch resolves,
+                    // which is exactly the stutter this was reported for.
+                    this.expandedContractId = null;
+                    this.expandedProtocolDetails = null;
+                    this.expandedProtocolArchives = [];
+                    this.activeSubViews = {};
+                    this.loadingContractId = id;
+
+                    fetch('/api/protocols/' + id)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            this.expandedProtocolDetails = data.protocol;
+                            this.expandedProtocolArchives = data.archives || [];
+                            this.expandedContractId = id;
+                            setTimeout(() => { this.safeCreateIcons(); }, 100);
+                        }
+                    })
+                    .finally(() => {
+                        if (this.loadingContractId === id) this.loadingContractId = null;
+                    });
                 },
 
                 toggleSubView(groupId, viewType) {
