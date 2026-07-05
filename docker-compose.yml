@@ -10,6 +10,13 @@ services:
       - PORT=8080
       - DB_PATH=/shared_db/protocols.db
       - SAMBA_SHARE_PATH=/samba_shares
+      # Needed to build the SECURE_MANDANT;... QR setup code for technicians --
+      # SERVER_CODEWORD must match netlink's value below (same shared transport
+      # secret); PUBLIC_SERVER_ADDRESS/PORT is what a technician's phone actually
+      # connects to (netlink's WAN-facing address), not this WebUI's own LAN address.
+      - SERVER_CODEWORD=77-XJ-900-PLX-22 # Symmetrischer AES Key, muss mit netlink übereinstimmen
+      - PUBLIC_SERVER_ADDRESS=http://192.168.20.7
+      - PUBLIC_SERVER_PORT=3360
     volumes:
       - db_data:/shared_db:rw  # Database accesses via RO (read-only) or RW depending on needs
       # --- SAMBA SHARES CONFIGURATION ---

@@ -6,6 +6,7 @@ import base64
 import hashlib
 import zipfile
 import io
+import time
 from datetime import datetime, date, timezone
 from flask import Flask, request, jsonify, send_file
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -343,6 +344,32 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # Mandant = organizational sub-unit of the same company (e.g. "Esser-Team" vs
+    # "Notifier-Team"), NOT a security boundary -- every technician still syncs
+    # everything, mandant_id is only used client-side for the default "show my own
+    # contracts first" filter. See mandant_id usage in authenticate_request() and
+    # the sync payload builders below.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS mandanten (
+        id VARCHAR(50) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        logo_filename VARCHAR(255) DEFAULT '',
+        created_at INTEGER DEFAULT 0
+    );
+    """)
+    cursor.execute(
+        "INSERT OR IGNORE INTO mandanten (id, name, created_at) VALUES ('standard', 'Standard', ?)",
+        (int(time.time() * 1000),)
+    )
+    try:
+        cursor.execute("ALTER TABLE protocols ADD COLUMN mandant_id VARCHAR(50) DEFAULT 'standard'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE technicians ADD COLUMN mandant_id VARCHAR(50) DEFAULT 'standard'")
+    except sqlite3.OperationalError:
+        pass
+
     # Populate initial values if empty
     cursor.execute("SELECT COUNT(*) as cnt FROM technicians")
     if cursor.fetchone()["cnt"] == 0:
@@ -412,12 +439,12 @@ def authenticate_request():
         pass_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, name FROM technicians WHERE username = ? AND password_hash = ?", (username, pass_hash))
+        cursor.execute("SELECT id, name, mandant_id FROM technicians WHERE username = ? AND password_hash = ?", (username, pass_hash))
         tech = cursor.fetchone()
         conn.close()
-        
+
         if tech:
-            return True, {"id": tech["id"], "name": tech["name"]}
+            return True, {"id": tech["id"], "name": tech["name"], "mandant_id": tech["mandant_id"] or "standard"}
         else:
             return False, {"error": "INVALID_CREDENTIALS", "message": "Falscher Benutzername oder Passwort."}
     except Exception as e:
@@ -438,7 +465,8 @@ def auth_check():
         response_data = {
             "status": "authorized",
             "technician_id": auth_details["id"],
-            "name": auth_details["name"]
+            "name": auth_details["name"],
+            "mandant_id": auth_details["mandant_id"]
         }
         encrypted_resp = encrypt_payload(json.dumps(response_data), SERVER_CODEWORD)
         return encrypted_resp, 200
@@ -478,14 +506,14 @@ def protocols_search():
     if query:
         search_pattern = f"%{query}%"
         cursor.execute(f"""
-            SELECT id, name, address, contract_number, interval, system_type, status,
+            SELECT id, name, address, contract_number, interval, system_type, status, mandant_id,
                    ({has_cells_subq}) AS has_cells
             FROM protocols
             WHERE LOWER(name) LIKE ? OR LOWER(address) LIKE ? OR LOWER(contract_number) LIKE ?
         """, (search_pattern, search_pattern, search_pattern))
     else:
         cursor.execute(f"""
-            SELECT id, name, address, contract_number, interval, system_type, status,
+            SELECT id, name, address, contract_number, interval, system_type, status, mandant_id,
                    ({has_cells_subq}) AS has_cells
             FROM protocols
         """)
@@ -503,6 +531,7 @@ def protocols_search():
             "interval": r["interval"],
             "system_type": r["system_type"],
             "status": r["status"],
+            "mandant_id": r["mandant_id"] or "standard",
             "is_live": is_protocol_live(r["id"]),
             "has_cells": bool(r["has_cells"])
         })
@@ -520,13 +549,13 @@ def list_pending():
     cursor = conn.cursor()
     # Pull pending downloads
     cursor.execute("""
-        SELECT id, name, address, contract_number, interval, system_type, status 
-        FROM protocols 
+        SELECT id, name, address, contract_number, interval, system_type, status, mandant_id
+        FROM protocols
         WHERE status IN ('ready_to_download', 'downloaded', 'upload_pending')
     """)
     records = cursor.fetchall()
     conn.close()
-    
+
     results = []
     for r in records:
         results.append({
@@ -537,6 +566,7 @@ def list_pending():
             "interval": r["interval"],
             "system_type": r["system_type"],
             "status": r["status"],
+            "mandant_id": r["mandant_id"] or "standard",
             "is_live": is_protocol_live(r["id"])
         })
         
@@ -578,6 +608,7 @@ def protocol_download(id):
         "contract_number": p["contract_number"],
         "interval": p["interval"],
         "system_type": p["system_type"],
+        "mandant_id": (p["mandant_id"] if "mandant_id" in p.keys() else "") or "standard",
         "definition": {
             "columns": [{"key": c, "label": str(c)} for c in col_keys],
             "applicable_values": [{"value": v, "label": v, "is_defect": v == "Def."} for v in json.loads(p["applicable_values"])],
@@ -814,6 +845,7 @@ def _build_protocol_sync_payload(cursor, p):
         "system_type": p["system_type"],
         "status": p["status"],
         "updated_at": (p["updated_at"] if "updated_at" in p.keys() else 0) or 0,
+        "mandant_id": (p["mandant_id"] if "mandant_id" in p.keys() else "") or "standard",
         "definition": {"columns": cols, "applicable_values": app_vals, "detector_types": det_types},
         "rows": rows_data,
     }
@@ -894,6 +926,7 @@ def sync_delta():
             "contract_number": p["contract_number"], "interval": p["interval"],
             "system_type": p["system_type"], "status": p["status"],
             "updated_at": (p["updated_at"] if "updated_at" in p.keys() else 0) or 0,
+            "mandant_id": (p["mandant_id"] if "mandant_id" in p.keys() else "") or "standard",
             "rows": rows_data,
         })
 

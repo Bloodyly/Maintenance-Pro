@@ -18,15 +18,6 @@ from reportlab.pdfbase.pdfmetrics import stringWidth
 
 DB_PATH = os.environ.get("DB_PATH", "/shared_db/protocols.db")
 SAMBA_SHARE_PATH = os.environ.get("SAMBA_SHARE_PATH", "/samba_shares")
-# One Mandant folder for now -- the whole tree is namespaced under it on purpose so
-# multi-tenancy can be introduced later without another folder-structure migration.
-MANDANT_NAME = os.environ.get("MANDANT_NAME", "Standard")
-# Drop a logo.png/logo.jpg into the Samba share to brand the PDFs -- no rebuild needed.
-LOGO_PATH_CANDIDATES = [
-    os.environ.get("LOGO_PATH", ""),
-    os.path.join(SAMBA_SHARE_PATH, "logo.png"),
-    os.path.join(SAMBA_SHARE_PATH, "logo.jpg"),
-]
 COMPANY_NAME = os.environ.get("COMPANY_NAME", "Firmenname GmbH")
 COMPANY_SUBTITLE = os.environ.get("COMPANY_SUBTITLE", "Brandschutz & Sicherheitstechnik")
 
@@ -59,10 +50,25 @@ def ensure_schema(cursor):
     not the whole contract. blank_pdf_requested_at is a tiny request queue the
     WebUI's 'Druck Blanko' button writes to -- webui and protocol_core are
     separate containers with no shared code, so a DB flag is the simplest bridge."""
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS mandanten (
+        id VARCHAR(50) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        logo_filename VARCHAR(255) DEFAULT '',
+        created_at INTEGER DEFAULT 0
+    );
+    """)
+    cursor.execute(
+        "INSERT OR IGNORE INTO mandanten (id, name, created_at) VALUES ('standard', 'Standard', ?)",
+        (int(time.time() * 1000),)
+    )
+
     for stmt in (
         "ALTER TABLE protocol_groups ADD COLUMN pdf_generated_at INTEGER DEFAULT 0",
         "ALTER TABLE protocol_groups ADD COLUMN blank_generated_at INTEGER DEFAULT 0",
         "ALTER TABLE protocol_groups ADD COLUMN blank_pdf_requested_at INTEGER DEFAULT 0",
+        "ALTER TABLE protocols ADD COLUMN mandant_id VARCHAR(50) DEFAULT 'standard'",
+        "ALTER TABLE technicians ADD COLUMN mandant_id VARCHAR(50) DEFAULT 'standard'",
     ):
         try:
             cursor.execute(stmt)
@@ -70,9 +76,15 @@ def ensure_schema(cursor):
             pass
 
 
-def find_logo_path():
-    for candidate in LOGO_PATH_CANDIDATES:
-        if candidate and os.path.exists(candidate):
+def find_logo_path(mandant_folder):
+    """Drop a logo.png/logo.jpg into <Mandant>/ on the Samba share to brand
+    that Mandant's PDFs -- no rebuild needed. Each Mandant looks up its own,
+    matching the WebUI's per-Mandant logo upload (server_stack/webui/app.py)."""
+    for candidate in (
+        os.path.join(SAMBA_SHARE_PATH, mandant_folder, "logo.png"),
+        os.path.join(SAMBA_SHARE_PATH, mandant_folder, "logo.jpg"),
+    ):
+        if os.path.exists(candidate):
             return candidate
     return None
 
@@ -92,31 +104,31 @@ def device_filename(dev_name, dev_type, suffix=""):
     return sanitize_filename(f"{dev_name}-{dev_type}") + f"{suffix}.pdf"
 
 
-def active_pdf_path(p_info, dev_name, dev_type):
-    return os.path.join(SAMBA_SHARE_PATH, MANDANT_NAME, contract_folder_name(p_info),
+def active_pdf_path(mandant_folder, p_info, dev_name, dev_type):
+    return os.path.join(SAMBA_SHARE_PATH, mandant_folder, contract_folder_name(p_info),
                          device_filename(dev_name, dev_type))
 
 
-def blank_pdf_path(p_info, dev_name, dev_type):
-    return os.path.join(SAMBA_SHARE_PATH, MANDANT_NAME, contract_folder_name(p_info),
+def blank_pdf_path(mandant_folder, p_info, dev_name, dev_type):
+    return os.path.join(SAMBA_SHARE_PATH, mandant_folder, contract_folder_name(p_info),
                          device_filename(dev_name, dev_type, "-blanko"))
 
 
-def archive_pdf_path(p_info, dev_name, dev_type, archived_date_str):
+def archive_pdf_path(mandant_folder, p_info, dev_name, dev_type, archived_date_str):
     year = archived_date_str[:4]
-    return os.path.join(SAMBA_SHARE_PATH, MANDANT_NAME, "Archiv", year, contract_folder_name(p_info),
+    return os.path.join(SAMBA_SHARE_PATH, mandant_folder, "Archiv", year, contract_folder_name(p_info),
                          device_filename(dev_name, dev_type, f"-{archived_date_str}"))
 
 
-def archive_existing_device_pdf(p_info, dev_name, dev_type):
+def archive_existing_device_pdf(mandant_folder, p_info, dev_name, dev_type):
     """Moves the currently active PDF for one Gerät (if any) into
     Archiv/<Jahr>/<Vertrag>/ before a fresh one replaces it."""
-    active_path = active_pdf_path(p_info, dev_name, dev_type)
+    active_path = active_pdf_path(mandant_folder, p_info, dev_name, dev_type)
     if not os.path.exists(active_path):
         return
 
     date_str = datetime.now().strftime("%Y-%m-%d")
-    archived_path = archive_pdf_path(p_info, dev_name, dev_type, date_str)
+    archived_path = archive_pdf_path(mandant_folder, p_info, dev_name, dev_type, date_str)
     os.makedirs(os.path.dirname(archived_path), exist_ok=True)
 
     if os.path.exists(archived_path):
@@ -437,17 +449,17 @@ def build_signature_block(content_width):
     return t
 
 
-def generate_device_pdf(p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False):
+def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False):
     """Builds one Gerät's protocol PDF (filled or blank) and writes it to the
     active path, archiving whatever was there before."""
     if not is_blank:
-        archive_existing_device_pdf(p_info, dev_name, dev_type)
-        pdf_path = active_pdf_path(p_info, dev_name, dev_type)
+        archive_existing_device_pdf(mandant_folder, p_info, dev_name, dev_type)
+        pdf_path = active_pdf_path(mandant_folder, p_info, dev_name, dev_type)
     else:
-        pdf_path = blank_pdf_path(p_info, dev_name, dev_type)
+        pdf_path = blank_pdf_path(mandant_folder, p_info, dev_name, dev_type)
 
     os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
-    print(f"[CORE-WORKER] Generating {'Blanko-' if is_blank else ''}PDF for Gerät '{dev_name}' at: {pdf_path}")
+    print(f"[CORE-WORKER] Generating {'Blanko-' if is_blank else ''}PDF for Gerät '{dev_name}' ({mandant_folder}) at: {pdf_path}")
 
     page_size, bezeichnung_width, melder_col_width, col_span = compute_layout(rows_data, max_cols)
     content_width = page_size[0] - 2 * MARGIN
@@ -458,7 +470,7 @@ def generate_device_pdf(p_info, dev_name, dev_type, rows_data, max_cols, is_blan
     )
 
     styles = build_styles()
-    logo_path = find_logo_path()
+    logo_path = find_logo_path(mandant_folder)
 
     story = [
         build_letterhead(styles, p_info, dev_name, "__blank__" if is_blank else dev_type, logo_path),
@@ -507,7 +519,7 @@ def run_worker_cycle():
         # gated on status='synchronized' separately, below.
         cursor.execute("""
             SELECT pg.protocol_id, pg.group_id, pg.pdf_generated_at, pg.blank_generated_at,
-                   pg.blank_pdf_requested_at, p.status AS protocol_status
+                   pg.blank_pdf_requested_at, p.status AS protocol_status, p.mandant_id AS mandant_id
             FROM protocol_groups pg
             JOIN protocols p ON p.id = pg.protocol_id
             WHERE EXISTS (
@@ -516,6 +528,7 @@ def run_worker_cycle():
               )
         """)
         candidates = cursor.fetchall()
+        mandant_folder_cache = {}
 
         for cand in candidates:
             p_id = cand["protocol_id"]
@@ -532,6 +545,13 @@ def run_worker_cycle():
                 dev_name = dev["group_name"] or group_id
                 dev_type = dev["anlage_type"] or dev["group_type"] or p_info["system_type"]
 
+                mandant_id = cand["mandant_id"] or "standard"
+                if mandant_id not in mandant_folder_cache:
+                    cursor.execute("SELECT name FROM mandanten WHERE id = ?", (mandant_id,))
+                    m_row = cursor.fetchone()
+                    mandant_folder_cache[mandant_id] = sanitize_filename(m_row["name"]) if m_row else "Standard"
+                mandant_folder = mandant_folder_cache[mandant_id]
+
                 needs_regen = cand["protocol_status"] == "synchronized" and last_changed_at > (cand["pdf_generated_at"] or 0)
                 needs_blank = (
                     last_changed_at > (cand["blank_generated_at"] or 0)
@@ -541,14 +561,14 @@ def run_worker_cycle():
                 now_ms = int(time.time() * 1000)
 
                 if needs_regen:
-                    generate_device_pdf(p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False)
+                    generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False)
                     cursor.execute(
                         "UPDATE protocol_groups SET pdf_generated_at = ? WHERE protocol_id = ? AND group_id = ?",
                         (now_ms, p_id, group_id)
                     )
 
                 if needs_blank:
-                    generate_device_pdf(p_info, dev_name, dev_type, rows_data, max_cols, is_blank=True)
+                    generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=True)
                     cursor.execute(
                         "UPDATE protocol_groups SET blank_generated_at = ?, blank_pdf_requested_at = 0 "
                         "WHERE protocol_id = ? AND group_id = ?",
@@ -567,8 +587,8 @@ def run_worker_cycle():
 
 if __name__ == "__main__":
     print("[CORE-WORKER] ProtocolCore automated daemon started. Monitoring SQLite for sync events...")
-
-    os.makedirs(os.path.join(SAMBA_SHARE_PATH, MANDANT_NAME, "Archiv"), exist_ok=True)
+    # Per-Mandant folders (incl. Archiv/) are created on demand by the path
+    # helpers above as soon as a device belonging to that Mandant needs one.
 
     while True:
         run_worker_cycle()

@@ -28,15 +28,33 @@
     <header class="bg-[#003D9B] text-white border-b-2 border-slate-200">
         <div class="max-w-7xl mx-auto px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
             <div class="flex items-center gap-3">
-                <div class="bg-white text-[#003D9B] p-2 rounded-lg font-bold text-xl uppercase tracking-wider shadow-md">
-                    MP
-                </div>
+                <template x-if="activeMandant && activeMandant.has_logo">
+                    <img :src="'/mandant_logo/' + activeMandant.id + '?v=' + Date.now()"
+                         class="w-11 h-11 object-contain bg-white p-1 rounded-lg shadow-md" alt="Logo" />
+                </template>
+                <template x-if="!activeMandant || !activeMandant.has_logo">
+                    <div class="bg-white text-[#003D9B] p-2 rounded-lg font-bold text-xl uppercase tracking-wider shadow-md">
+                        MP
+                    </div>
+                </template>
                 <div>
                     <h1 class="text-lg font-bold tracking-tight">Maintenance Pro Leitstelle</h1>
                     <p class="text-xs text-blue-200">Zentralserver & Administrator-Kundenverwaltung</p>
                 </div>
             </div>
             <div class="flex items-center gap-4">
+                <div class="flex items-center gap-1.5 text-xs text-blue-200">
+                    <span>Mandant:</span>
+                    <select
+                        x-model="activeMandantId"
+                        @change="switchMandant(activeMandantId)"
+                        class="bg-[#002e75] border border-blue-400/30 text-white text-xs font-bold rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                    >
+                        <template x-for="m in mandantenList" :key="m.id">
+                            <option :value="m.id" x-text="m.name"></option>
+                        </template>
+                    </select>
+                </div>
                 <div class="flex items-center gap-2 bg-[#002e75] px-3 py-1.5 rounded-full border border-blue-400/30 text-xs text-blue-100">
                     <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
                     <span>Secure VPN Link / VLAN 20 active</span>
@@ -775,14 +793,20 @@
                                     </td>
                                     <td class="px-6 py-4 text-right">
                                         <div class="flex justify-end gap-1.5">
-                                            <button 
-                                                @click="editTech(tech)" 
+                                            <button
+                                                @click="showTechQr(tech)"
+                                                class="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 border border-blue-100 text-blue-700 rounded text-xs"
+                                            >
+                                                QR anzeigen
+                                            </button>
+                                            <button
+                                                @click="editTech(tech)"
                                                 class="px-2.5 py-1 bg-slate-50 hover:bg-slate-100 border border-slate-100 rounded text-xs"
                                             >
                                                 Bearbeiten
                                             </button>
-                                            <button 
-                                                @click="deleteTech(tech.id)" 
+                                            <button
+                                                @click="deleteTech(tech.id)"
                                                 class="px-2.5 py-1 bg-red-50 hover:bg-red-100 hover:text-red-700 border border-red-200 text-red-600 rounded text-xs"
                                             >
                                                 Löschen
@@ -831,6 +855,12 @@
                                 :class="settingsSection==='allgemein' ? 'bg-[#003D9B]/10 text-[#003D9B] border-l-2 border-[#003D9B]' : 'text-slate-600 hover:bg-slate-50 border-l-2 border-transparent'">
                                 <i data-lucide="settings-2" class="w-3.5 h-3.5 shrink-0"></i>
                                 <span>Allgemein</span>
+                            </button>
+                            <button type="button" @click="settingsSection='mandanten'; loadMandanten();"
+                                class="text-left px-4 py-2.5 text-xs font-semibold flex items-center gap-2 transition"
+                                :class="settingsSection==='mandanten' ? 'bg-[#003D9B]/10 text-[#003D9B] border-l-2 border-[#003D9B]' : 'text-slate-600 hover:bg-slate-50 border-l-2 border-transparent'">
+                                <i data-lucide="building-2" class="w-3.5 h-3.5 shrink-0"></i>
+                                <span>Mandanten-Verwaltung</span>
                             </button>
                         </nav>
                     </div>
@@ -1111,6 +1141,74 @@
                         </div>
                     </div>
 
+                    <!-- ── MANDANTEN-VERWALTUNG ── -->
+                    <div x-show="settingsSection==='mandanten'" class="space-y-4">
+                        <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-6">
+                            <h3 class="text-base font-bold text-slate-950 mb-1">Mandanten-Verwaltung</h3>
+                            <p class="text-xs text-slate-500 mb-4">
+                                Organisatorische Unterbereiche (z.&nbsp;B. eigene Teams pro Herstellerlinie) — jeder Mandant hat
+                                eigene Verträge, Mitarbeiter, TAIFUN-Zuordnung und ein eigenes Logo. Keine Zugriffsschranke:
+                                der Mandanten-Wechsel im Header bestimmt nur, was gerade angezeigt wird.
+                            </p>
+
+                            <div class="divide-y divide-slate-100 border-t border-slate-100">
+                                <template x-for="m in mandantenList" :key="m.id">
+                                    <div class="py-3 flex items-center justify-between gap-4">
+                                        <div class="flex items-center gap-3 min-w-0">
+                                            <template x-if="m.has_logo">
+                                                <img :src="'/mandant_logo/' + m.id + '?v=' + Date.now()" class="w-9 h-9 object-contain border border-slate-200 rounded-lg p-1" />
+                                            </template>
+                                            <template x-if="!m.has_logo">
+                                                <div class="w-9 h-9 flex items-center justify-center bg-slate-100 text-slate-400 rounded-lg">
+                                                    <i data-lucide="building-2" class="w-4 h-4"></i>
+                                                </div>
+                                            </template>
+                                            <div class="min-w-0">
+                                                <p class="text-sm font-bold text-slate-900 truncate" x-text="m.name"></p>
+                                                <p class="text-[11px] text-slate-400" x-text="m.contract_count + ' Verträge · ' + m.technician_count + ' Mitarbeiter'"></p>
+                                            </div>
+                                        </div>
+                                        <div class="flex items-center gap-1.5 shrink-0">
+                                            <label class="px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-600 text-[10px] font-semibold rounded-lg flex items-center gap-1 cursor-pointer transition">
+                                                <i data-lucide="image-up" class="w-3 h-3"></i>
+                                                <span>Logo</span>
+                                                <input type="file" accept="image/*" class="hidden" @change="uploadMandantLogo(m.id, $event)" />
+                                            </label>
+                                            <button @click="renameMandant(m)" class="px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-600 text-[10px] font-semibold rounded-lg flex items-center gap-1 transition">
+                                                <i data-lucide="pencil" class="w-3 h-3"></i>
+                                                <span>Umbenennen</span>
+                                            </button>
+                                            <button
+                                                x-show="m.id !== 'standard'"
+                                                @click="deleteMandant(m)"
+                                                class="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 text-[10px] font-semibold rounded-lg flex items-center gap-1 transition"
+                                            >
+                                                <i data-lucide="trash-2" class="w-3 h-3"></i>
+                                                <span>Löschen</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+
+                            <div class="mt-4 pt-4 border-t border-slate-100 flex items-center gap-2">
+                                <input
+                                    x-model="newMandantName"
+                                    type="text"
+                                    placeholder="Name des neuen Mandanten (z.B. Esser-Team)"
+                                    class="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#003D9B]/30"
+                                />
+                                <button
+                                    @click="createMandant()"
+                                    class="px-4 py-2 bg-[#003D9B] hover:bg-blue-800 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition"
+                                >
+                                    <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                                    <span>Mandant anlegen</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
                 </div>
             </div>
         </div>
@@ -1275,6 +1373,33 @@
                 </button>
                 <button @click="saveTechnician()" class="px-4 py-1.5 bg-[#003D9B] hover:bg-blue-800 text-xs font-semibold text-white rounded-lg">
                     Sichern
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 5b. MODAL: TECHNICIAN QR SETUP CODE -->
+    <div x-show="isQrModalOpen" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4" style="display: none;">
+        <div @click.outside="isQrModalOpen = false" class="bg-white border border-slate-200 rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden py-5 px-6 space-y-4 text-center">
+            <h3 class="font-bold text-[#003D9B] text-base">QR-Einrichtungscode</h3>
+            <p class="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                Neues Passwort vergeben — das vorherige ist ab sofort ungültig. Dieser Code wird nur jetzt angezeigt.
+            </p>
+            <template x-if="qrModalLoading">
+                <div class="py-10 text-xs text-slate-400">Wird erzeugt…</div>
+            </template>
+            <template x-if="!qrModalLoading && qrModalData">
+                <div class="space-y-3">
+                    <img :src="'data:image/png;base64,' + qrModalData.qr_image_base64" class="mx-auto w-48 h-48 border border-slate-200 rounded-lg p-2" />
+                    <div class="text-left text-xs bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-1 font-mono">
+                        <div><span class="text-slate-400">User:</span> <span x-text="qrModalData.username"></span></div>
+                        <div><span class="text-slate-400">Pass:</span> <span x-text="qrModalData.password"></span></div>
+                    </div>
+                </div>
+            </template>
+            <div class="flex justify-end pt-2">
+                <button @click="isQrModalOpen = false" class="px-4 py-1.5 bg-[#003D9B] hover:bg-blue-800 text-xs font-semibold text-white rounded-lg">
+                    Fertig
                 </button>
             </div>
         </div>
@@ -1697,9 +1822,19 @@
                 // Technicians
                 isTechModalOpen: false,
                 techForm: { id: '', name: '', username: '', password: '' },
+                isQrModalOpen: false,
+                qrModalLoading: false,
+                qrModalData: null,
                 
                 // Toast
                 toast: { show: false, message: '', type: 'success' },
+
+                // Mandanten (organizational sub-units, e.g. "Esser-Team" vs "Notifier-Team")
+                mandantenList: [],
+                activeMandantId: null,
+                activeMandant: null,
+                newMandantName: '',
+
                 activeSystemTypes: [],
                 activeFilterTab: 'offen',
                 expandedContractId: null,
@@ -1786,17 +1921,101 @@
                 },
                 
                 init() {
+                    this.loadMandanten();
                     this.loadSettings();
                     this.loadProtocols();
                     this.loadTechnicians();
                     this.loadAnlagentypen();
-                    
+
                     // Trigger Lucide icons generation safely
                     setTimeout(() => {
                         this.safeCreateIcons();
                     }, 200);
                 },
-                
+
+                loadMandanten() {
+                    fetch('/api/mandanten')
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            this.mandantenList = data.mandanten;
+                            this.activeMandantId = data.active_mandant_id;
+                            this.activeMandant = this.mandantenList.find(m => m.id === this.activeMandantId) || null;
+                        }
+                    });
+                },
+
+                switchMandant(mandantId) {
+                    fetch('/api/mandanten/switch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ mandant_id: mandantId })
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            window.location.reload();
+                        } else {
+                            this.triggerToast(data.error || 'Mandant konnte nicht gewechselt werden.', 'error');
+                        }
+                    });
+                },
+
+                createMandant() {
+                    if (!this.newMandantName.trim()) return;
+                    const form = new FormData();
+                    form.append('name', this.newMandantName.trim());
+                    fetch('/api/mandanten/save', { method: 'POST', body: form })
+                    .then(r => r.json())
+                    .then(data => {
+                        this.triggerToast(data.message || (data.success ? 'Mandant angelegt.' : 'Fehlgeschlagen.'), data.success ? 'success' : 'error');
+                        if (data.success) {
+                            this.newMandantName = '';
+                            this.loadMandanten();
+                        }
+                    });
+                },
+
+                renameMandant(m) {
+                    const newName = prompt('Neuer Name für diesen Mandanten:', m.name);
+                    if (!newName || !newName.trim() || newName.trim() === m.name) return;
+                    const form = new FormData();
+                    form.append('id', m.id);
+                    form.append('name', newName.trim());
+                    fetch('/api/mandanten/save', { method: 'POST', body: form })
+                    .then(r => r.json())
+                    .then(data => {
+                        this.triggerToast(data.message || (data.success ? 'Umbenannt.' : 'Fehlgeschlagen.'), data.success ? 'success' : 'error');
+                        if (data.success) this.loadMandanten();
+                    });
+                },
+
+                uploadMandantLogo(mandantId, event) {
+                    const file = event.target.files[0];
+                    if (!file) return;
+                    const form = new FormData();
+                    form.append('id', mandantId);
+                    form.append('name', (this.mandantenList.find(m => m.id === mandantId) || {}).name || '');
+                    form.append('logo', file);
+                    fetch('/api/mandanten/save', { method: 'POST', body: form })
+                    .then(r => r.json())
+                    .then(data => {
+                        this.triggerToast(data.message || (data.success ? 'Logo hochgeladen.' : 'Fehlgeschlagen.'), data.success ? 'success' : 'error');
+                        if (data.success) this.loadMandanten();
+                    });
+                    event.target.value = '';
+                },
+
+                deleteMandant(m) {
+                    if (!confirm(`Mandant "${m.name}" wirklich löschen?`)) return;
+                    fetch(`/api/mandanten/delete/${m.id}`, { method: 'POST' })
+                    .then(r => r.json())
+                    .then(data => {
+                        this.triggerToast(data.message || data.error || '', data.success ? 'success' : 'error');
+                        if (data.success) this.loadMandanten();
+                    });
+                },
+
                 triggerToast(message, type = 'success') {
                     this.toast.message = message;
                     this.toast.type = type;
@@ -2050,6 +2269,28 @@
                 editTech(tech) {
                     this.techForm = { id: tech.id, name: tech.name, username: tech.username, password: '' };
                     this.isTechModalOpen = true;
+                },
+
+                showTechQr(tech) {
+                    this.qrModalData = null;
+                    this.qrModalLoading = true;
+                    this.isQrModalOpen = true;
+                    fetch(`/api/technicians/${tech.id}/generate-qr`, { method: 'POST' })
+                    .then(r => r.json())
+                    .then(data => {
+                        this.qrModalLoading = false;
+                        if (data.success) {
+                            this.qrModalData = data;
+                        } else {
+                            this.isQrModalOpen = false;
+                            this.triggerToast(data.error || 'QR-Code konnte nicht erzeugt werden.', 'error');
+                        }
+                    })
+                    .catch(() => {
+                        this.qrModalLoading = false;
+                        this.isQrModalOpen = false;
+                        this.triggerToast('QR-Code konnte nicht erzeugt werden.', 'error');
+                    });
                 },
                 
                 saveTechnician() {

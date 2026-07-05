@@ -14,8 +14,11 @@ import uuid
 import tempfile
 import subprocess
 import time
+import secrets
+import zipfile
+import qrcode
 from datetime import datetime, date
-from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
+from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for, session
 
 
 def current_quarter() -> str:
@@ -40,6 +43,13 @@ app.secret_key = "office-webui-secret-key-182392"
 
 DB_PATH = os.environ.get("DB_PATH", "/shared_db/protocols.db")
 SAMBA_SHARE_PATH = os.environ.get("SAMBA_SHARE_PATH", "/samba_shares")
+# Needed to build the SECURE_MANDANT;... QR setup string for technicians -- the
+# codeword is the same shared transport-encryption secret netlink uses, and the
+# public address/port is what a technician's phone actually connects to (not
+# this WebUI's own internal-LAN address).
+SERVER_CODEWORD = os.environ.get("SERVER_CODEWORD", "77-XJ-900-PLX-22")
+PUBLIC_SERVER_ADDRESS = os.environ.get("PUBLIC_SERVER_ADDRESS", "http://field-service.corp.internal")
+PUBLIC_SERVER_PORT = os.environ.get("PUBLIC_SERVER_PORT", "3360")
 
 _entities_migrated = False
 
@@ -65,6 +75,31 @@ def get_db_connection():
             cursor.execute("ALTER TABLE protocols ADD COLUMN synchronized_quarter VARCHAR(20) DEFAULT ''")
         except sqlite3.OperationalError:
             pass
+
+        # Mandant = organizational sub-unit of the same company, not a security
+        # boundary -- see server_stack/protocol_core/worker.py and netlink/main.py
+        # for the matching migration (each service owns its own idempotent bootstrap).
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS mandanten (
+            id VARCHAR(50) PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            logo_filename VARCHAR(255) DEFAULT '',
+            created_at INTEGER DEFAULT 0
+        );
+        """)
+        cursor.execute(
+            "INSERT OR IGNORE INTO mandanten (id, name, created_at) VALUES ('standard', 'Standard', ?)",
+            (int(time.time() * 1000),)
+        )
+        try:
+            cursor.execute("ALTER TABLE protocols ADD COLUMN mandant_id VARCHAR(50) DEFAULT 'standard'")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute("ALTER TABLE technicians ADD COLUMN mandant_id VARCHAR(50) DEFAULT 'standard'")
+        except sqlite3.OperationalError:
+            pass
+
         conn.commit()
     except Exception:
         pass
@@ -97,6 +132,90 @@ def get_db_connection():
             pass
 
     return conn
+
+
+def get_active_mandant_id():
+    """The dispatch office's currently selected Mandant (organizational
+    sub-unit, e.g. 'Esser-Team' vs 'Notifier-Team' -- not a security boundary,
+    see /home/admin/.claude/plans for context). Stored in the Flask session,
+    which is safe to introduce fresh here since no login exists in this app."""
+    mandant_id = session.get("mandant_id", "standard")
+    conn = get_db_connection()
+    row = conn.execute("SELECT id FROM mandanten WHERE id = ?", (mandant_id,)).fetchone()
+    conn.close()
+    if not row:
+        session["mandant_id"] = "standard"
+        return "standard"
+    return mandant_id
+
+
+def sanitize_filename(s):
+    """Mirrors protocol_core/worker.py's sanitize_filename -- kept in sync
+    manually since the two services share no code, only the Samba filesystem
+    layout convention."""
+    s = (s or "").strip()
+    for ch in '/\\:*?"<>|':
+        s = s.replace(ch, "-")
+    return s or "unbenannt"
+
+
+def mandant_folder_name(mandant_row):
+    return sanitize_filename(mandant_row["name"])
+
+
+def create_full_backup(mandant_id):
+    """Exports this Mandant's DB rows as JSON and zips them together with its
+    complete Samba folder tree (PDFs, logo) into
+    <mandant folder>/Backups/<timestamp>.zip. Triggered after a technician is
+    created or has their QR/password reissued. Deliberately scoped to one
+    Mandant's rows (not a raw copy of the whole shared DB file, which would
+    also contain every other Mandant's data)."""
+    conn = get_db_connection()
+    mandant_row = conn.execute("SELECT id, name FROM mandanten WHERE id = ?", (mandant_id,)).fetchone()
+    if not mandant_row:
+        conn.close()
+        return None
+    folder_name = mandant_folder_name(mandant_row)
+
+    export = {"mandant": dict(mandant_row), "exported_at": datetime.now().isoformat()}
+    protocols = [dict(r) for r in conn.execute("SELECT * FROM protocols WHERE mandant_id = ?", (mandant_id,)).fetchall()]
+    export["protocols"] = protocols
+    protocol_ids = [p["id"] for p in protocols]
+
+    groups, cells = [], []
+    if protocol_ids:
+        ph = ",".join("?" * len(protocol_ids))
+        groups = [dict(r) for r in conn.execute(
+            f"SELECT * FROM protocol_groups WHERE protocol_id IN ({ph})", protocol_ids
+        ).fetchall()]
+        cells = [dict(r) for r in conn.execute(
+            f"SELECT * FROM group_cells WHERE protocol_id IN ({ph})", protocol_ids
+        ).fetchall()]
+    export["protocol_groups"] = groups
+    export["group_cells"] = cells
+    export["technicians"] = [dict(r) for r in conn.execute(
+        "SELECT id, username, name, mandant_id FROM technicians WHERE mandant_id = ?", (mandant_id,)
+    ).fetchall()]
+    conn.close()
+
+    mandant_dir = os.path.join(SAMBA_SHARE_PATH, folder_name)
+    backup_dir = os.path.join(mandant_dir, "Backups")
+    os.makedirs(backup_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    zip_path = os.path.join(backup_dir, f"{timestamp}.zip")
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mandant_export.json", json.dumps(export, ensure_ascii=False, indent=2, default=str))
+        if os.path.exists(mandant_dir):
+            for root, _dirs, files in os.walk(mandant_dir):
+                if os.path.commonpath([root, backup_dir]) == backup_dir:
+                    continue  # don't zip previous backups into this one
+                for f in files:
+                    full_path = os.path.join(root, f)
+                    zf.write(full_path, os.path.relpath(full_path, mandant_dir))
+
+    return zip_path
+
 
 DEFAULT_ANLAGENTYPEN = [
     {
@@ -189,8 +308,23 @@ DEFAULT_ANLAGENTYPEN = [
     },
 ]
 
-def load_settings():
-    settings_path = os.path.join(os.path.dirname(DB_PATH), "settings.json")
+def _settings_path_for(mandant_id):
+    return os.path.join(os.path.dirname(DB_PATH), f"settings_{mandant_id}.json")
+
+
+def load_settings(mandant_id=None):
+    if mandant_id is None:
+        mandant_id = get_active_mandant_id()
+    settings_path = _settings_path_for(mandant_id)
+    legacy_path = os.path.join(os.path.dirname(DB_PATH), "settings.json")
+    # One-time migration: the pre-Mandant global settings.json becomes the
+    # 'standard' Mandant's settings, so nothing configured before this feature
+    # existed (active system types, Anlagentypen) gets lost.
+    if not os.path.exists(settings_path) and mandant_id == "standard" and os.path.exists(legacy_path):
+        try:
+            shutil.copyfile(legacy_path, settings_path)
+        except Exception:
+            pass
     default_settings = {
         "anlagentypen": DEFAULT_ANLAGENTYPEN,
         "active_system_types": ["BMA", "EMA", "ELA", "Lichtruf", "SLA"],
@@ -213,8 +347,10 @@ def load_settings():
             pass
     return default_settings
 
-def save_settings(settings):
-    settings_path = os.path.join(os.path.dirname(DB_PATH), "settings.json")
+def save_settings(settings, mandant_id=None):
+    if mandant_id is None:
+        mandant_id = get_active_mandant_id()
+    settings_path = _settings_path_for(mandant_id)
     try:
         with open(settings_path, "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
@@ -275,6 +411,7 @@ def get_protocols():
         active_types = [t for t in active_types if t in wanted]
 
     ohne_liste = (status_filter == "ohne_liste")
+    active_mandant_id = get_active_mandant_id()
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -293,8 +430,8 @@ def get_protocols():
     has_liste       = f"EXISTS(SELECT 1 FROM group_cells gc JOIN protocol_groups pg2 ON pg2.protocol_id=gc.protocol_id AND pg2.group_id=gc.group_id WHERE gc.protocol_id=p.id AND pg2.anlage_type IN ({at_ph}))"
 
     def build_where(extra_cond=None):
-        conds  = [has_active_type]
-        params = list(at_p)                   # params for has_active_type
+        conds  = ["p.mandant_id = ?", has_active_type]
+        params = [active_mandant_id] + list(at_p)  # params for mandant_id + has_active_type
         if ohne_liste:
             conds.append(f"NOT ({has_liste})")
             params.extend(at_p)               # params for NOT has_liste
@@ -317,8 +454,8 @@ def get_protocols():
     w, p = build_where(defect_subq)
     count_defekte = cursor.execute(f"SELECT COUNT(*) FROM protocols p {w}", p).fetchone()[0]
     # ohne_liste count: has_active + NOT has_liste (always ignores current ohne_liste mode)
-    conds_ol  = [has_active_type, f"NOT ({has_liste})"]
-    params_ol = list(at_p) + list(at_p)
+    conds_ol  = ["p.mandant_id = ?", has_active_type, f"NOT ({has_liste})"]
+    params_ol = [active_mandant_id] + list(at_p) + list(at_p)
     if search:
         pat = f"%{search}%"
         conds_ol.append("(LOWER(p.name) LIKE LOWER(?) OR LOWER(p.address) LIKE LOWER(?) OR LOWER(p.contract_number) LIKE LOWER(?) OR LOWER(p.system_type) LIKE LOWER(?))")
@@ -605,18 +742,22 @@ def save_protocol():
     cursor = conn.cursor()
     
     try:
-        # Save main protocol header
+        # Save main protocol header. mandant_id is only set on INSERT (new
+        # contract gets stamped with whichever Mandant is active in the WebUI
+        # right now) -- it's intentionally absent from DO UPDATE SET so editing
+        # an existing contract never silently moves it to a different Mandant.
         cursor.execute("""
-            INSERT INTO protocols (id, name, address, contract_number, interval, system_type, status, last_edited_by, last_edited_at, columns, applicable_values, detector_types)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET 
-                name=EXCLUDED.name, address=EXCLUDED.address, contract_number=EXCLUDED.contract_number, 
+            INSERT INTO protocols (id, name, address, contract_number, interval, system_type, status, last_edited_by, last_edited_at, columns, applicable_values, detector_types, mandant_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name=EXCLUDED.name, address=EXCLUDED.address, contract_number=EXCLUDED.contract_number,
                 interval=EXCLUDED.interval, system_type=EXCLUDED.system_type, status=EXCLUDED.status,
                 columns=EXCLUDED.columns, applicable_values=EXCLUDED.applicable_values, detector_types=EXCLUDED.detector_types
         """, (
             p_id, name, address, contract_number, interval, system_type, status,
             data.get("last_edited_by", "-"), data.get("last_edited_at", "-"),
-            json.dumps(columns), json.dumps(applicable_values), json.dumps(detector_types)
+            json.dumps(columns), json.dumps(applicable_values), json.dumps(detector_types),
+            get_active_mandant_id()
         ))
         
         # Transactional clean and save groups & cells
@@ -807,16 +948,118 @@ def request_blank_pdf(p_id, group_id):
     conn.close()
     return jsonify({"success": True, "message": "Blanko-Protokoll wird erstellt und in Kürze im Samba-Share abgelegt."})
 
+# ----------------- MANDANTEN ROUTES -----------------
+
+@app.route("/api/mandanten", methods=["GET"])
+def list_mandanten():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, logo_filename FROM mandanten ORDER BY name")
+    mandanten = cursor.fetchall()
+
+    results = []
+    for m in mandanten:
+        contract_count = cursor.execute(
+            "SELECT COUNT(*) FROM protocols WHERE mandant_id = ?", (m["id"],)
+        ).fetchone()[0]
+        tech_count = cursor.execute(
+            "SELECT COUNT(*) FROM technicians WHERE mandant_id = ?", (m["id"],)
+        ).fetchone()[0]
+        logo_path = os.path.join(SAMBA_SHARE_PATH, mandant_folder_name(m), "logo.png")
+        results.append({
+            "id": m["id"],
+            "name": m["name"],
+            "has_logo": os.path.exists(logo_path),
+            "contract_count": contract_count,
+            "technician_count": tech_count,
+        })
+    conn.close()
+    return jsonify({"success": True, "mandanten": results, "active_mandant_id": get_active_mandant_id()})
+
+
+@app.route("/api/mandanten/switch", methods=["POST"])
+def switch_mandant():
+    data = request.json or {}
+    mandant_id = data.get("mandant_id", "")
+    conn = get_db_connection()
+    row = conn.execute("SELECT id FROM mandanten WHERE id = ?", (mandant_id,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"success": False, "error": "Mandant nicht gefunden."}), 404
+    session["mandant_id"] = mandant_id
+    return jsonify({"success": True})
+
+
+@app.route("/api/mandanten/save", methods=["POST"])
+def save_mandant():
+    m_id = request.form.get("id", "").strip()
+    name = request.form.get("name", "").strip()
+    logo_file = request.files.get("logo")
+
+    if not name:
+        return jsonify({"success": False, "error": "Bitte einen Namen angeben."}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        if not m_id:
+            m_id = sanitize_filename(name).lower().replace(" ", "-") or f"mandant-{int(time.time())}"
+            cursor.execute(
+                "INSERT INTO mandanten (id, name, created_at) VALUES (?, ?, ?)",
+                (m_id, name, int(time.time() * 1000))
+            )
+        else:
+            cursor.execute("UPDATE mandanten SET name = ? WHERE id = ?", (name, m_id))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"success": False, "error": "Ein Mandant mit dieser ID existiert bereits."}), 400
+
+    if logo_file and logo_file.filename:
+        mandant_row = conn.execute("SELECT id, name FROM mandanten WHERE id = ?", (m_id,)).fetchone()
+        folder = os.path.join(SAMBA_SHARE_PATH, mandant_folder_name(mandant_row))
+        os.makedirs(folder, exist_ok=True)
+        logo_file.save(os.path.join(folder, "logo.png"))
+        cursor.execute("UPDATE mandanten SET logo_filename = 'logo.png' WHERE id = ?", (m_id,))
+        conn.commit()
+
+    conn.close()
+    return jsonify({"success": True, "message": "Mandant gespeichert.", "id": m_id})
+
+
+@app.route("/api/mandanten/delete/<m_id>", methods=["POST"])
+def delete_mandant(m_id):
+    if m_id == "standard":
+        return jsonify({"success": False, "error": "Der Standard-Mandant kann nicht gelöscht werden."}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    contract_count = cursor.execute("SELECT COUNT(*) FROM protocols WHERE mandant_id = ?", (m_id,)).fetchone()[0]
+    tech_count = cursor.execute("SELECT COUNT(*) FROM technicians WHERE mandant_id = ?", (m_id,)).fetchone()[0]
+    if contract_count > 0 or tech_count > 0:
+        conn.close()
+        return jsonify({
+            "success": False,
+            "error": f"Mandant hat noch {contract_count} Vertrag/Verträge und {tech_count} Mitarbeiter zugeordnet -- bitte erst umziehen."
+        }), 400
+
+    cursor.execute("DELETE FROM mandanten WHERE id = ?", (m_id,))
+    conn.commit()
+    conn.close()
+    if session.get("mandant_id") == m_id:
+        session["mandant_id"] = "standard"
+    return jsonify({"success": True, "message": "Mandant gelöscht."})
+
 # ----------------- TECHNICIANS ROUTES -----------------
 
 @app.route("/api/technicians", methods=["GET"])
 def list_technicians():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, username, name FROM technicians")
+    cursor.execute("SELECT id, username, name FROM technicians WHERE mandant_id = ?", (get_active_mandant_id(),))
     records = cursor.fetchall()
     conn.close()
-    
+
     results = []
     for r in records:
         results.append({
@@ -839,18 +1082,20 @@ def save_technician():
         
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+    is_new = not t_id
+    active_mandant_id = get_active_mandant_id()
+
     try:
-        if not t_id:
+        if is_new:
             # Create new
             t_id = f"tech-{int(datetime.now().timestamp())}"
             raw_pwd = password if password else "123456" # fallback default default
             pass_hash = hashlib.sha256(raw_pwd.encode("utf-8")).hexdigest()
-            
+
             cursor.execute("""
-                INSERT INTO technicians (id, username, password_hash, name)
-                VALUES (?, ?, ?, ?)
-            """, (t_id, username, pass_hash, name))
+                INSERT INTO technicians (id, username, password_hash, name, mandant_id)
+                VALUES (?, ?, ?, ?, ?)
+            """, (t_id, username, pass_hash, name, active_mandant_id))
         else:
             # Edit existing
             if password:
@@ -869,8 +1114,15 @@ def save_technician():
     except Exception as e:
         conn.close()
         return jsonify({"success": False, "error": str(e)}), 500
-        
+
     conn.close()
+
+    if is_new:
+        try:
+            create_full_backup(active_mandant_id)
+        except Exception as e:
+            print(f"[BACKUP] Vollbackup nach Mitarbeiter-Anlage fehlgeschlagen: {e}")
+
     return jsonify({"success": True, "message": "Techniker erfolgreich gespeichert."})
 
 @app.route("/api/technicians/delete/<t_id>", methods=["POST"])
@@ -887,6 +1139,50 @@ def delete_technician(t_id):
         
     conn.close()
     return jsonify({"success": True, "message": "Techniker erfolgreich gelöscht."})
+
+
+@app.route("/api/technicians/<t_id>/generate-qr", methods=["POST"])
+def generate_technician_qr(t_id):
+    """Issues a fresh random password for this technician and returns a QR
+    code encoding the full setup string the Android app already understands
+    (SECURE_MANDANT;...). Passwords are only ever stored as a SHA-256 hash, so
+    there is no way to recover an existing plaintext password to re-display --
+    the only sound option is to reissue a new one, shown here exactly once."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, mandant_id FROM technicians WHERE id = ?", (t_id,))
+    tech = cursor.fetchone()
+    if not tech:
+        conn.close()
+        return jsonify({"success": False, "error": "Techniker nicht gefunden."}), 404
+
+    new_password = secrets.token_urlsafe(9)
+    pass_hash = hashlib.sha256(new_password.encode("utf-8")).hexdigest()
+    cursor.execute("UPDATE technicians SET password_hash = ? WHERE id = ?", (pass_hash, t_id))
+    conn.commit()
+    conn.close()
+
+    qr_content = (
+        f"SECURE_MANDANT;{tech['mandant_id'] or 'standard'};{PUBLIC_SERVER_ADDRESS};"
+        f"{PUBLIC_SERVER_PORT};{tech['username']};{new_password};{SERVER_CODEWORD}"
+    )
+    img = qrcode.make(qr_content)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    qr_base64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+    try:
+        create_full_backup(tech["mandant_id"] or "standard")
+    except Exception as e:
+        print(f"[BACKUP] Vollbackup nach QR-Neuvergabe fehlgeschlagen: {e}")
+
+    return jsonify({
+        "success": True,
+        "qr_image_base64": qr_base64,
+        "username": tech["username"],
+        "password": new_password,
+        "message": "Neues Passwort vergeben -- das vorherige ist ab sofort ungültig."
+    })
 
 # ----------------- SETTINGS API -----------------
 
@@ -1635,15 +1931,15 @@ def import_taifun():
                 det_types = json.dumps(default_detector_types.get(default_system_type, ["-", "Normal"]))
 
                 cursor.execute("""
-                    INSERT INTO protocols (id, name, address, contract_number, interval, system_type, status, columns, applicable_values, detector_types)
-                    VALUES (?, ?, ?, ?, ?, ?, 'ready_to_download', ?, ?, ?)
+                    INSERT INTO protocols (id, name, address, contract_number, interval, system_type, status, columns, applicable_values, detector_types, mandant_id)
+                    VALUES (?, ?, ?, ?, ?, ?, 'ready_to_download', ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         name=EXCLUDED.name,
                         address=EXCLUDED.address,
                         interval=EXCLUDED.interval,
                         system_type=EXCLUDED.system_type,
                         contract_number=EXCLUDED.contract_number
-                """, (p_id, name, address, contract_number, interval, default_system_type, cols, app_vals, det_types))
+                """, (p_id, name, address, contract_number, interval, default_system_type, cols, app_vals, det_types, get_active_mandant_id()))
 
                 if is_taifun_format:
                     # One protocol_group row per WtGrt — no cells created
@@ -1941,6 +2237,19 @@ def download_archive_pdf(contract_number, year, half_year, filename):
     if not os.path.exists(pdf_path):
         return "<h3>Archiviertes PDF-Protokoll wurde nicht gefunden.</h3>", 404
     return send_file(pdf_path, as_attachment=True, download_name=filename)
+
+
+@app.route("/mandant_logo/<m_id>")
+def mandant_logo(m_id):
+    conn = get_db_connection()
+    mandant_row = conn.execute("SELECT id, name FROM mandanten WHERE id = ?", (m_id,)).fetchone()
+    conn.close()
+    if not mandant_row:
+        return "", 404
+    logo_path = os.path.join(SAMBA_SHARE_PATH, mandant_folder_name(mandant_row), "logo.png")
+    if not os.path.exists(logo_path):
+        return "", 404
+    return send_file(logo_path, mimetype="image/png")
 
 if __name__ == "__main__":
     print("Starting production companion Flask WebUI app on port 8080...")
