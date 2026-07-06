@@ -65,6 +65,16 @@ def ensure_schema(cursor):
         "INSERT OR IGNORE INTO mandanten (id, name, created_at) VALUES ('standard', 'Standard', ?)",
         (int(time.time() * 1000),)
     )
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS device_edit_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        protocol_id VARCHAR(50) NOT NULL,
+        group_id VARCHAR(50) NOT NULL,
+        technician_name VARCHAR(255),
+        edited_at INTEGER NOT NULL,
+        quarter VARCHAR(10) NOT NULL
+    );
+    """)
 
     for stmt in (
         "ALTER TABLE protocol_groups ADD COLUMN pdf_generated_at INTEGER DEFAULT 0",
@@ -254,6 +264,8 @@ def build_styles():
         "summary_body": ParagraphStyle("SumBody", fontName="Helvetica", fontSize=9, textColor=INK, leading=13),
         "blank_notice": ParagraphStyle("BlankNotice", fontName="Helvetica-Bold", fontSize=9,
                                         textColor=ACCENT, alignment=TA_CENTER),
+        "section_title": ParagraphStyle("SectionTitle", fontName="Helvetica-Bold", fontSize=8.5,
+                                         textColor=INK, leading=11),
     }
 
 
@@ -449,7 +461,72 @@ def build_summary(styles, rows_data):
     return box, defective
 
 
-def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False, company_name=None):
+def get_pruefer_quarters(interval):
+    """Which quarters of the current year are relevant for the 'Prüfer' history
+    section, based on the device's Prüfintervall. 'Halbjährlich' checks land at
+    the end of each half (Q2/Q4), 'Jährlich' at year end (Q4); anything else
+    (Quartalsweise, or an unrecognized interval) shows all four."""
+    interval_lower = (interval or "").lower()
+    year = datetime.now().year
+    if "halbjähr" in interval_lower or "halbjahr" in interval_lower:
+        quarters = [2, 4]
+    elif "jähr" in interval_lower or "jahr" in interval_lower:
+        quarters = [4]
+    else:
+        quarters = [1, 2, 3, 4]
+    return [f"{year}-Q{q}" for q in quarters]
+
+
+def get_pruefer_rows(cursor, protocol_id, group_id, interval):
+    """One row per relevant quarter: (label, technician names, last edit date)
+    pulled from device_edit_history -- distinct technicians in edit order,
+    dated by the most recent edit in that quarter."""
+    rows = []
+    for q in get_pruefer_quarters(interval):
+        cursor.execute(
+            "SELECT technician_name, edited_at FROM device_edit_history "
+            "WHERE protocol_id = ? AND group_id = ? AND quarter = ? ORDER BY edited_at",
+            (protocol_id, group_id, q)
+        )
+        entries = cursor.fetchall()
+        q_num = q.split("-Q")[1]
+        label = f"Prüfer Q{q_num}"
+        if not entries:
+            rows.append((label, "–", "–"))
+            continue
+        names = []
+        for e in entries:
+            name = e["technician_name"] or "–"
+            if name not in names:
+                names.append(name)
+        last_date = datetime.fromtimestamp(entries[-1]["edited_at"] / 1000).strftime("%d.%m.%Y")
+        rows.append((label, ", ".join(names), last_date))
+    return rows
+
+
+def build_pruefer_section(styles, pruefer_rows):
+    data = [["Quartal", "Bearbeitet von", "Datum"]] + [list(r) for r in pruefer_rows]
+    t = Table(data, colWidths=[28 * mm, None, 28 * mm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), INK),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Courier-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 7),
+        ("FONTNAME", (0, 1), (0, -1), "Courier-Bold"),
+        ("FONTNAME", (1, 1), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 1), (-1, -1), 7.5),
+        ("TEXTCOLOR", (0, 1), (0, -1), MUTED),
+        ("GRID", (0, 0), (-1, -1), 0.4, LINE),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, ROW_ALT]),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    return t
+
+
+def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False, company_name=None, pruefer_rows=None):
     """Builds one Gerät's protocol PDF (filled or blank) and writes it to the
     active path, archiving whatever was there before."""
     if not is_blank:
@@ -493,6 +570,12 @@ def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, m
         story.append(summary_box)
     else:
         defective_count = 0
+
+    if not is_blank and pruefer_rows:
+        story.append(Spacer(1, 6 * mm))
+        story.append(Paragraph("Bearbeitungsverlauf", styles["section_title"]))
+        story.append(Spacer(1, 2 * mm))
+        story.append(build_pruefer_section(styles, pruefer_rows))
 
     footer_left = f"{company_name or COMPANY_NAME} · {dev_name} ({p_info['contract_number']})"
 
@@ -621,7 +704,8 @@ def run_worker_cycle():
                 now_ms = int(time.time() * 1000)
 
                 if needs_regen:
-                    generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False, company_name=company_name)
+                    pruefer_rows = get_pruefer_rows(cursor, p_id, group_id, p_info["interval"])
+                    generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False, company_name=company_name, pruefer_rows=pruefer_rows)
                     cursor.execute(
                         "UPDATE protocol_groups SET pdf_generated_at = ? WHERE protocol_id = ? AND group_id = ?",
                         (now_ms, p_id, group_id)

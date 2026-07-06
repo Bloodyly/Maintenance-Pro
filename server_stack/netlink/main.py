@@ -18,6 +18,16 @@ def current_quarter() -> str:
     return f"{today.year}-Q{q}"
 
 
+def record_device_edit(cursor, protocol_id, group_id, technician_name):
+    """One row per device sync -- feeds the PDF's 'Prüfer Q1-Q4' section.
+    Called once per distinct device actually touched by an upload, not once
+    per Melder-Gruppe row within it."""
+    cursor.execute(
+        "INSERT INTO device_edit_history (protocol_id, group_id, technician_name, edited_at, quarter) VALUES (?, ?, ?, ?, ?)",
+        (protocol_id, group_id, technician_name, int(datetime.now(timezone.utc).timestamp() * 1000), current_quarter())
+    )
+
+
 # ── Unified per-device storage ──────────────────────────────────────────────────
 #
 # One protocol_groups row = one "Gerät" (a whole system, e.g. "BMA Hauptgebäude"),
@@ -374,6 +384,20 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # One row per device sync, so the PDF's "Prüfer Q1-Q4" section can list who
+    # actually worked on a device's Auslöseliste and when -- protocols.last_edited_by
+    # only ever holds the single most recent editor, overwritten on every sync.
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS device_edit_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        protocol_id VARCHAR(50) NOT NULL,
+        group_id VARCHAR(50) NOT NULL,
+        technician_name VARCHAR(255),
+        edited_at INTEGER NOT NULL,
+        quarter VARCHAR(10) NOT NULL
+    );
+    """)
+
     # Populate initial values if empty
     cursor.execute("SELECT COUNT(*) as cnt FROM technicians")
     if cursor.fetchone()["cnt"] == 0:
@@ -683,14 +707,20 @@ def protocol_upload(id):
         # Each uploaded row's group_id is namespaced "{device_group_id}::{grp_num}"
         # (see build_device_rows_payload) so it routes straight back to the exact
         # device + Melder-Gruppe it belongs to -- never creates a new top-level device.
+        touched_devices = set()
         for row in rows:
+            wire_group_id = row.get("group_id")
             applied = apply_wire_row_to_device(
-                cursor, id, row.get("group_id"), row.get("cells", []), group_name=row.get("group_name")
+                cursor, id, wire_group_id, row.get("cells", []), group_name=row.get("group_name")
             )
             if not applied:
                 # Not a recognized namespaced id (shouldn't normally happen) -- ignore rather
                 # than silently fragmenting a new top-level device out of a malformed upload.
                 continue
+            touched_devices.add(str(wire_group_id).split("::", 1)[0])
+
+        for device_group_id in touched_devices:
+            record_device_edit(cursor, id, device_group_id, auth_details["name"])
 
         conn.commit()
     except Exception as ex:
@@ -959,7 +989,7 @@ def sync_upload_cells():
 
     applied = 0
     now = int(datetime.now(timezone.utc).timestamp() * 1000)
-    updated_protocols = set()
+    updated_devices = set()  # (protocol_id, device_group_id) tuples
 
     # Each change's group_id is namespaced "{device_group_id}::{grp_num}" (see
     # build_device_rows_payload), so it routes straight back to the owning device's
@@ -989,15 +1019,18 @@ def sync_upload_cells():
         applied += apply_wire_row_to_device(
             cursor, p_id, g_id, [{"slot_key": slot, "detector_type": det_type, "value": val, "updated_at": ts}]
         )
-        updated_protocols.add(p_id)
+        updated_devices.add((p_id, device_group_id))
 
     formatted_date = datetime.now().strftime("%d.%m.%Y")
     cq = current_quarter()
+    updated_protocols = {p_id for p_id, _ in updated_devices}
     for p_id in updated_protocols:
         cursor.execute(
             "UPDATE protocols SET status='synchronized', synchronized_quarter=?, last_edited_by=?, last_edited_at=?, updated_at=? WHERE id=?",
             (cq, auth_details["name"], formatted_date, now, p_id)
         )
+    for p_id, device_group_id in updated_devices:
+        record_device_edit(cursor, p_id, device_group_id, auth_details["name"])
 
     conn.commit()
     conn.close()
