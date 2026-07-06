@@ -10,4 +10,9 @@ RUN mkdir -p /shared_db /samba_shares/Melderlisten /samba_shares/Protokolle /sam
 
 COPY . .
 
+# Internal-only API for the WebUI's "Druck Blanko" button (synchronous PDF
+# generation) -- reachable from other containers on internal_lan by service
+# name, never published to the host.
+EXPOSE 5001
+
 CMD ["python", "worker.py"]

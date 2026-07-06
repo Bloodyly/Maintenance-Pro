@@ -17,6 +17,7 @@ import time
 import secrets
 import zipfile
 import qrcode
+import requests
 import storage
 from datetime import datetime, date
 from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for, session
@@ -52,6 +53,9 @@ DB_PATH = os.environ.get("DB_PATH", "/shared_db/protocols.db")
 SERVER_CODEWORD = os.environ.get("SERVER_CODEWORD", "77-XJ-900-PLX-22")
 PUBLIC_SERVER_ADDRESS = os.environ.get("PUBLIC_SERVER_ADDRESS", "http://field-service.corp.internal")
 PUBLIC_SERVER_PORT = os.environ.get("PUBLIC_SERVER_PORT", "3360")
+# protocol_core has no published port -- reachable only from other containers
+# on the internal_lan Docker network, by service name (see docker-compose.yml).
+PROTOCOL_CORE_URL = os.environ.get("PROTOCOL_CORE_URL", "http://protocol_core:5001")
 
 _entities_migrated = False
 
@@ -993,35 +997,27 @@ def reset_protocol_status(p_id):
     return jsonify({"success": True, "message": "Status zurückgesetzt."})
 
 
-@app.route("/api/protocols/<p_id>/devices/<group_id>/request-blank-pdf", methods=["POST"])
-def request_blank_pdf(p_id, group_id):
-    """Flags one Gerät for on-demand Blanko-PDF generation. webui and protocol_core
-    are separate containers with no shared code, so this DB flag (polled every 5s
-    by the core worker) is the bridge between the 'Druck Blanko' button and the
-    actual ReportLab rendering."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT id FROM protocol_groups WHERE protocol_id = ? AND group_id = ?", (p_id, group_id)
-    )
-    if not cursor.fetchone():
-        conn.close()
-        return jsonify({"success": False, "error": "Gerät nicht gefunden."}), 404
-
+@app.route("/print-blank/<protocol_id>/<group_id>")
+def print_blank_pdf(protocol_id, group_id):
+    """'Druck Blanko' button: asks protocol_core to build this device's
+    Blanko-PDF right now (over the internal_lan Docker network -- protocol_core
+    has no published port, only reachable from other containers here) and
+    streams it straight back so the browser can display/print it immediately.
+    Structural/data-driven blank regeneration still happens automatically via
+    protocol_core's own 5s poll loop; this is only for the on-demand button."""
     try:
-        cursor.execute(
-            "ALTER TABLE protocol_groups ADD COLUMN blank_pdf_requested_at INTEGER DEFAULT 0"
-        )
-    except sqlite3.OperationalError:
-        pass
+        resp = requests.post(f"{PROTOCOL_CORE_URL}/generate-blank/{protocol_id}/{group_id}", timeout=30)
+    except requests.RequestException as e:
+        return f"<h3>Core-Server nicht erreichbar: {e}</h3>", 502
 
-    cursor.execute(
-        "UPDATE protocol_groups SET blank_pdf_requested_at = ? WHERE protocol_id = ? AND group_id = ?",
-        (int(time.time() * 1000), p_id, group_id)
-    )
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True, "message": "Blanko-Protokoll wird erstellt und in Kürze im Samba-Share abgelegt."})
+    if resp.status_code != 200:
+        try:
+            err = resp.json().get("error", "Unbekannter Fehler.")
+        except Exception:
+            err = "Unbekannter Fehler."
+        return f"<h3>Blanko-Protokoll konnte nicht erstellt werden: {err}</h3>", resp.status_code
+
+    return send_file(io.BytesIO(resp.content), mimetype="application/pdf", as_attachment=False)
 
 # ----------------- MANDANTEN ROUTES -----------------
 

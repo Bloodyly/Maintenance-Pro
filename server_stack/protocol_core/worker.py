@@ -5,6 +5,7 @@ import time
 import json
 import sqlite3
 import io
+import threading
 from datetime import datetime
 
 from reportlab.lib.pagesizes import A4, landscape, portrait
@@ -15,6 +16,7 @@ from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.pdfgen import canvas as pdfcanvas
 from reportlab.pdfbase.pdfmetrics import stringWidth
+from flask import Flask, jsonify, Response
 
 import storage
 
@@ -354,23 +356,24 @@ def build_matrix_table(rows_data, max_cols, bezeichnung_width, melder_col_width,
 
         for col in range(1, col_span + 1):
             c = row["cells_by_col"].get(col)
-            col_offset = col + 3  # Grp, Bezeichnung, Anzahl precede the melder columns
+            # Grp, Bezeichnung, Anzahl (indices 0-2) precede the melder columns,
+            # so melder position N sits at table column index N+2.
+            col_offset = col + 2
             if c is None or c["detector_type"] == "-":
                 line.append("–")
-                cell_styles.append(("bg", r_idx, col_offset, NO_MELDER_BG))
-                cell_styles.append(("fg", r_idx, col_offset, MUTED))
+                cell_styles.append(("bg", r_idx, col_offset, NO_MELDER_BG, False))
+                cell_styles.append(("fg", r_idx, col_offset, MUTED, False))
             elif is_blank:
                 line.append("")
             elif c["value"] in ("Def.", "Fehler"):
                 line.append("Def.")
-                cell_styles.append(("bg", r_idx, col_offset, ACCENT))
-                cell_styles.append(("fg", r_idx, col_offset, colors.white))
+                cell_styles.append(("bg", r_idx, col_offset, ACCENT, True))
+                cell_styles.append(("fg", r_idx, col_offset, colors.white, True))
             elif c["value"] == "":
-                line.append("?")
-                cell_styles.append(("fg", r_idx, col_offset, MUTED))
+                line.append("")
             else:
                 line.append(c["value"])
-                cell_styles.append(("fg", r_idx, col_offset, OK_GREEN))
+                cell_styles.append(("fg", r_idx, col_offset, OK_GREEN, False))
         table_data.append(line)
 
     col_widths = [GRP_COL_WIDTH, bezeichnung_width, ANZAHL_COL_WIDTH] + [melder_col_width] * col_span
@@ -386,9 +389,15 @@ def build_matrix_table(rows_data, max_cols, bezeichnung_width, melder_col_width,
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("GRID", (0, 0), (-1, -1), 0.4, LINE),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, ROW_ALT]),
+        # Grp and Anzahl are both compact numeric/ID labels -- same monospace
+        # treatment so they read as a matching pair. Bezeichnung is the one
+        # column meant to be read as text. Melder cells stay uniformly
+        # monospace regardless of status; only the Def. background carries
+        # emphasis, so the grid doesn't look like three unrelated fonts stitched
+        # together.
         ("FONTNAME", (0, 1), (0, -1), "Courier-Bold"),
         ("FONTNAME", (1, 1), (1, -1), "Helvetica-Bold"),
-        ("FONTNAME", (2, 1), (2, -1), "Helvetica"),
+        ("FONTNAME", (2, 1), (2, -1), "Courier-Bold"),
         ("FONTNAME", (3, 1), (-1, -1), "Courier"),
         ("FONTSIZE", (0, 1), (-1, -1), 7.5),
         ("TEXTCOLOR", (0, 1), (0, -1), MUTED),
@@ -396,12 +405,13 @@ def build_matrix_table(rows_data, max_cols, bezeichnung_width, melder_col_width,
         ("TOPPADDING", (0, 0), (-1, -1), 3),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]
-    for kind, r_idx, c_idx, color in cell_styles:
+    for kind, r_idx, c_idx, color, bold in cell_styles:
         if kind == "bg":
             style.append(("BACKGROUND", (c_idx, r_idx), (c_idx, r_idx), color))
         else:
             style.append(("TEXTCOLOR", (c_idx, r_idx), (c_idx, r_idx), color))
-            style.append(("FONTNAME", (c_idx, r_idx), (c_idx, r_idx), "Helvetica-Bold"))
+            if bold:
+                style.append(("FONTNAME", (c_idx, r_idx), (c_idx, r_idx), "Courier-Bold"))
 
     t.setStyle(TableStyle(style))
     return t
@@ -437,23 +447,6 @@ def build_summary(styles, rows_data):
     return box, defective
 
 
-def build_signature_block(content_width):
-    half = content_width / 2
-    t = Table(
-        [["", ""], ["Techniker", "Auftraggeber (Gegenzeichnung)"]],
-        colWidths=[half, half], rowHeights=[14 * mm, 5 * mm]
-    )
-    t.setStyle(TableStyle([
-        ("LINEBELOW", (0, 0), (0, 0), 0.8, INK),
-        ("LINEBELOW", (1, 0), (1, 0), 0.8, INK),
-        ("FONTNAME", (0, 1), (-1, 1), "Courier"),
-        ("FONTSIZE", (0, 1), (-1, 1), 7),
-        ("TEXTCOLOR", (0, 1), (-1, 1), MUTED),
-        ("TOPPADDING", (0, 1), (-1, 1), 3),
-    ]))
-    return t
-
-
 def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False):
     """Builds one Gerät's protocol PDF (filled or blank) and writes it to the
     active path, archiving whatever was there before."""
@@ -467,7 +460,6 @@ def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, m
     print(f"[CORE-WORKER] Generating {'Blanko-' if is_blank else ''}PDF for Gerät '{dev_name}' ({mandant_folder}) at: {pdf_path}")
 
     page_size, bezeichnung_width, melder_col_width, col_span = compute_layout(rows_data, max_cols)
-    content_width = page_size[0] - 2 * MARGIN
 
     # Build into an in-memory buffer, then hand the finished bytes to storage --
     # ReportLab's canvas does a lot of seek()/tell() while building, which a
@@ -497,10 +489,8 @@ def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, m
     if not is_blank:
         summary_box, defective_count = build_summary(styles, rows_data)
         story.append(summary_box)
-        story.append(Spacer(1, 6 * mm))
     else:
         defective_count = 0
-    story.append(build_signature_block(content_width))
 
     footer_left = f"{COMPANY_NAME} · {dev_name} ({p_info['contract_number']})"
 
@@ -511,9 +501,63 @@ def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, m
         return c
 
     doc.build(story, canvasmaker=_make_canvas)
-    storage.write_bytes(pdf_path, pdf_buffer.getvalue())
+    pdf_bytes = pdf_buffer.getvalue()
+    storage.write_bytes(pdf_path, pdf_bytes)
     print(f"[CORE-WORKER] PDF built for '{dev_name}' — {len(rows_data)} Meldergruppen"
           + ("" if is_blank else f", {defective_count} Defekt(e)."))
+    return pdf_bytes
+
+
+# ── Internal-only HTTP API ──────────────────────────────────────────────────
+# protocol_core has no published port in docker-compose.yml -- this is only
+# reachable from other containers on the internal_lan Docker network (webui),
+# never from outside. Used for the WebUI's "Druck Blanko" button, which needs
+# the PDF back immediately to open in the browser, unlike the normal
+# blank_pdf_requested_at flag the 5s poll loop picks up asynchronously.
+app = Flask(__name__)
+
+
+@app.route("/generate-blank/<protocol_id>/<group_id>", methods=["POST"])
+def generate_blank_now(protocol_id, group_id):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        ensure_schema(cursor)
+        rows_data, max_cols, _ = expand_device(cursor, protocol_id, group_id)
+        if not rows_data:
+            return jsonify({"success": False, "error": "Keine Auslöseliste für dieses Gerät gefunden."}), 404
+
+        p_row = cursor.execute("SELECT * FROM protocols WHERE id = ?", (protocol_id,)).fetchone()
+        dev = cursor.execute(
+            "SELECT * FROM protocol_groups WHERE protocol_id = ? AND group_id = ?", (protocol_id, group_id)
+        ).fetchone()
+        if not p_row or not dev:
+            return jsonify({"success": False, "error": "Vertrag oder Gerät nicht gefunden."}), 404
+
+        p_info = dict(p_row)
+        dev_name = dev["group_name"] or group_id
+        dev_type = dev["anlage_type"] or dev["group_type"] or p_info["system_type"]
+
+        mandant_row = cursor.execute(
+            "SELECT name FROM mandanten WHERE id = ?", (p_info["mandant_id"] or "standard",)
+        ).fetchone()
+        mandant_folder = sanitize_filename(mandant_row["name"]) if mandant_row else "Standard"
+
+        pdf_bytes = generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=True)
+
+        now_ms = int(time.time() * 1000)
+        cursor.execute(
+            "UPDATE protocol_groups SET blank_generated_at = ?, blank_pdf_requested_at = 0 "
+            "WHERE protocol_id = ? AND group_id = ?",
+            (now_ms, protocol_id, group_id)
+        )
+        conn.commit()
+        return Response(pdf_bytes, mimetype="application/pdf")
+    except Exception as e:
+        print(f"[CORE-WORKER] generate-blank failed for '{protocol_id}/{group_id}': {e}", file=sys.stderr)
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        conn.close()
 
 
 def run_worker_cycle():
@@ -595,11 +639,16 @@ def run_worker_cycle():
         print(f"[CORE-WORKER] SQL ERROR/CORE PIPELINE FAILURE: {str(e)}", file=sys.stderr)
 
 
+def _poll_loop():
+    while True:
+        run_worker_cycle()
+        time.sleep(5)
+
+
 if __name__ == "__main__":
     print("[CORE-WORKER] ProtocolCore automated daemon started. Monitoring SQLite for sync events...")
     # Per-Mandant folders (incl. Archiv/) are created on demand by the path
     # helpers above as soon as a device belonging to that Mandant needs one.
 
-    while True:
-        run_worker_cycle()
-        time.sleep(5)
+    threading.Thread(target=_poll_loop, daemon=True).start()
+    app.run(host="0.0.0.0", port=5001)
