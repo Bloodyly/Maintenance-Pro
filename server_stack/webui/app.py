@@ -1687,11 +1687,14 @@ def get_tag_value(xml, tag, default_value=""):
     return default_value
 
 def taifun_name_lines(xml, prefix):
-    """TAIFUN always reserves 3 slots for MtName/OjName (e.g. MtName1/2/3), but
-    numbers them backwards: <prefix>3 is line 1, <prefix>2 is line 2, <prefix>1
-    is line 3. If an object only has e.g. MtName3 and MtName2, the name is just
-    those two lines in that order -- missing slots are skipped, not blanked."""
-    return [v for v in (get_tag_value(xml, f"{prefix}{n}") for n in (3, 2, 1)) if v]
+    """TAIFUN always reserves 3 slots for MtName/OjName (e.g. MtName1/2/3).
+    When fewer than 3 lines are used, the populated slots are the highest
+    numbers (e.g. only MtName2+MtName3, never MtName1+MtName2) -- but the
+    read/display order is still ascending: MtName1 first, then 2, then 3.
+    ("LISA Landesinstitut für Schulqualität" + "und Lehrerbildung
+    Sachsen-Anhalt" only reads correctly in that order.) Missing slots are
+    skipped, not blanked."""
+    return [v for v in (get_tag_value(xml, f"{prefix}{n}") for n in (1, 2, 3)) if v]
 
 
 def build_taifun_address(xml):
