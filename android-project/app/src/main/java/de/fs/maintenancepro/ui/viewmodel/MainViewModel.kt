@@ -2,6 +2,7 @@ package de.fs.maintenancepro.ui.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
 import dagger.hilt.android.lifecycle.HiltViewModel
 import de.fs.maintenancepro.data.local.*
 import de.fs.maintenancepro.data.remote.ApiService
@@ -10,16 +11,16 @@ import de.fs.maintenancepro.data.remote.UploadProtocolDto
 import de.fs.maintenancepro.data.remote.SearchRequestDto
 import de.fs.maintenancepro.data.remote.ProtocolCellDto
 import de.fs.maintenancepro.data.remote.ProtocolItemDto
-import de.fs.maintenancepro.data.remote.ProtocolDefinitionDto
 import de.fs.maintenancepro.data.remote.ProtocolColumnDto
 import de.fs.maintenancepro.data.remote.ApplicableValueDto
 import de.fs.maintenancepro.data.remote.SyncDeltaRequestDto
 import de.fs.maintenancepro.data.remote.SyncUploadCellsDto
 import de.fs.maintenancepro.data.remote.SyncCellChangeDto
 import de.fs.maintenancepro.data.remote.SyncProtocolDto
-import de.fs.maintenancepro.data.remote.SyncRowDto
 import kotlinx.coroutines.flow.first
 import de.fs.maintenancepro.data.crypto.CryptoManager
+import de.fs.maintenancepro.data.sync.SyncQueueProcessor
+import de.fs.maintenancepro.data.sync.SyncWorkScheduler
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -33,11 +34,15 @@ import javax.inject.Inject
 
 @HiltViewModel
 class MainViewModel @Inject constructor(
+    private val database: MaintenanceDatabase,
     private val protocolDao: ProtocolDao,
+    private val protocolGroupDao: ProtocolGroupDao,
+    private val groupCellDao: GroupCellDao,
     private val syncQueueDao: SyncQueueDao,
     private val serverConfigDao: ServerConfigDao,
     private val apiService: ApiService,
     private val sessionManager: ActiveSessionManager,
+    private val syncQueueProcessor: SyncQueueProcessor,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -66,8 +71,13 @@ class MainViewModel @Inject constructor(
     private val _activeProtocolId = MutableStateFlow<String?>(null)
     val activeProtocolId: StateFlow<String?> = _activeProtocolId
 
-    private val _activeProtocolPayload = MutableStateFlow<String?>(null)
-    val activeProtocolPayload: StateFlow<String?> = _activeProtocolPayload
+    // ── Grid data access (normalized tables — no JSON parsing on the hot path) ──────────────
+
+    /** Reactive rows for a protocol's detector matrix, ordered by group insertion order. */
+    fun getGroupsFlow(protocolId: String): Flow<List<ProtocolGroupEntity>> = protocolGroupDao.getGroupsFlow(protocolId)
+
+    /** Reactive cells for a protocol's detector matrix. */
+    fun getCellsFlow(protocolId: String): Flow<List<GroupCellEntity>> = groupCellDao.getCellsFlow(protocolId)
 
     // ── Verbindungstest State ───────────────────────────────────────────────
     sealed class ConnectionTestState {
@@ -97,6 +107,21 @@ class MainViewModel @Inject constructor(
                 if (response.isSuccessful && response.body() != null) {
                     _connectionTestState.value = ConnectionTestState.Success(
                         response.body()!!.name.ifBlank { user }
+                    )
+                    // Persist immediately on a successful test -- previously only the
+                    // explicit "Speichern" button wrote to Room, so a verified-working
+                    // connection could still be lost on app restart if never saved.
+                    val existing = serverConfigDao.getConfig()
+                    serverConfigDao.saveConfig(
+                        ServerConfigEntity(
+                            serverAddress = address,
+                            port = portVal,
+                            username = user,
+                            encryptedPasswordBase64 = pass,
+                            codeword = key,
+                            lastFullSyncAt = existing?.lastFullSyncAt ?: 0L,
+                            myMandantId = response.body()!!.mandant_id
+                        )
                     )
                 } else {
                     val errBody = response.errorBody()?.string() ?: ""
@@ -149,8 +174,7 @@ class MainViewModel @Inject constructor(
 
     fun resetProtocolToOpen(id: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val entity = protocolDao.getProtocolById(id) ?: return@launch
-            protocolDao.insertOrUpdate(entity.copy(localStatus = "ready_to_download"))
+            protocolDao.updateStatus(id, "ready_to_download")
             try {
                 apiService.resetProtocolStatus(id)
             } catch (_: Exception) {}
@@ -173,7 +197,7 @@ class MainViewModel @Inject constructor(
                         val existing = protocolDao.getProtocolById(proto.id) ?: continue
                         // Only overwrite status if server has reset it (e.g. new quarter)
                         if (existing.localStatus == "synchronized" && proto.status == "ready_to_download") {
-                            protocolDao.insertOrUpdate(existing.copy(localStatus = "ready_to_download"))
+                            protocolDao.updateStatus(proto.id, "ready_to_download")
                         }
                     }
                 }
@@ -229,6 +253,15 @@ class MainViewModel @Inject constructor(
             try {
                 val response = apiService.checkAuth()
                 _isServerAvailable.value = response.isSuccessful
+                if (response.isSuccessful && response.body() != null) {
+                    // Keep "my own Mandant" fresh -- used to default SearchScreen's
+                    // contract filter to "just my Mandant" even while offline later.
+                    val mandantId = response.body()!!.mandant_id
+                    val existing = serverConfigDao.getConfig()
+                    if (existing != null && existing.myMandantId != mandantId) {
+                        serverConfigDao.saveConfig(existing.copy(myMandantId = mandantId))
+                    }
+                }
             } catch (e: Exception) {
                 _isServerAvailable.value = false
             }
@@ -262,7 +295,8 @@ class MainViewModel @Inject constructor(
                 ProtocolItemDto(
                     id = e.id, name = e.name, address = e.address,
                     contract_number = e.contractNumber, interval = e.interval,
-                    system_type = e.systemType, status = e.localStatus
+                    system_type = e.systemType, status = e.localStatus,
+                    mandant_id = e.mandantId
                 )
             }
         }
@@ -271,11 +305,14 @@ class MainViewModel @Inject constructor(
 
     fun saveConfig(address: String, portVal: Int, user: String, passHex: String, keyHex: String) {
         viewModelScope.launch(Dispatchers.IO) {
+            val existing = serverConfigDao.getConfig()
             val config = ServerConfigEntity(
                 serverAddress = address,
                 port = portVal,
                 username = user,
-                encryptedPasswordBase64 = passHex
+                encryptedPasswordBase64 = passHex,
+                codeword = keyHex,
+                lastFullSyncAt = existing?.lastFullSyncAt ?: 0L
             )
             serverConfigDao.saveConfig(config)
             sessionManager.setNetworkConfig(address, portVal)
@@ -286,6 +323,8 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    // ── Live-Sync: JSON stays a WIRE format only — local storage is normalized tables ───────
+
     private fun startLiveSyncLoop() {
         viewModelScope.launch(Dispatchers.IO) {
             combine(_activeProtocolId, _liveModusEnabled, _isOffline) { id, live, offline ->
@@ -294,24 +333,17 @@ class MainViewModel @Inject constructor(
                 if (id != null && live && !offline) {
                     while (true) {
                         try {
-                            val protocol = protocolDao.getProtocolById(id)
-                            if (protocol != null) {
+                            val outgoingJson = buildWireJson(id)
+                            if (outgoingJson != null) {
                                 val request = de.fs.maintenancepro.data.remote.LiveSyncRequestDto(
                                     protocol_id = id,
-                                    payload_json = protocol.decryptedPayloadJson
+                                    payload_json = outgoingJson
                                 )
                                 val response = apiService.liveSyncProtocol(id, request)
                                 if (response.isSuccessful && response.body() != null) {
-                                    val serverResp = response.body()!!
-                                    val mergedJson = serverResp.payload_json
-                                    if (mergedJson != protocol.decryptedPayloadJson) {
-                                        val updated = protocol.copy(
-                                            decryptedPayloadJson = mergedJson,
-                                            lastEditedAt = System.currentTimeMillis()
-                                        )
-                                        protocolDao.insertOrUpdate(updated)
-                                        // Update active payload in memory if client is currently editing
-                                        _activeProtocolPayload.value = mergedJson
+                                    val mergedJson = response.body()!!.payload_json
+                                    if (mergedJson != outgoingJson) {
+                                        applyWireJsonToLocal(id, mergedJson)
                                     }
                                 }
                             }
@@ -325,6 +357,98 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    /** Builds the wire-format JSON for a protocol on the fly from the normalized tables. */
+    private suspend fun buildWireJson(protocolId: String): String? {
+        val protocol = protocolDao.getProtocolById(protocolId) ?: return null
+        val groups = protocolGroupDao.getGroupsOnce(protocolId)
+        val cells = groupCellDao.getCellsOnce(protocolId).groupBy { it.groupId }
+        return JSONObject().apply {
+            put("protocol_id", protocol.id)
+            put("client_name", protocol.name)
+            put("contract_number", protocol.contractNumber)
+            put("interval", protocol.interval)
+            put("system_type", protocol.systemType)
+            put("definition", JSONObject().apply {
+                put("columns", safeJsonArray(protocol.columnsJson))
+                put("applicable_values", safeJsonArray(protocol.applicableValuesJson))
+                put("detector_types", safeJsonArray(protocol.detectorTypesJson))
+            })
+            put("rows", JSONArray().also { arr ->
+                groups.forEach { g ->
+                    arr.put(JSONObject().apply {
+                        put("group_id", g.groupId)
+                        put("group_name", g.groupName)
+                        put("group_type", g.groupType)
+                        g.anlageId?.let { put("anlage_id", it) }
+                        g.anlageName?.let { put("anlage_name", it) }
+                        g.anlageType?.let { put("anlage_type", it) }
+                        g.anlageInterval?.let { put("anlage_interval", it) }
+                        put("cells", JSONArray().also { ca ->
+                            cells[g.groupId]?.forEach { c ->
+                                ca.put(JSONObject().apply {
+                                    put("slot_key", c.slotKey)
+                                    put("detector_type", c.detectorType)
+                                    put("value", c.value)
+                                    put("updated_at", c.updatedAt)
+                                })
+                            }
+                        })
+                    })
+                }
+            })
+        }.toString()
+    }
+
+    /** Merges an incoming wire-format JSON (server's live-sync response) into the normalized tables. */
+    private suspend fun applyWireJsonToLocal(protocolId: String, json: String) {
+        try {
+            val root = JSONObject(json)
+            val rows = root.optJSONArray("rows") ?: return
+            val now = System.currentTimeMillis()
+
+            val existingGroups = protocolGroupDao.getGroupsOnce(protocolId).associateBy { it.groupId }.toMutableMap()
+            val existingCells = groupCellDao.getCellsOnce(protocolId).associateBy { "${it.groupId}::${it.slotKey}" }
+
+            val newGroups = mutableListOf<ProtocolGroupEntity>()
+            val newCells = mutableListOf<GroupCellEntity>()
+
+            for (i in 0 until rows.length()) {
+                val rowO = rows.getJSONObject(i)
+                val groupId = rowO.optString("group_id", null) ?: continue
+                if (!existingGroups.containsKey(groupId)) {
+                    val g = ProtocolGroupEntity(
+                        protocolId = protocolId, groupId = groupId,
+                        groupName = rowO.optString("group_name", ""),
+                        groupType = rowO.optString("group_type", "NAM"),
+                        orderIndex = i
+                    )
+                    newGroups.add(g)
+                    existingGroups[groupId] = g
+                }
+                val cells = rowO.optJSONArray("cells") ?: continue
+                for (j in 0 until cells.length()) {
+                    val cellO = cells.getJSONObject(j)
+                    val slotKey = cellO.optString("slot_key", null) ?: continue
+                    if (slotKey == "__grid__") continue
+                    val key = "$groupId::$slotKey"
+                    val newUpdatedAt = cellO.optLong("updated_at", now)
+                    val existing = existingCells[key]
+                    if (existing == null || newUpdatedAt >= existing.updatedAt) {
+                        newCells.add(GroupCellEntity(
+                            protocolId = protocolId, groupId = groupId, slotKey = slotKey,
+                            detectorType = cellO.optString("detector_type", existing?.detectorType ?: "-"),
+                            value = cellO.optString("value", ""), updatedAt = newUpdatedAt,
+                            orderIndex = existing?.orderIndex ?: j
+                        ))
+                    }
+                }
+            }
+            if (newGroups.isNotEmpty()) protocolGroupDao.insertOrUpdateAll(newGroups)
+            if (newCells.isNotEmpty()) groupCellDao.insertOrUpdateAll(newCells)
+        } catch (_: Exception) { }
+    }
+
+    private fun safeJsonArray(raw: String): JSONArray = try { JSONArray(raw) } catch (e: Exception) { JSONArray() }
 
     fun updateSearchQuery(query: String) {
         _searchQuery.value = query
@@ -342,136 +466,142 @@ class MainViewModel @Inject constructor(
     }
 
     /**
-     * Download inspection protocol and cache it locally inside Room (Offline-First)
+     * Download inspection protocol and cache it locally inside Room (Offline-First).
+     * Storage is normalized (protocol_groups/group_cells) — the JSON on the wire is parsed once
+     * here and fanned out into rows, never touched again as a blob.
      */
     fun downloadProtocol(item: ProtocolItemDto) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 if (_isOffline.value) throw Exception("Offline Mode is active.")
-                
+
                 val response = apiService.downloadProtocol(item.id)
                 if (response.isSuccessful && response.body() != null) {
                     val encryptedPayload = response.body()!!
-                    
+
                     // Decrypt dynamic protocol structure
                     val creds = sessionManager.getActiveCredentials()
                     val decryptedJson = CryptoManager.decrypt(encryptedPayload, creds.codewordKey!!)
-                    
-                    val entity = ProtocolEntity(
-                        id = item.id,
-                        name = item.name,
-                        address = item.address,
-                        contractNumber = item.contract_number,
-                        interval = item.interval,
-                        systemType = item.system_type,
-                        localStatus = "downloaded",
-                        decryptedPayloadJson = decryptedJson,
-                        lastEditedAt = System.currentTimeMillis()
-                    )
-                    protocolDao.insertOrUpdate(entity)
+                    storeProtocolFromJson(item, decryptedJson, "downloaded")
+                } else {
+                    throw Exception("HTTP ${response.code()}")
                 }
             } catch (e: Exception) {
                 // If network download fails, load simple cached mock structure for failover demo/offline testing
                 val dummyPayload = createDefaultDynamicProtocol(item)
-                val entity = ProtocolEntity(
-                    id = item.id,
-                    name = item.name,
-                    address = item.address,
-                    contractNumber = item.contract_number,
-                    interval = item.interval,
-                    systemType = item.system_type,
-                    localStatus = "downloaded",
-                    decryptedPayloadJson = dummyPayload,
-                    lastEditedAt = System.currentTimeMillis()
-                )
-                protocolDao.insertOrUpdate(entity)
+                storeProtocolFromJson(item, dummyPayload, "downloaded")
             }
         }
     }
 
+    /** Parses a protocol JSON blob (wire/synthetic) once and fans it out into normalized tables. */
+    private suspend fun storeProtocolFromJson(item: ProtocolItemDto, json: String, status: String) {
+        val root = try { JSONObject(json) } catch (e: Exception) { JSONObject() }
+        val def = root.optJSONObject("definition")
+        database.withTransaction {
+            protocolDao.insertOrUpdate(ProtocolEntity(
+                id = item.id, name = item.name, address = item.address,
+                contractNumber = item.contract_number, interval = item.interval,
+                systemType = item.system_type, localStatus = status,
+                columnsJson = (def?.optJSONArray("columns") ?: JSONArray()).toString(),
+                applicableValuesJson = (def?.optJSONArray("applicable_values") ?: JSONArray()).toString(),
+                detectorTypesJson = (def?.optJSONArray("detector_types") ?: JSONArray()).toString(),
+                lastEditedAt = System.currentTimeMillis(),
+                mandantId = root.optString("mandant_id", item.mandant_id)
+            ))
+            protocolGroupDao.deleteAllForProtocol(item.id)
+            groupCellDao.deleteAllForProtocol(item.id)
+
+            val rows = root.optJSONArray("rows") ?: return@withTransaction
+            val groups = mutableListOf<ProtocolGroupEntity>()
+            val cells = mutableListOf<GroupCellEntity>()
+            for (i in 0 until rows.length()) {
+                val rowO = rows.getJSONObject(i)
+                val groupId = rowO.optString("group_id", null) ?: continue
+                groups.add(ProtocolGroupEntity(
+                    protocolId = item.id, groupId = groupId,
+                    groupName = rowO.optString("group_name", ""),
+                    groupType = rowO.optString("group_type", "NAM"),
+                    anlageId = if (rowO.has("anlage_id")) rowO.optString("anlage_id") else null,
+                    anlageName = if (rowO.has("anlage_name")) rowO.optString("anlage_name") else null,
+                    anlageType = if (rowO.has("anlage_type")) rowO.optString("anlage_type") else null,
+                    anlageInterval = if (rowO.has("anlage_interval")) rowO.optString("anlage_interval") else null,
+                    orderIndex = i
+                ))
+                val cellsArr = rowO.optJSONArray("cells") ?: continue
+                for (j in 0 until cellsArr.length()) {
+                    val cellO = cellsArr.getJSONObject(j)
+                    val slotKey = cellO.optString("slot_key", null) ?: continue
+                    if (slotKey == "__grid__") continue
+                    cells.add(GroupCellEntity(
+                        protocolId = item.id, groupId = groupId, slotKey = slotKey,
+                        detectorType = cellO.optString("detector_type", "-"),
+                        value = cellO.optString("value", ""),
+                        updatedAt = cellO.optLong("updated_at", 0L),
+                        orderIndex = j
+                    ))
+                }
+            }
+            if (groups.isNotEmpty()) protocolGroupDao.insertOrUpdateAll(groups)
+            if (cells.isNotEmpty()) groupCellDao.insertOrUpdateAll(cells)
+        }
+    }
+
     /**
-     * Updates individual checklist cells of a protocol instantly in SQLite
-     * to protect against accidental battery death or OS-level application restarts.
+     * Updates an individual checklist cell instantly in SQLite via a single targeted, indexed
+     * UPDATE — protects against accidental battery death or OS-level application restarts without
+     * having to read/rewrite the rest of the protocol.
      */
     fun editCell(protocolId: String, groupId: String, slotKey: String, writeValue: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val protocol = protocolDao.getProtocolById(protocolId) ?: return@launch
-            val rootJson = JSONObject(protocol.decryptedPayloadJson)
-            val rowsArray = rootJson.getJSONArray("rows")
+            val current = groupCellDao.getCell(protocolId, groupId, slotKey) ?: return@launch
+            if (current.value == writeValue) return@launch
             val now = System.currentTimeMillis()
-            var changed = false
-
-            for (i in 0 until rowsArray.length()) {
-                val rowObj = rowsArray.getJSONObject(i)
-                if (rowObj.getString("group_id") == groupId) {
-                    val cellsArray = rowObj.getJSONArray("cells")
-                    for (j in 0 until cellsArray.length()) {
-                        val cellObj = cellsArray.getJSONObject(j)
-                        if (cellObj.getString("slot_key") == slotKey) {
-                            val currentVal = cellObj.optString("value", "")
-                            if (currentVal != writeValue) {
-                                cellObj.put("value", writeValue)
-                                cellObj.put("updated_at", now)
-                                changed = true
-                            }
-                            break
-                        }
-                    }
-                    break
-                }
-            }
-
-            if (!changed) return@launch
-
-            protocolDao.insertOrUpdate(protocol.copy(
-                decryptedPayloadJson = rootJson.toString(),
-                lastEditedAt = now,
-                localStatus = "upload_pending"
-            ))
-            _activeProtocolPayload.value = rootJson.toString()
+            groupCellDao.updateValue(protocolId, groupId, slotKey, writeValue, now)
+            protocolDao.updateStatusAndEditedAt(protocolId, "upload_pending", now)
         }
     }
 
     /**
-     * Updates multiple cells of a group row at once in SQLite database and state.
-     * Dramatically increases performance on "mark all / unmark all" row actions.
+     * Updates multiple cells of a group row at once. Dramatically increases performance on
+     * "mark all / unmark all" row actions since it's now a handful of indexed UPDATEs, not a
+     * whole-protocol JSON rewrite.
      */
     fun batchEditGroupCells(protocolId: String, groupId: String, cellValues: Map<String, String>) {
+        if (cellValues.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
-            val protocol = protocolDao.getProtocolById(protocolId) ?: return@launch
-            val rootJson = JSONObject(protocol.decryptedPayloadJson)
-            val rowsArray = rootJson.getJSONArray("rows")
             val now = System.currentTimeMillis()
             var modified = false
-            
-            for (i in 0 until rowsArray.length()) {
-                val rowObj = rowsArray.getJSONObject(i)
-                if (rowObj.getString("group_id") == groupId) {
-                    val cellsArray = rowObj.getJSONArray("cells")
-                    for (j in 0 until cellsArray.length()) {
-                        val cellObj = cellsArray.getJSONObject(j)
-                        val slotKey = cellObj.getString("slot_key")
-                        if (cellValues.containsKey(slotKey)) {
-                            val newVal = cellValues[slotKey] ?: ""
-                            if (cellObj.optString("value", "") != newVal) {
-                                cellObj.put("value", newVal)
-                                cellObj.put("updated_at", now)
-                                modified = true
-                            }
+            database.withTransaction {
+                cellValues.forEach { (slotKey, newVal) ->
+                    val current = groupCellDao.getCell(protocolId, groupId, slotKey) ?: return@forEach
+                    if (current.value != newVal) {
+                        groupCellDao.updateValue(protocolId, groupId, slotKey, newVal, now)
+                        modified = true
+                    }
+                }
+                if (modified) protocolDao.updateStatusAndEditedAt(protocolId, "upload_pending", now)
+            }
+        }
+    }
+
+    // Applies cell changes for MULTIPLE groups in one atomic transaction (avoids race conditions).
+    fun batchEditMultiGroupCells(protocolId: String, allChanges: Map<String, Map<String, String>>) {
+        if (allChanges.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            var modified = false
+            database.withTransaction {
+                allChanges.forEach { (groupId, cellChanges) ->
+                    cellChanges.forEach { (slotKey, newVal) ->
+                        val current = groupCellDao.getCell(protocolId, groupId, slotKey) ?: return@forEach
+                        if (current.value != newVal) {
+                            groupCellDao.updateValue(protocolId, groupId, slotKey, newVal, now)
+                            modified = true
                         }
                     }
-                    break
                 }
-            }
-
-            if (modified) {
-                val updatedEntity = protocol.copy(
-                    decryptedPayloadJson = rootJson.toString(),
-                    lastEditedAt = System.currentTimeMillis(),
-                    localStatus = "upload_pending"
-                )
-                protocolDao.insertOrUpdate(updatedEntity)
-                _activeProtocolPayload.value = rootJson.toString()
+                if (modified) protocolDao.updateStatusAndEditedAt(protocolId, "upload_pending", now)
             }
         }
     }
@@ -481,35 +611,21 @@ class MainViewModel @Inject constructor(
      */
     fun addGroup(protocolId: String, newGroupId: String, groupName: String, columnKeys: List<String>) {
         viewModelScope.launch(Dispatchers.IO) {
-            val protocol = protocolDao.getProtocolById(protocolId) ?: return@launch
-            val rootJson = JSONObject(protocol.decryptedPayloadJson)
-            val rowsArray = rootJson.getJSONArray("rows")
-
             val now = System.currentTimeMillis()
-            val newRowObj = JSONObject().apply {
-                put("group_id", newGroupId)
-                put("group_name", groupName)
-                
-                val cellsArray = JSONArray()
-                columnKeys.forEach { colKey ->
-                    cellsArray.put(JSONObject().apply {
-                        put("slot_key", colKey)
-                        put("detector_type", "ZD")
-                        put("value", "")
-                        put("updated_at", now)
-                    })
+            database.withTransaction {
+                val maxOrder = protocolGroupDao.getMaxOrderIndex(protocolId)
+                protocolGroupDao.insertOrUpdate(ProtocolGroupEntity(
+                    protocolId = protocolId, groupId = newGroupId, groupName = groupName, orderIndex = maxOrder + 1
+                ))
+                val cells = columnKeys.mapIndexed { idx, colKey ->
+                    GroupCellEntity(
+                        protocolId = protocolId, groupId = newGroupId, slotKey = colKey,
+                        detectorType = "ZD", value = "", updatedAt = now, orderIndex = idx
+                    )
                 }
-                put("cells", cellsArray)
+                if (cells.isNotEmpty()) groupCellDao.insertOrUpdateAll(cells)
+                protocolDao.updateStatusAndEditedAt(protocolId, "upload_pending", now)
             }
-            rowsArray.put(newRowObj)
-
-            val updatedEntity = protocol.copy(
-                decryptedPayloadJson = rootJson.toString(),
-                localStatus = "upload_pending",
-                lastEditedAt = System.currentTimeMillis()
-            )
-            protocolDao.insertOrUpdate(updatedEntity)
-            _activeProtocolPayload.value = rootJson.toString()
         }
     }
 
@@ -519,37 +635,22 @@ class MainViewModel @Inject constructor(
     fun addSlotColumn(protocolId: String, newColumnKey: String, newColumnLabel: String) {
         viewModelScope.launch(Dispatchers.IO) {
             val protocol = protocolDao.getProtocolById(protocolId) ?: return@launch
-            val rootJson = JSONObject(protocol.decryptedPayloadJson)
-            val definitionObj = rootJson.getJSONObject("definition")
-            val columnsArray = definitionObj.getJSONArray("columns")
-            
-            // Add column to header definitions
-            columnsArray.put(JSONObject().apply {
-                put("key", newColumnKey)
-                put("label", newColumnLabel)
-            })
-
-            // Add slots to all existing matrix groups
             val now = System.currentTimeMillis()
-            val rowsArray = rootJson.getJSONArray("rows")
-            for (i in 0 until rowsArray.length()) {
-                val rowObj = rowsArray.getJSONObject(i)
-                val cellsArray = rowObj.getJSONArray("cells")
-                cellsArray.put(JSONObject().apply {
-                    put("slot_key", newColumnKey)
-                    put("detector_type", "ZD")
-                    put("value", "")
-                    put("updated_at", now)
-                })
-            }
+            database.withTransaction {
+                val columnsArr = safeJsonArray(protocol.columnsJson)
+                columnsArr.put(JSONObject().apply { put("key", newColumnKey); put("label", newColumnLabel) })
+                protocolDao.update(protocol.copy(columnsJson = columnsArr.toString(), localStatus = "upload_pending", lastEditedAt = now))
 
-            val updatedEntity = protocol.copy(
-                decryptedPayloadJson = rootJson.toString(),
-                localStatus = "upload_pending",
-                lastEditedAt = System.currentTimeMillis()
-            )
-            protocolDao.insertOrUpdate(updatedEntity)
-            _activeProtocolPayload.value = rootJson.toString()
+                val groups = protocolGroupDao.getGroupsOnce(protocolId)
+                val newCells = groups.map { g ->
+                    val maxOrder = groupCellDao.getMaxOrderIndex(protocolId, g.groupId)
+                    GroupCellEntity(
+                        protocolId = protocolId, groupId = g.groupId, slotKey = newColumnKey,
+                        detectorType = "ZD", value = "", updatedAt = now, orderIndex = maxOrder + 1
+                    )
+                }
+                if (newCells.isNotEmpty()) groupCellDao.insertOrUpdateAll(newCells)
+            }
         }
     }
 
@@ -558,26 +659,11 @@ class MainViewModel @Inject constructor(
      */
     fun deleteGroup(protocolId: String, groupId: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val protocol = protocolDao.getProtocolById(protocolId) ?: return@launch
-            val rootJson = JSONObject(protocol.decryptedPayloadJson)
-            val rowsArray = rootJson.getJSONArray("rows")
-            
-            val newRowsArray = JSONArray()
-            for (i in 0 until rowsArray.length()) {
-                val rowObj = rowsArray.getJSONObject(i)
-                if (rowObj.getString("group_id") != groupId) {
-                    newRowsArray.put(rowObj)
-                }
+            database.withTransaction {
+                groupCellDao.deleteForGroup(protocolId, groupId)
+                protocolGroupDao.deleteGroup(protocolId, groupId)
+                protocolDao.updateStatusAndEditedAt(protocolId, "upload_pending", System.currentTimeMillis())
             }
-            rootJson.put("rows", newRowsArray)
-
-            val updatedEntity = protocol.copy(
-                decryptedPayloadJson = rootJson.toString(),
-                lastEditedAt = System.currentTimeMillis(),
-                localStatus = "upload_pending"
-            )
-            protocolDao.insertOrUpdate(updatedEntity)
-            _activeProtocolPayload.value = rootJson.toString()
         }
     }
 
@@ -586,27 +672,18 @@ class MainViewModel @Inject constructor(
      */
     fun updateGroupDetails(protocolId: String, oldGroupId: String, newGroupId: String, newGroupName: String, newGroupType: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val protocol = protocolDao.getProtocolById(protocolId) ?: return@launch
-            val rootJson = JSONObject(protocol.decryptedPayloadJson)
-            val rowsArray = rootJson.getJSONArray("rows")
-            
-            for (i in 0 until rowsArray.length()) {
-                val rowObj = rowsArray.getJSONObject(i)
-                if (rowObj.getString("group_id") == oldGroupId) {
-                    rowObj.put("group_id", newGroupId)
-                    rowObj.put("group_name", newGroupName)
-                    rowObj.put("group_type", newGroupType)
-                    break
+            database.withTransaction {
+                if (oldGroupId != newGroupId) {
+                    // group_cells has no enforced FK — re-key affected cells manually before renaming the row.
+                    val cellsToMove = groupCellDao.getCellsOnce(protocolId).filter { it.groupId == oldGroupId }
+                    if (cellsToMove.isNotEmpty()) {
+                        groupCellDao.insertOrUpdateAll(cellsToMove.map { it.copy(groupId = newGroupId) })
+                        groupCellDao.deleteForGroup(protocolId, oldGroupId)
+                    }
                 }
+                protocolGroupDao.updateGroupDetails(protocolId, oldGroupId, newGroupId, newGroupName, newGroupType)
+                protocolDao.updateStatusAndEditedAt(protocolId, "upload_pending", System.currentTimeMillis())
             }
-
-            val updatedEntity = protocol.copy(
-                decryptedPayloadJson = rootJson.toString(),
-                lastEditedAt = System.currentTimeMillis(),
-                localStatus = "upload_pending"
-            )
-            protocolDao.insertOrUpdate(updatedEntity)
-            _activeProtocolPayload.value = rootJson.toString()
         }
     }
 
@@ -615,32 +692,8 @@ class MainViewModel @Inject constructor(
      */
     fun updateCellDetectorType(protocolId: String, groupId: String, slotKey: String, newDetectorType: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val protocol = protocolDao.getProtocolById(protocolId) ?: return@launch
-            val rootJson = JSONObject(protocol.decryptedPayloadJson)
-            val rowsArray = rootJson.getJSONArray("rows")
-            
-            for (i in 0 until rowsArray.length()) {
-                val rowObj = rowsArray.getJSONObject(i)
-                if (rowObj.getString("group_id") == groupId) {
-                    val cellsArray = rowObj.getJSONArray("cells")
-                    for (j in 0 until cellsArray.length()) {
-                        val cellObj = cellsArray.getJSONObject(j)
-                        if (cellObj.getString("slot_key") == slotKey) {
-                            cellObj.put("detector_type", newDetectorType)
-                            break
-                        }
-                    }
-                    break
-                }
-            }
-
-            val updatedEntity = protocol.copy(
-                decryptedPayloadJson = rootJson.toString(),
-                lastEditedAt = System.currentTimeMillis(),
-                localStatus = "upload_pending"
-            )
-            protocolDao.insertOrUpdate(updatedEntity)
-            _activeProtocolPayload.value = rootJson.toString()
+            groupCellDao.updateDetectorType(protocolId, groupId, slotKey, newDetectorType)
+            protocolDao.updateStatusAndEditedAt(protocolId, "upload_pending", System.currentTimeMillis())
         }
     }
 
@@ -650,15 +703,8 @@ class MainViewModel @Inject constructor(
      */
     fun synchronizeProtocol(protocolId: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val protocol = protocolDao.getProtocolById(protocolId) ?: return@launch
-            val rootJson = JSONObject(protocol.decryptedPayloadJson)
-            
-            val uploadDto = UploadProtocolDto(
-                protocol_id = protocolId,
-                finished_at = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.GERMANY).format(Date()),
-                technician_id = "99283-FS",
-                rows = parseGroupsFromJson(rootJson.getJSONArray("rows"))
-            )
+            protocolDao.getProtocolById(protocolId) ?: return@launch
+            val uploadDto = buildUploadDto(protocolId)
 
             if (_isOffline.value) {
                 // Instantly enqueue for offline sync queue if network offline
@@ -669,8 +715,7 @@ class MainViewModel @Inject constructor(
             try {
                 val response = apiService.uploadProtocol(protocolId, uploadDto)
                 if (response.isSuccessful) {
-                    val updatedEntity = protocol.copy(localStatus = "synchronized")
-                    protocolDao.insertOrUpdate(updatedEntity)
+                    protocolDao.updateStatus(protocolId, "synchronized")
                 } else {
                     enqueueSync(protocolId, uploadDto)
                 }
@@ -680,53 +725,68 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    private suspend fun buildUploadDto(protocolId: String): UploadProtocolDto {
+        val groups = protocolGroupDao.getGroupsOnce(protocolId)
+        val cellsByGroup = groupCellDao.getCellsOnce(protocolId).groupBy { it.groupId }
+        return UploadProtocolDto(
+            protocol_id = protocolId,
+            finished_at = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.GERMANY).format(Date()),
+            technician_id = "99283-FS",
+            rows = groups.map { g ->
+                ProtocolGroupDto(
+                    group_id = g.groupId,
+                    group_name = g.groupName,
+                    cells = (cellsByGroup[g.groupId] ?: emptyList()).map { c ->
+                        ProtocolCellDto(slot_key = c.slotKey, detector_type = c.detectorType, value = c.value, updated_at = c.updatedAt)
+                    }
+                )
+            }
+        )
+    }
+
     private suspend fun enqueueSync(protocolId: String, dto: UploadProtocolDto) {
         val serialized = JSONObject().apply {
             put("protocol_id", dto.protocol_id)
             put("finished_at", dto.finished_at)
             put("technician_id", dto.technician_id)
-            // serialized subgroups...
+            put("rows", JSONArray().also { arr ->
+                dto.rows.forEach { row ->
+                    arr.put(JSONObject().apply {
+                        put("group_id", row.group_id)
+                        put("group_name", row.group_name)
+                        put("cells", JSONArray().also { ca ->
+                            row.cells.forEach { c ->
+                                ca.put(JSONObject().apply {
+                                    put("slot_key", c.slot_key)
+                                    put("detector_type", c.detector_type)
+                                    put("value", c.value)
+                                    put("updated_at", c.updated_at)
+                                })
+                            }
+                        })
+                    })
+                }
+            })
         }.toString()
-        
+
         syncQueueDao.addToQueue(SyncQueueEntity(protocolId = protocolId, serializedUploadData = serialized))
-        
-        // Push status to "upload_pending"
-        val protocol = protocolDao.getProtocolById(protocolId)
-        if (protocol != null) {
-            protocolDao.insertOrUpdate(protocol.copy(localStatus = "upload_pending"))
-        }
+        protocolDao.updateStatus(protocolId, "upload_pending")
+        // Fires a real WorkManager job, not just this ViewModel's coroutine scope --
+        // it'll go out the moment a connection is available even if the app is
+        // closed a second after this call returns.
+        SyncWorkScheduler.scheduleImmediate(context)
     }
 
     /**
-     * Loops through background queues and uploads pending data in backoff retry
+     * Fast path for while the app is open: retries the queue right away instead
+     * of waiting on WorkManager's scheduling. SyncUploadWorker (via
+     * SyncWorkScheduler) is what keeps retrying in the background once this
+     * ViewModel/coroutine no longer exists.
      */
     fun processSyncQueue() {
         viewModelScope.launch(Dispatchers.IO) {
-            val pendingItems = syncQueueDao.getAllPending()
-            if (pendingItems.isEmpty()) return@launch
-
-            for (item in pendingItems) {
-                if (_isOffline.value) break
-                try {
-                    // Simulate posting elements
-                    val dummyDto = UploadProtocolDto(
-                        protocol_id = item.protocolId,
-                        finished_at = "2026-05-27T22:33:02Z",
-                        technician_id = "99283-FS",
-                        rows = emptyList()
-                    )
-                    val response = apiService.uploadProtocol(item.protocolId, dummyDto)
-                    if (response.isSuccessful) {
-                        syncQueueDao.removeFromQueue(item)
-                        val protocol = protocolDao.getProtocolById(item.protocolId)
-                        if (protocol != null) {
-                            protocolDao.insertOrUpdate(protocol.copy(localStatus = "synchronized"))
-                        }
-                    }
-                } catch (e: Exception) {
-                    // Back off and allow next retry
-                }
-            }
+            if (_isOffline.value) return@launch
+            syncQueueProcessor.processQueue()
         }
     }
 
@@ -757,7 +817,11 @@ class MainViewModel @Inject constructor(
      */
     fun deleteProtocolLocally(protocolId: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            protocolDao.deleteById(protocolId)
+            database.withTransaction {
+                groupCellDao.deleteAllForProtocol(protocolId)
+                protocolGroupDao.deleteAllForProtocol(protocolId)
+                protocolDao.deleteById(protocolId)
+            }
         }
     }
 
@@ -792,7 +856,8 @@ class MainViewModel @Inject constructor(
                             serverAddress = address,
                             port = port,
                             username = user,
-                            encryptedPasswordBase64 = pass
+                            encryptedPasswordBase64 = pass,
+                            codeword = key
                         )
                         serverConfigDao.saveConfig(config)
                         sessionManager.setNetworkConfig(address, port)
@@ -817,7 +882,8 @@ class MainViewModel @Inject constructor(
                         serverAddress = address,
                         port = port,
                         username = user,
-                        encryptedPasswordBase64 = pass
+                        encryptedPasswordBase64 = pass,
+                        codeword = key
                     )
                     serverConfigDao.saveConfig(config)
                     sessionManager.setNetworkConfig(address, port)
@@ -847,13 +913,7 @@ class MainViewModel @Inject constructor(
                 val body = response.body()!!
                 _syncState.value = SyncState.InProgress("Speichere ${body.protocols.size} Verträge…")
                 for (proto in body.protocols) {
-                    protocolDao.insertOrUpdate(ProtocolEntity(
-                        id = proto.id, name = proto.name, address = proto.address,
-                        contractNumber = proto.contract_number, interval = proto.interval,
-                        systemType = proto.system_type, localStatus = proto.status,
-                        decryptedPayloadJson = buildSyncPayloadJson(proto),
-                        lastEditedAt = proto.updated_at
-                    ))
+                    storeProtocolFromSyncDto(proto)
                 }
                 val config = serverConfigDao.getConfig() ?: ServerConfigEntity()
                 serverConfigDao.saveConfig(config.copy(lastFullSyncAt = body.sync_version))
@@ -874,7 +934,7 @@ class MainViewModel @Inject constructor(
                 val config = serverConfigDao.getConfig()
                 val since = config?.lastFullSyncAt ?: 0L
 
-                // 1. Collect cells modified locally since last sync
+                // 1. Collect cells modified locally since last sync (a couple of indexed queries, not a JSON scan)
                 val localChanges = collectLocalChanges(since)
 
                 // 2. Download server delta
@@ -884,21 +944,12 @@ class MainViewModel @Inject constructor(
                 }
                 val delta = deltaResp.body()!!
 
-                // 3. Merge server delta into local Room entities
+                // 3. Merge server delta into local tables (server wins only on newer updated_at,
+                //    protecting un-uploaded local pending edits)
                 _syncState.value = SyncState.InProgress("${delta.protocols.size} geänderte Verträge…")
                 for (proto in delta.protocols) {
                     val existing = protocolDao.getProtocolById(proto.id)
-                    val mergedPayload = if (existing != null) {
-                        mergeServerDeltaIntoLocal(existing.decryptedPayloadJson, proto)
-                    } else {
-                        buildSyncPayloadJson(proto)
-                    }
-                    protocolDao.insertOrUpdate(ProtocolEntity(
-                        id = proto.id, name = proto.name, address = proto.address,
-                        contractNumber = proto.contract_number, interval = proto.interval,
-                        systemType = proto.system_type, localStatus = proto.status,
-                        decryptedPayloadJson = mergedPayload, lastEditedAt = delta.sync_version
-                    ))
+                    if (existing != null) mergeSyncDtoIntoLocal(proto) else storeProtocolFromSyncDto(proto)
                 }
 
                 // 4. Upload local changes to server
@@ -910,9 +961,7 @@ class MainViewModel @Inject constructor(
                         uploadedCount = uploadResp.body()!!.applied
                         // Mark successfully uploaded protocols as synchronized
                         localChanges.map { it.protocol_id }.distinct().forEach { pid ->
-                            protocolDao.getProtocolById(pid)?.let { e ->
-                                protocolDao.insertOrUpdate(e.copy(localStatus = "synchronized"))
-                            }
+                            protocolDao.updateStatus(pid, "synchronized")
                         }
                     }
                 }
@@ -928,151 +977,116 @@ class MainViewModel @Inject constructor(
     /** Collect all cells with updated_at > since across local upload_pending protocols. */
     private suspend fun collectLocalChanges(since: Long): List<SyncCellChangeDto> {
         val changes = mutableListOf<SyncCellChangeDto>()
-        val allProtocols = protocolDao.getAllProtocolsFlow().first()
-        for (entity in allProtocols) {
-            if (entity.localStatus != "upload_pending") continue
-            try {
-                val root = JSONObject(entity.decryptedPayloadJson)
-                val rows = root.getJSONArray("rows")
-                for (i in 0 until rows.length()) {
-                    val row = rows.getJSONObject(i)
-                    val groupId = row.getString("group_id")
-                    val cells = row.getJSONArray("cells")
-                    for (j in 0 until cells.length()) {
-                        val cell = cells.getJSONObject(j)
-                        val updatedAt = cell.optLong("updated_at", 0L)
-                        if (updatedAt > since) {
-                            changes.add(SyncCellChangeDto(
-                                protocol_id = entity.id,
-                                group_id = groupId,
-                                slot_key = cell.getString("slot_key"),
-                                detector_type = cell.optString("detector_type", "-"),
-                                value = cell.optString("value", ""),
-                                updated_at = updatedAt
-                            ))
-                        }
-                    }
-                }
-            } catch (_: Exception) { }
+        val pendingProtocols = protocolDao.getAllProtocolsFlow().first().filter { it.localStatus == "upload_pending" }
+        for (entity in pendingProtocols) {
+            val changed = groupCellDao.getChangedSince(entity.id, since)
+            changed.forEach { c ->
+                changes.add(SyncCellChangeDto(
+                    protocol_id = entity.id,
+                    group_id = c.groupId,
+                    slot_key = c.slotKey,
+                    detector_type = c.detectorType,
+                    value = c.value,
+                    updated_at = c.updatedAt
+                ))
+            }
         }
         return changes
     }
 
-    /** Build the standard payload JSON from a SyncProtocolDto (used for full sync and new protocols). */
-    private fun buildSyncPayloadJson(proto: SyncProtocolDto): String {
-        return JSONObject().apply {
-            put("protocol_id", proto.id)
-            put("client_name", proto.name)
-            put("contract_number", proto.contract_number)
-            put("interval", proto.interval)
-            put("system_type", proto.system_type)
+    private fun columnsToJson(columns: List<ProtocolColumnDto>): String =
+        JSONArray().apply { columns.forEach { put(JSONObject().apply { put("key", it.key); put("label", it.label) }) } }.toString()
 
-            val defObj = JSONObject()
-            proto.definition?.let { def ->
-                val colsArr = JSONArray().also { arr -> def.columns.forEach { c -> arr.put(JSONObject().apply { put("key", c.key); put("label", c.label) }) } }
-                val valArr  = JSONArray().also { arr -> def.applicable_values.forEach { v -> arr.put(JSONObject().apply { put("value", v.value); put("label", v.label); put("is_defect", v.is_defect) }) } }
-                val dtArr   = JSONArray().also { arr -> def.detector_types.forEach { arr.put(it) } }
-                defObj.put("columns", colsArr)
-                defObj.put("applicable_values", valArr)
-                defObj.put("detector_types", dtArr)
+    private fun applicableValuesToJson(values: List<ApplicableValueDto>): String =
+        JSONArray().apply { values.forEach { put(JSONObject().apply { put("value", it.value); put("label", it.label); put("is_defect", it.is_defect) }) } }.toString()
+
+    private fun detectorTypesToJson(types: List<String>): String = JSONArray(types).toString()
+
+    /** Stores a brand-new protocol from a full/delta sync DTO directly into normalized tables. */
+    private suspend fun storeProtocolFromSyncDto(proto: SyncProtocolDto) {
+        database.withTransaction {
+            protocolDao.insertOrUpdate(ProtocolEntity(
+                id = proto.id, name = proto.name, address = proto.address,
+                contractNumber = proto.contract_number, interval = proto.interval,
+                systemType = proto.system_type, localStatus = proto.status,
+                columnsJson = columnsToJson(proto.definition?.columns ?: emptyList()),
+                applicableValuesJson = applicableValuesToJson(proto.definition?.applicable_values ?: emptyList()),
+                detectorTypesJson = detectorTypesToJson(proto.definition?.detector_types ?: emptyList()),
+                lastEditedAt = proto.updated_at,
+                mandantId = proto.mandant_id
+            ))
+            protocolGroupDao.deleteAllForProtocol(proto.id)
+            groupCellDao.deleteAllForProtocol(proto.id)
+
+            val groups = proto.rows.mapIndexed { i, row ->
+                ProtocolGroupEntity(
+                    protocolId = proto.id, groupId = row.group_id, groupName = row.group_name, groupType = row.group_type,
+                    anlageId = row.anlage_id, anlageName = row.anlage_name, anlageType = row.anlage_type, anlageInterval = row.anlage_interval,
+                    orderIndex = i
+                )
             }
-            put("definition", defObj)
-            put("rows", buildRowsArray(proto.rows))
-        }.toString()
-    }
-
-    private fun buildRowsArray(rows: List<SyncRowDto>): JSONArray =
-        JSONArray().also { arr ->
-            rows.forEach { row ->
-                arr.put(JSONObject().apply {
-                    put("group_id", row.group_id)
-                    put("group_name", row.group_name)
-                    put("group_type", row.group_type)
-                    row.anlage_id?.let { put("anlage_id", it) }
-                    row.anlage_name?.let { put("anlage_name", it) }
-                    row.anlage_type?.let { put("anlage_type", it) }
-                    row.anlage_interval?.let { put("anlage_interval", it) }
-                    put("cells", JSONArray().also { ca ->
-                        row.cells.forEach { c ->
-                            ca.put(JSONObject().apply {
-                                put("slot_key", c.slot_key); put("detector_type", c.detector_type)
-                                put("value", c.value); put("updated_at", c.updated_at)
-                            })
-                        }
-                    })
-                })
-            }
-        }
-
-    /**
-     * Merges a server delta into the existing local JSON payload.
-     * Server wins for cells with newer updated_at; local wins otherwise.
-     */
-    private fun mergeServerDeltaIntoLocal(localJson: String, serverDelta: SyncProtocolDto): String {
-        return try {
-            val root = JSONObject(localJson)
-            val localRows = root.getJSONArray("rows")
-
-            // group_id → row index map
-            val groupIdx = (0 until localRows.length()).associateBy { localRows.getJSONObject(it).getString("group_id") }
-
-            for (serverRow in serverDelta.rows) {
-                val idx = groupIdx[serverRow.group_id]
-                if (idx == null) {
-                    // New group from server
-                    localRows.put(JSONObject().apply {
-                        put("group_id", serverRow.group_id); put("group_name", serverRow.group_name)
-                        put("group_type", serverRow.group_type)
-                        put("cells", JSONArray().also { ca -> serverRow.cells.forEach { c -> ca.put(JSONObject().apply { put("slot_key", c.slot_key); put("detector_type", c.detector_type); put("value", c.value); put("updated_at", c.updated_at) }) } })
-                    })
-                    continue
-                }
-
-                val localRow = localRows.getJSONObject(idx)
-                val localCells = localRow.getJSONArray("cells")
-                val cellIdx = (0 until localCells.length()).associateBy { localCells.getJSONObject(it).getString("slot_key") }
-
-                for (sc in serverRow.cells) {
-                    val ci = cellIdx[sc.slot_key]
-                    if (ci == null) {
-                        localCells.put(JSONObject().apply { put("slot_key", sc.slot_key); put("detector_type", sc.detector_type); put("value", sc.value); put("updated_at", sc.updated_at) })
-                    } else {
-                        val lc = localCells.getJSONObject(ci)
-                        if (sc.updated_at > lc.optLong("updated_at", 0L)) {
-                            lc.put("detector_type", sc.detector_type)
-                            lc.put("value", sc.value)
-                            lc.put("updated_at", sc.updated_at)
-                        }
+            val cells = mutableListOf<GroupCellEntity>()
+            proto.rows.forEach { row ->
+                row.cells.forEachIndexed { j, c ->
+                    if (c.slot_key != "__grid__") {
+                        cells.add(GroupCellEntity(
+                            protocolId = proto.id, groupId = row.group_id, slotKey = c.slot_key,
+                            detectorType = c.detector_type, value = c.value, updatedAt = c.updated_at, orderIndex = j
+                        ))
                     }
                 }
             }
-            root.toString()
-        } catch (_: Exception) {
-            buildSyncPayloadJson(serverDelta)
+            if (groups.isNotEmpty()) protocolGroupDao.insertOrUpdateAll(groups)
+            if (cells.isNotEmpty()) groupCellDao.insertOrUpdateAll(cells)
         }
     }
 
-    private fun parseGroupsFromJson(jsonArray: JSONArray): List<ProtocolGroupDto> {
-        val list = mutableListOf<ProtocolGroupDto>()
-        for (i in 0 until jsonArray.length()) {
-            val obj = jsonArray.getJSONObject(i)
-            val cellsList = mutableListOf<ProtocolCellDto>()
-            val cellsArray = obj.getJSONArray("cells")
-            for (j in 0 until cellsArray.length()) {
-                val cellObj = cellsArray.getJSONObject(j)
-                cellsList.add(ProtocolCellDto(
-                    slot_key = cellObj.getString("slot_key"),
-                    detector_type = cellObj.getString("detector_type"),
-                    value = cellObj.optString("value", "")
-                ))
-            }
-            list.add(ProtocolGroupDto(
-                group_id = obj.getString("group_id"),
-                group_name = obj.getString("group_name"),
-                cells = cellsList
+    /** Merges a server delta into an EXISTING local protocol. Server wins only on newer updated_at. */
+    private suspend fun mergeSyncDtoIntoLocal(proto: SyncProtocolDto) {
+        database.withTransaction {
+            protocolDao.insertOrUpdate(ProtocolEntity(
+                id = proto.id, name = proto.name, address = proto.address,
+                contractNumber = proto.contract_number, interval = proto.interval,
+                systemType = proto.system_type, localStatus = proto.status,
+                columnsJson = columnsToJson(proto.definition?.columns ?: emptyList()),
+                applicableValuesJson = applicableValuesToJson(proto.definition?.applicable_values ?: emptyList()),
+                detectorTypesJson = detectorTypesToJson(proto.definition?.detector_types ?: emptyList()),
+                lastEditedAt = proto.updated_at,
+                mandantId = proto.mandant_id
             ))
+
+            val existingGroups = protocolGroupDao.getGroupsOnce(proto.id).associateBy { it.groupId }
+            val existingCells = groupCellDao.getCellsOnce(proto.id).associateBy { "${it.groupId}::${it.slotKey}" }
+            var nextOrder = (existingGroups.values.maxOfOrNull { it.orderIndex } ?: -1) + 1
+
+            val newGroups = mutableListOf<ProtocolGroupEntity>()
+            val newCells = mutableListOf<GroupCellEntity>()
+
+            proto.rows.forEach { row ->
+                if (!existingGroups.containsKey(row.group_id)) {
+                    newGroups.add(ProtocolGroupEntity(
+                        protocolId = proto.id, groupId = row.group_id, groupName = row.group_name, groupType = row.group_type,
+                        anlageId = row.anlage_id, anlageName = row.anlage_name, anlageType = row.anlage_type, anlageInterval = row.anlage_interval,
+                        orderIndex = nextOrder++
+                    ))
+                }
+                row.cells.forEachIndexed { j, c ->
+                    if (c.slot_key == "__grid__") return@forEachIndexed
+                    val key = "${row.group_id}::${c.slot_key}"
+                    val existing = existingCells[key]
+                    // Server wins only if its data is newer — protects un-uploaded local pending edits.
+                    if (existing == null || c.updated_at > existing.updatedAt) {
+                        newCells.add(GroupCellEntity(
+                            protocolId = proto.id, groupId = row.group_id, slotKey = c.slot_key,
+                            detectorType = c.detector_type, value = c.value, updatedAt = c.updated_at,
+                            orderIndex = existing?.orderIndex ?: j
+                        ))
+                    }
+                }
+            }
+            if (newGroups.isNotEmpty()) protocolGroupDao.insertOrUpdateAll(newGroups)
+            if (newCells.isNotEmpty()) groupCellDao.insertOrUpdateAll(newCells)
         }
-        return list
     }
 
     fun getSystemDefinitionsString(): String? {
@@ -1182,7 +1196,7 @@ class MainViewModel @Inject constructor(
             put("contract_number", item.contract_number)
             put("interval", item.interval)
             put("system_type", item.system_type)
-            
+
             val storedDefs = getSystemDefinitionsString() ?: getFallbackDefinitionsJson()
             val parsedObj = try { JSONObject(storedDefs) } catch (e: Exception) { JSONObject(getFallbackDefinitionsJson()) }
             val systemTypeStr = item.system_type
@@ -1201,7 +1215,7 @@ class MainViewModel @Inject constructor(
                         put(JSONObject().apply { put("key", "4"); put("label", "04") })
                     }
                     put("columns", cols)
-                    
+
                     val vals = JSONArray().apply {
                         if (item.interval == "Halbjährlich") {
                             put(JSONObject().apply { put("value", "H1"); put("label", "Halbjahr 1") })
@@ -1217,7 +1231,7 @@ class MainViewModel @Inject constructor(
                         put(JSONObject().apply { put("value", "Def."); put("label", "Defekt"); put("is_defect", true) })
                     }
                     put("applicable_values", vals)
-                    
+
                     val types = JSONArray().apply {
                         put("ZD"); put("DB"); put("RAS"); put("TDIF")
                     }
@@ -1235,7 +1249,7 @@ class MainViewModel @Inject constructor(
                     val row = JSONObject().apply {
                         put("group_id", "GRP %02d".format(g))
                         put("group_name", "Standardgruppe %d".format(g))
-                        
+
                         val cells = JSONArray().apply {
                             for (c in 1..totalColumnsCount) {
                                 val colItem = resolvedColumns.getJSONObject(c - 1)
@@ -1255,6 +1269,48 @@ class MainViewModel @Inject constructor(
             }
             put("rows", rows)
         }.toString()
+    }
+
+    // ── Protocol details dialog data (Search/Archive/Verlauf "Info" popup) ──────────────────
+
+    data class ProtocolDetailsData(
+        val clientName: String,
+        val address: String,
+        val systemType: String,
+        val contractNumber: String,
+        val interval: String,
+        val lastEditedAt: Long,
+        val activeCount: Int,
+        val triggeredCount: Int,
+        val defectiveList: List<DefectiveDetectorInfo>
+    )
+
+    data class DefectiveDetectorInfo(val groupId: String, val groupName: String, val slotKey: String, val type: String)
+
+    suspend fun getProtocolDetails(protocolId: String): ProtocolDetailsData? {
+        val protocol = protocolDao.getProtocolById(protocolId) ?: return null
+        val groupNames = protocolGroupDao.getGroupsOnce(protocolId).associate { it.groupId to it.groupName }
+        val activeCount = groupCellDao.countActive(protocolId)
+        val triggeredCount = groupCellDao.countTriggered(protocolId)
+        val defective = groupCellDao.getDefective(protocolId).map { c ->
+            DefectiveDetectorInfo(
+                groupId = c.groupId,
+                groupName = groupNames[c.groupId] ?: "Standardgruppe",
+                slotKey = c.slotKey,
+                type = c.detectorType
+            )
+        }
+        return ProtocolDetailsData(
+            clientName = protocol.name,
+            address = protocol.address,
+            systemType = protocol.systemType,
+            contractNumber = protocol.contractNumber,
+            interval = protocol.interval,
+            lastEditedAt = protocol.lastEditedAt,
+            activeCount = activeCount,
+            triggeredCount = triggeredCount,
+            defectiveList = defective
+        )
     }
 
     private fun getOfflineFallbackMockItems(): List<ProtocolItemDto> {

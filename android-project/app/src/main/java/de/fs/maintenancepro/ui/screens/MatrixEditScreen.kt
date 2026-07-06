@@ -34,7 +34,7 @@ import androidx.compose.ui.unit.sp
 import de.fs.maintenancepro.R
 import de.fs.maintenancepro.ui.theme.*
 import de.fs.maintenancepro.ui.viewmodel.MainViewModel
-import org.json.JSONObject
+import org.json.JSONArray
 
 data class EditRowModel(
     val groupId: String,
@@ -66,46 +66,31 @@ fun MatrixEditScreen(
 
     if (protocolEntity == null) return
 
-    val tableData = remember(protocolEntity.decryptedPayloadJson) {
-        try {
-            val root = JSONObject(protocolEntity.decryptedPayloadJson)
-            val rowsArr = root.getJSONArray("rows")
-            val defObj = root.optJSONObject("definition")
-            val colsArr = defObj?.optJSONArray("columns")
-            
-            val detTypesArr = defObj?.optJSONArray("detector_types")
-            val detChoices = if (detTypesArr != null && detTypesArr.length() > 0) {
-                List(detTypesArr.length()) { i -> detTypesArr.getString(i) }
-            } else {
-                listOf("-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR")
-            }
+    // Structure editor now reads straight from the normalized tables — no JSON parsing needed.
+    val groupsState by viewModel.getGroupsFlow(protocolId).collectAsState(initial = emptyList())
+    val cellsState by viewModel.getCellsFlow(protocolId).collectAsState(initial = emptyList())
 
-            val rows = List(rowsArr.length()) { i ->
-                val rowO = rowsArr.getJSONObject(i)
-                val cellsArr = rowO.getJSONArray("cells")
-                val cells = List(cellsArr.length()) { j ->
-                    val cellO = cellsArr.getJSONObject(j)
-                    CellModel(
-                        slotKey = cellO.getString("slot_key"),
-                        detectorType = cellO.getString("detector_type"),
-                        value = cellO.optString("value", "")
-                    )
-                }
-                EditRowModel(
-                    groupId = rowO.getString("group_id"),
-                    groupName = rowO.optString("group_name", ""),
-                    groupType = rowO.optString("group_type", "NAM"),
-                    cells = cells
-                )
-            }
-            Pair(rows, detChoices)
+    val detChoices = remember(protocolEntity.detectorTypesJson) {
+        try {
+            val arr = JSONArray(protocolEntity.detectorTypesJson)
+            if (arr.length() > 0) List(arr.length()) { i -> arr.getString(i) }
+            else listOf("-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR")
         } catch (e: Exception) {
-            Pair(emptyList<EditRowModel>(), listOf("-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR"))
+            listOf("-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR")
         }
     }
 
-    val rowsList = tableData.first
-    val detChoices = tableData.second
+    val rowsList = remember(groupsState, cellsState) {
+        val cellsByGroup = cellsState.groupBy { it.groupId }
+        groupsState.map { g ->
+            EditRowModel(
+                groupId = g.groupId,
+                groupName = g.groupName,
+                groupType = g.groupType,
+                cells = cellsByGroup[g.groupId]?.map { c -> CellModel(c.slotKey, c.detectorType, c.value) } ?: emptyList()
+            )
+        }
+    }
 
     var activeCellForDetectorDialog by remember { mutableStateOf<Pair<EditRowModel, CellModel>?>(null) }
 
@@ -264,7 +249,12 @@ fun RowEditCard(
     viewModel: MainViewModel,
     onSelectCell: (EditRowModel, CellModel) -> Unit
 ) {
-    var grpIdInput by remember(row.groupId) { mutableStateOf(row.groupId) }
+    // row.groupId is "{device}::{grp_num}" on the wire -- only the Gruppen-Nummer is
+    // meaningful for a technician to see/edit; the device prefix stays fixed underneath.
+    val devicePrefix = remember(row.groupId) { row.groupId.substringBeforeLast("::", "") }
+    val grpNumOnly = remember(row.groupId) { row.groupId.substringAfterLast("::") }
+
+    var grpIdInput by remember(row.groupId) { mutableStateOf(grpNumOnly) }
     var grpNameInput by remember(row.groupName) { mutableStateOf(row.groupName) }
     var showDeleteDialog by remember { mutableStateOf(false) }
 
@@ -274,7 +264,7 @@ fun RowEditCard(
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
             title = { Text("Segment löschen", fontWeight = FontWeight.Bold) },
-            text = { Text("Möchten Sie die Gruppe \"${row.groupId}\" wirklich löschen? Alle zugeordneten Prüfergebnisse dieses Segments werden dauerhaft entfernt!") },
+            text = { Text("Möchten Sie die Gruppe \"$grpNumOnly\" wirklich löschen? Alle zugeordneten Prüfergebnisse dieses Segments werden dauerhaft entfernt!") },
             confirmButton = {
                 TextButton(onClick = {
                     showDeleteDialog = false
@@ -313,15 +303,16 @@ fun RowEditCard(
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, imeAction = ImeAction.Done),
                     modifier = Modifier.weight(1f),
                     trailingIcon = {
-                        if (grpIdInput != row.groupId) {
+                        if (grpIdInput != grpNumOnly) {
                             IconButton(onClick = {
                                 if (grpIdInput.trim().isEmpty()) {
                                     Toast.makeText(context, "Index-ID darf nicht leer sein", Toast.LENGTH_SHORT).show()
                                 } else {
+                                    val newFullGroupId = if (devicePrefix.isNotEmpty()) "$devicePrefix::${grpIdInput.trim()}" else grpIdInput.trim()
                                     viewModel.updateGroupDetails(
                                         protocolId = protocolId,
                                         oldGroupId = row.groupId,
-                                        newGroupId = grpIdInput.trim(),
+                                        newGroupId = newFullGroupId,
                                         newGroupName = grpNameInput,
                                         newGroupType = row.groupType
                                     )

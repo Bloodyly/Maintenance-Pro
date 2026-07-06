@@ -2,21 +2,20 @@ package de.fs.maintenancepro.ui.screens
 
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
@@ -27,16 +26,36 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import de.fs.maintenancepro.R
+import de.fs.maintenancepro.data.local.GroupCellEntity
+import de.fs.maintenancepro.data.local.ProtocolGroupEntity
 import de.fs.maintenancepro.ui.theme.*
 import de.fs.maintenancepro.ui.viewmodel.MainViewModel
-import org.json.JSONObject
+import kotlin.math.ceil
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
+import org.json.JSONArray
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -67,61 +86,95 @@ fun InspectionScreen(
         return
     }
 
-    // High performance model transformations remembered to avoid JSON overhead during draw loops
-    val clientName = remember(protocolEntity.decryptedPayloadJson) {
-        try { JSONObject(protocolEntity.decryptedPayloadJson).optString("client_name", "Unbekannt") } catch (e: Exception) { "Unbekannt" }
+    // Rows/cells come straight from the normalized Room tables (protocol_groups/group_cells) via
+    // reactive Flow — no JSON parsing on the render hot path at all anymore. Nullable initial
+    // state (instead of emptyList()) lets us tell "not loaded yet" apart from "genuinely empty".
+    var groupsStateOrNull by remember(protocolId) { mutableStateOf<List<ProtocolGroupEntity>?>(null) }
+    var cellsStateOrNull by remember(protocolId) { mutableStateOf<List<GroupCellEntity>?>(null) }
+    LaunchedEffect(protocolId) {
+        viewModel.getGroupsFlow(protocolId).collect { groupsStateOrNull = it }
     }
-    val systemType = remember(protocolEntity.decryptedPayloadJson) {
-        try { JSONObject(protocolEntity.decryptedPayloadJson).optString("system_type", "BMA") } catch (e: Exception) { "BMA" }
-    }
-    val intervalText = remember(protocolEntity.decryptedPayloadJson) {
-        try {
-            val root = JSONObject(protocolEntity.decryptedPayloadJson)
-            // TAIFUN imports set anlage_interval on rows (e.g. "Quartalsweise") but leave
-            // the contract-level interval at the default "Halbjährlich". Prefer row-level value.
-            val anlagenInterval = root.optJSONArray("rows")?.optJSONObject(0)
-                ?.optString("anlage_interval", "") ?: ""
-            anlagenInterval.ifBlank { root.optString("interval", "Jährlich") }
-        } catch (e: Exception) { "Jährlich" }
+    LaunchedEffect(protocolId) {
+        viewModel.getCellsFlow(protocolId).collect { cellsStateOrNull = it }
     }
 
-    val tableData = remember(protocolEntity.decryptedPayloadJson) {
+    val groupsState = groupsStateOrNull
+    val cellsState = cellsStateOrNull
+    if (groupsState == null || cellsState == null) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+        return
+    }
+
+    val clientName = protocolEntity.name
+    val systemType = protocolEntity.systemType
+
+    val intervalText = remember(groupsState, protocolEntity.interval) {
+        // TAIFUN imports set anlage_interval on the row (e.g. "Quartalsweise") but leave the
+        // contract-level interval at the default "Halbjährlich". Prefer row-level value.
+        groupsState.firstOrNull()?.anlageInterval?.takeIf { it.isNotBlank() }
+            ?: protocolEntity.interval.ifBlank { "Jährlich" }
+    }
+
+    // Columns are small, structural, rarely-changing metadata — cheap to parse synchronously.
+    val columnsList = remember(protocolEntity.columnsJson) {
         try {
-            val root = JSONObject(protocolEntity.decryptedPayloadJson)
-            val def = root.getJSONObject("definition")
-            val colsObj = def.getJSONArray("columns")
-            val columns = List(colsObj.length()) { i ->
-                val o = colsObj.getJSONObject(i)
+            val arr = JSONArray(protocolEntity.columnsJson)
+            List(arr.length()) { i ->
+                val o = arr.getJSONObject(i)
                 ColumnModel(o.getString("key"), o.getString("label"))
             }
-            val rowsObj = root.getJSONArray("rows")
-            val rows = List(rowsObj.length()) { i ->
-                val rowO = rowsObj.getJSONObject(i)
-                val cellsObj = rowO.getJSONArray("cells")
-                val cells = List(cellsObj.length()) { j ->
-                    val cellO = cellsObj.getJSONObject(j)
-                    CellModel(
-                        slotKey = cellO.getString("slot_key"),
-                        detectorType = cellO.getString("detector_type"),
-                        value = cellO.optString("value", "")
-                    )
-                }.filter { it.slotKey != "__grid__" }
-                RowModel(
-                    groupId = rowO.getString("group_id"),
-                    groupName = rowO.optString("group_name", "").ifBlank {
-                        rowO.optString("anlage_name", "")
-                    },
-                    cells = cells
-                )
-            }.filter { it.cells.isNotEmpty() }
-            Pair(columns, rows)
         } catch (e: Exception) {
-            Pair(emptyList<ColumnModel>(), emptyList<RowModel>())
+            emptyList()
         }
     }
 
-    val columnsList = tableData.first
-    val rowsList = tableData.second
+    val rowsList = remember(groupsState, cellsState) {
+        val cellsByGroup = cellsState.groupBy { it.groupId }
+        groupsState.mapNotNull { g ->
+            val cells = cellsByGroup[g.groupId]?.map { c -> CellModel(c.slotKey, c.detectorType, c.value) } ?: emptyList()
+            if (cells.isEmpty()) null
+            else RowModel(
+                groupId = g.groupId,
+                groupName = g.groupName.ifBlank { g.anlageName ?: "" },
+                cells = cells
+            )
+        }
+    }
+
+    // Optimistic local overlay: cell edits render instantly here, DB write happens in background.
+    // Key = "groupId::slotKey". Even though the DB write is now a fast targeted UPDATE (not a
+    // whole-blob rewrite), Flow emission + recomposition still isn't perceptibly instant, so this
+    // overlay keeps taps feeling immediate.
+    val pendingOverrides = remember { mutableStateMapOf<String, String>() }
+
+    // Once the DB confirms an override's value via the Flow, drop it from the overlay.
+    LaunchedEffect(cellsState) {
+        if (pendingOverrides.isEmpty()) return@LaunchedEffect
+        val cellMap = cellsState.associateBy { "${it.groupId}::${it.slotKey}" }
+        val toRemove = mutableListOf<String>()
+        for ((key, overrideVal) in pendingOverrides) {
+            val cell = cellMap[key]
+            if (cell == null || cell.value == overrideVal) toRemove.add(key)
+        }
+        toRemove.forEach { pendingOverrides.remove(it) }
+    }
+
+    // Fill progress across all active (non-disabled) detector slots, including
+    // not-yet-persisted optimistic overlay edits so the bar updates instantly while tapping.
+    var totalActiveCells = 0
+    var filledActiveCells = 0
+    rowsList.forEach { row ->
+        row.cells.forEach { cell ->
+            if (cell.detectorType != "-") {
+                totalActiveCells++
+                val overrideVal = pendingOverrides["${row.groupId}::${cell.slotKey}"]
+                if ((overrideVal ?: cell.value).isNotEmpty()) filledActiveCells++
+            }
+        }
+    }
+    val fillProgress = if (totalActiveCells > 0) filledActiveCells.toFloat() / totalActiveCells else 0f
 
     // Derive period-based applicable values from interval, ignoring server-provided list
     val (periodValues, defaultPeriod) = remember(intervalText) {
@@ -164,6 +217,27 @@ fun InspectionScreen(
     }
 
     val totalColumns = columnsList.size
+
+    val density = LocalDensity.current
+    val hapticFeedback = LocalHapticFeedback.current
+
+    // Cell pixel dimensions (updated when zoomScale changes for drag-select coordinate math)
+    val cellWidthPx = with(density) { (72f * zoomScale).dp.toPx() }
+    val cellHeightPx = with(density) { (48f * zoomScale).dp.toPx() }
+
+    // Always-current references for use inside long-lived pointerInput coroutine
+    val currentRowsList = rememberUpdatedState(rowsList)
+    val currentActiveVal = rememberUpdatedState(activeSelectVal)
+    val currentCellWidthPx = rememberUpdatedState(cellWidthPx)
+    val currentCellHeightPx = rememberUpdatedState(cellHeightPx)
+
+    // Rubber-band drag-select state
+    var isDragSelecting by remember { mutableStateOf(false) }
+    var isClearMode by remember { mutableStateOf(false) } // decided once from the origin cell at drag-start
+    var dragSelStartGrid by remember { mutableStateOf(Offset.Zero) }
+    var dragSelEndGrid by remember { mutableStateOf(Offset.Zero) }
+    var dragScrollX by remember { mutableStateOf(0f) }
+    var dragScrollY by remember { mutableStateOf(0f) }
 
     // Single horizontal and vertical scroll state for perfect 2D diagonal scrolling without lag/drift!
     val horizontalScrollState = rememberScrollState()
@@ -324,7 +398,7 @@ fun InspectionScreen(
                 }
             }
 
-            // High Performance Zoom & Reset bar for instant resizing of high-density grids
+            // Fill-progress bar (left) + Zoom & Reset controls (right)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -335,17 +409,18 @@ fun InspectionScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f).padding(end = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        Icons.Default.ZoomIn,
-                        contentDescription = null,
-                        tint = IndustrialOutline,
-                        modifier = Modifier.size(16.dp)
+                    LinearProgressIndicator(
+                        progress = { fillProgress },
+                        modifier = Modifier.weight(1f).height(6.dp).clip(RoundedCornerShape(3.dp)),
+                        color = IndustrialPrimary,
+                        trackColor = LightSurfaceHigh
                     )
                     Text(
-                        text = "Zoom: ${(zoomScale * 100).toInt()}%",
+                        text = "${(fillProgress * 100).toInt()}%",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = IndustrialOnSurface
@@ -355,6 +430,18 @@ fun InspectionScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Icon(
+                        Icons.Default.ZoomIn,
+                        contentDescription = null,
+                        tint = IndustrialOutline,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = "${(zoomScale * 100).toInt()}%",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = IndustrialOnSurface
+                    )
                     IconButton(
                         onClick = { zoomScale = (zoomScale - 0.1f).coerceIn(0.6f, 1.8f) },
                         modifier = Modifier.size(32.dp)
@@ -416,7 +503,9 @@ fun InspectionScreen(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
-                                        text = row.groupId,
+                                        // row.groupId is "{device}::{grp_num}" on the wire -- only the
+                                        // Gruppen-Nummer is meaningful to show in this narrow column.
+                                        text = row.groupId.substringAfterLast("::"),
                                         fontWeight = FontWeight.Bold,
                                         color = IndustrialPrimary,
                                         fontSize = cellFontSize
@@ -506,98 +595,180 @@ fun InspectionScreen(
                         }
                     }
 
-                    // Main Interactive 2D Grid Cells
+                    // Main Interactive 2D Grid Cells — outer Box handles rubber-band drag-select
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f)
-                            .verticalScroll(verticalScrollState)
-                            .horizontalScroll(horizontalScrollState)
-                    ) {
-                        Column {
-                            rowsList.forEach { row ->
-                                Row(
-                                    modifier = Modifier.height(cellHeight)
-                                ) {
-                                    row.cells.forEach { cell ->
-                                        val cellVal = cell.value
-                                        val detectorType = cell.detectorType
-                                        val isDisabled = detectorType == "-"
+                            .pointerInput(zoomScale, protocolEntity.isArchived) {
+                                if (protocolEntity.isArchived) return@pointerInput
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = { offset ->
+                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        dragScrollX = horizontalScrollState.value.toFloat()
+                                        dragScrollY = verticalScrollState.value.toFloat()
+                                        val gx = offset.x + dragScrollX
+                                        val gy = offset.y + dragScrollY
+                                        dragSelStartGrid = Offset(gx, gy)
+                                        dragSelEndGrid = Offset(gx, gy)
 
-                                        Box(
-                                            modifier = Modifier
-                                                .width(cellWidth)
-                                                .height(cellHeight)
-                                                .background(
-                                                    if (isDisabled) LightSurfaceLow 
-                                                    else if (cellVal.isNotEmpty()) {
-                                                        if (cellVal == "Def." || cellVal.lowercase().contains("def")) IndustrialErrorContainer 
-                                                        else IndustrialPrimaryContainer.copy(alpha = 0.12f)
-                                                    } else Color.White
-                                                )
-                                                .border(0.5.dp, IndustrialOutlineVariant)
-                                                .clickable(
-                                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                                                    indication = null,
-                                                    enabled = !isDisabled && !protocolEntity.isArchived
-                                                ) {
-                                                    if (cellVal.isEmpty()) {
-                                                        viewModel.editCell(protocolId, row.groupId, cell.slotKey, activeSelectVal)
-                                                    } else if (cellVal == activeSelectVal) {
-                                                        viewModel.editCell(protocolId, row.groupId, cell.slotKey, "")
-                                                    } else {
-                                                        Toast.makeText(context, "Melder geschützt geprüft ($cellVal).", Toast.LENGTH_SHORT).show()
-                                                    }
-                                                },
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            if (isDisabled) {
-                                                Text(text = "-", color = IndustrialOutline.copy(alpha = 0.5f), fontSize = cellFontSize)
-                                            } else if (cellVal.isNotEmpty()) {
-                                                if (cellVal == "Def." || cellVal.lowercase().contains("def")) {
-                                                    Row(
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        horizontalArrangement = Arrangement.spacedBy(1.dp)
-                                                    ) {
-                                                        Icon(
-                                                            Icons.Default.Warning,
-                                                            contentDescription = null,
-                                                            tint = IndustrialError,
-                                                            modifier = Modifier.size((11 * zoomScale).dp)
-                                                        )
-                                                        Text(
-                                                            text = "DEF.",
-                                                            color = IndustrialError,
-                                                            fontWeight = FontWeight.ExtraBold,
-                                                            fontSize = cellFontSize
-                                                        )
-                                                    }
-                                                } else {
-                                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                                        Text(
-                                                            text = cellVal,
-                                                            color = IndustrialPrimary,
-                                                            fontWeight = FontWeight.Bold,
-                                                            fontSize = cellFontSize
-                                                        )
-                                                        Text(
-                                                            text = detectorType,
-                                                            color = IndustrialOutline,
-                                                            fontSize = subFontSize,
-                                                            fontWeight = FontWeight.Light
-                                                        )
+                                        // Mode is decided ONCE from the origin cell: already-filled origin
+                                        // means the gesture clears matching cells, empty origin means it fills.
+                                        val wPx = currentCellWidthPx.value
+                                        val hPx = currentCellHeightPx.value
+                                        val originRow = (gy / hPx).toInt()
+                                        val originCol = (gx / wPx).toInt()
+                                        val rows = currentRowsList.value
+                                        val originRowModel = rows.getOrNull(originRow)
+                                        val originCell = originRowModel?.cells?.getOrNull(originCol)
+                                        val originVal = originCell?.let { c ->
+                                            pendingOverrides["${originRowModel.groupId}::${c.slotKey}"] ?: c.value
+                                        } ?: ""
+                                        isClearMode = originCell != null && originCell.detectorType != "-" && originVal.isNotEmpty()
+
+                                        isDragSelecting = true
+                                    },
+                                    onDrag = { change, _ ->
+                                        change.consume()
+                                        dragSelEndGrid = Offset(
+                                            change.position.x + dragScrollX,
+                                            change.position.y + dragScrollY
+                                        )
+                                    },
+                                    onDragEnd = {
+                                        isDragSelecting = false
+                                        val selLeft = min(dragSelStartGrid.x, dragSelEndGrid.x)
+                                        val selRight = max(dragSelStartGrid.x, dragSelEndGrid.x)
+                                        val selTop = min(dragSelStartGrid.y, dragSelEndGrid.y)
+                                        val selBottom = max(dragSelStartGrid.y, dragSelEndGrid.y)
+                                        val wPx = currentCellWidthPx.value
+                                        val hPx = currentCellHeightPx.value
+                                        val fillVal = currentActiveVal.value
+                                        val clearMode = isClearMode
+                                        val allChanges = mutableMapOf<String, MutableMap<String, String>>()
+                                        var applied = 0
+                                        currentRowsList.value.forEachIndexed { rowIdx, row ->
+                                            val cTop = rowIdx * hPx
+                                            val cBottom = cTop + hPx
+                                            if (cTop < selBottom && cBottom > selTop) {
+                                                row.cells.forEachIndexed { colIdx, cell ->
+                                                    if (cell.detectorType != "-") {
+                                                        val cLeft = colIdx * wPx
+                                                        val cRight = cLeft + wPx
+                                                        if (cLeft < selRight && cRight > selLeft) {
+                                                            val key = "${row.groupId}::${cell.slotKey}"
+                                                            val curVal = pendingOverrides[key] ?: cell.value
+                                                            val newVal: String? = if (clearMode) {
+                                                                // Only clear cells matching the active period; protect other periods' entries
+                                                                if (curVal == fillVal) "" else null
+                                                            } else {
+                                                                // Only fill empty cells; protect already-filled (other period) entries
+                                                                if (curVal.isEmpty()) fillVal else null
+                                                            }
+                                                            if (newVal != null) {
+                                                                pendingOverrides[key] = newVal
+                                                                allChanges.getOrPut(row.groupId) { mutableMapOf() }[cell.slotKey] = newVal
+                                                                applied++
+                                                            }
+                                                        }
                                                     }
                                                 }
-                                            } else {
-                                                Text(
-                                                    text = detectorType,
-                                                    color = IndustrialOutline.copy(alpha = 0.7f),
-                                                    fontSize = cellFontSize
+                                            }
+                                        }
+                                        viewModel.batchEditMultiGroupCells(protocolId, allChanges)
+                                        if (applied > 0) {
+                                            val msg = if (clearMode) "$applied Melder zurückgesetzt" else "$applied Melder auf $fillVal gesetzt"
+                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    onDragCancel = { isDragSelecting = false }
+                                )
+                            }
+                    ) {
+                        // Inner scrollable grid
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .fillMaxHeight()
+                                .verticalScroll(verticalScrollState)
+                                .horizontalScroll(horizontalScrollState)
+                        ) {
+                            Column {
+                                rowsList.forEach { row ->
+                                    Row(modifier = Modifier.height(cellHeight)) {
+                                        row.cells.forEach { cell ->
+                                            key(row.groupId, cell.slotKey) {
+                                                val overrideKey = "${row.groupId}::${cell.slotKey}"
+                                                // Read override first: instant visual feedback without waiting for DB round-trip
+                                                val cellVal = pendingOverrides[overrideKey] ?: cell.value
+                                                DetectorCell(
+                                                    cellVal = cellVal,
+                                                    detectorType = cell.detectorType,
+                                                    cellWidth = cellWidth,
+                                                    cellHeight = cellHeight,
+                                                    cellFontSize = cellFontSize,
+                                                    subFontSize = subFontSize,
+                                                    zoomScale = zoomScale,
+                                                    enabled = !protocolEntity.isArchived,
+                                                    onClick = {
+                                                        if (cellVal.isEmpty()) {
+                                                            pendingOverrides[overrideKey] = activeSelectVal
+                                                            viewModel.editCell(protocolId, row.groupId, cell.slotKey, activeSelectVal)
+                                                        } else if (cellVal == activeSelectVal) {
+                                                            pendingOverrides[overrideKey] = ""
+                                                            viewModel.editCell(protocolId, row.groupId, cell.slotKey, "")
+                                                        } else {
+                                                            Toast.makeText(context, "Melder geschützt geprüft ($cellVal).", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    }
                                                 )
                                             }
                                         }
                                     }
                                 }
+                            }
+                        }
+
+                        // Selection overlay — always in tree so ALL state reads happen in DrawScope.
+                        // DrawScope state reads → only Canvas redraws, zero cell recomposition.
+                        Canvas(modifier = Modifier.matchParentSize()) {
+                            if (!isDragSelecting) return@Canvas
+                            val selLeft = min(dragSelStartGrid.x, dragSelEndGrid.x)
+                            val selRight = max(dragSelStartGrid.x, dragSelEndGrid.x)
+                            val selTop = min(dragSelStartGrid.y, dragSelEndGrid.y)
+                            val selBottom = max(dragSelStartGrid.y, dragSelEndGrid.y)
+                            val modeColor = if (isClearMode) Color(0xFFDC2626) else Color(0xFF2563EB)
+
+                            // Cell-snapped filled highlight
+                            val colStart = floor(selLeft / cellWidthPx).toInt().coerceAtLeast(0)
+                            val colEnd = ceil(selRight / cellWidthPx).toInt()
+                            val rowStart = floor(selTop / cellHeightPx).toInt().coerceAtLeast(0)
+                            val rowEnd = ceil(selBottom / cellHeightPx).toInt()
+                            val snapLeft = (colStart * cellWidthPx - dragScrollX).coerceAtLeast(0f)
+                            val snapTop = (rowStart * cellHeightPx - dragScrollY).coerceAtLeast(0f)
+                            val snapRight = colEnd * cellWidthPx - dragScrollX
+                            val snapBottom = rowEnd * cellHeightPx - dragScrollY
+                            if (snapRight > snapLeft && snapBottom > snapTop) {
+                                drawRect(
+                                    color = modeColor.copy(alpha = 0.18f),
+                                    topLeft = Offset(snapLeft, snapTop),
+                                    size = Size(snapRight - snapLeft, snapBottom - snapTop)
+                                )
+                            }
+
+                            // Dashed rubber-band border (actual drag extent)
+                            val w = selRight - selLeft
+                            val h = selBottom - selTop
+                            if (w > 4f && h > 4f) {
+                                drawRect(
+                                    color = modeColor,
+                                    topLeft = Offset(selLeft - dragScrollX, selTop - dragScrollY),
+                                    size = Size(w, h),
+                                    style = Stroke(
+                                        width = 2.dp.toPx(),
+                                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 5f))
+                                    )
+                                )
                             }
                         }
                     }
@@ -615,6 +786,89 @@ data class RowModel(val groupId: String, val groupName: String, val cells: List<
 data class ValueModel(val value: String, val label: String, val isDefect: Boolean)
 
 // ---------------- Isolated Composable Elements avoiding whole-screen recompositions ----------------
+
+// Extracted so each detector cell is its own skippable recompose scope — without this, Row/Column/Box
+// (all inline in Compose foundation) flatten the whole grid into one scope, so a single cell edit
+// would recompose every cell in the table instead of just the one that changed.
+@Composable
+private fun DetectorCell(
+    cellVal: String,
+    detectorType: String,
+    cellWidth: Dp,
+    cellHeight: Dp,
+    cellFontSize: TextUnit,
+    subFontSize: TextUnit,
+    zoomScale: Float,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val isDisabled = detectorType == "-"
+    Box(
+        modifier = Modifier
+            .width(cellWidth)
+            .height(cellHeight)
+            .background(
+                if (isDisabled) LightSurfaceLow
+                else if (cellVal.isNotEmpty()) {
+                    if (cellVal == "Def." || cellVal.lowercase().contains("def")) IndustrialErrorContainer
+                    else IndustrialPrimaryContainer.copy(alpha = 0.12f)
+                } else Color.White
+            )
+            .border(0.5.dp, IndustrialOutlineVariant)
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                enabled = !isDisabled && enabled,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        if (isDisabled) {
+            Text(text = "-", color = IndustrialOutline.copy(alpha = 0.5f), fontSize = cellFontSize)
+        } else if (cellVal.isNotEmpty()) {
+            if (cellVal == "Def." || cellVal.lowercase().contains("def")) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(1.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = IndustrialError,
+                        modifier = Modifier.size((11 * zoomScale).dp)
+                    )
+                    Text(
+                        text = "DEF.",
+                        color = IndustrialError,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = cellFontSize
+                    )
+                }
+            } else {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = cellVal,
+                        color = IndustrialPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = cellFontSize
+                    )
+                    Text(
+                        text = detectorType,
+                        color = IndustrialOutline,
+                        fontSize = subFontSize,
+                        fontWeight = FontWeight.Light
+                    )
+                }
+            }
+        } else {
+            Text(
+                text = detectorType,
+                color = IndustrialOutline.copy(alpha = 0.7f),
+                fontSize = cellFontSize
+            )
+        }
+    }
+}
 
 @Composable
 fun TableHeaderCell(label: String) {

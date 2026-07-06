@@ -11,7 +11,11 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -19,72 +23,45 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import de.fs.maintenancepro.ui.theme.*
-import org.json.JSONObject
+import de.fs.maintenancepro.ui.viewmodel.MainViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 @Composable
 fun ProtocolDetailsDialog(
-    payloadJson: String,
+    protocolId: String,
+    viewModel: MainViewModel,
     onDismiss: () -> Unit
 ) {
-    val rootJson = remember(payloadJson) {
-        JSONObject(payloadJson)
+    var details by remember { mutableStateOf<MainViewModel.ProtocolDetailsData?>(null) }
+
+    LaunchedEffect(protocolId) {
+        details = viewModel.getProtocolDetails(protocolId)
     }
 
-    val name = rootJson.optString("client_name", "Unbekannt")
-    val systemType = rootJson.optString("system_type", "BMA")
-    val address = rootJson.optString("address", "")
-    val contractNumber = rootJson.optString("contract_number", "")
-    val interval = rootJson.optString("interval", "Jährlich")
-    val lastEditedBy = rootJson.optString("last_edited_by", "Thomas Prantl")
-    val lastEditedAtLong = rootJson.optLong("last_edited_at", 0L)
-    val lastEditedTime = if (lastEditedAtLong > 0L) {
+    val data = details
+    if (data == null) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("Objektdetails", fontWeight = FontWeight.Bold, color = IndustrialPrimary) },
+            text = {
+                Box(modifier = Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = IndustrialPrimary)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = onDismiss) { Text("Schließen", fontWeight = FontWeight.Bold, color = IndustrialPrimary) }
+            }
+        )
+        return
+    }
+
+    val lastEditedTime = if (data.lastEditedAt > 0L) {
         val sdf = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.GERMAN)
-        sdf.format(Date(lastEditedAtLong))
+        sdf.format(Date(data.lastEditedAt))
     } else {
         "Unbearbeitet"
-    }
-
-    // Detector stats calculations
-    var activeCount = 0
-    var triggeredCount = 0
-    val defectiveList = remember(payloadJson) {
-        val list = mutableListOf<DefectiveItem>()
-        val rows = rootJson.optJSONArray("rows")
-        if (rows != null) {
-            for (i in 0 until rows.length()) {
-                val row = rows.getJSONObject(i)
-                val groupId = row.optString("group_id", "")
-                val groupName = row.optString("group_name", "Standardgruppe")
-                val cells = row.optJSONArray("cells")
-                if (cells != null) {
-                    for (j in 0 until cells.length()) {
-                        val cell = cells.getJSONObject(j)
-                        val detectorType = cell.optString("detector_type", "-")
-                        val value = cell.optString("value", "")
-                        if (detectorType != "-") {
-                            activeCount++
-                            if (value.isNotEmpty() && value != "Def.") {
-                                triggeredCount++
-                            }
-                            if (value == "Def.") {
-                                list.add(
-                                    DefectiveItem(
-                                        groupId = groupId,
-                                        groupName = groupName,
-                                        slotKey = cell.optString("slot_key", ""),
-                                        type = detectorType
-                                    )
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        list
     }
 
     AlertDialog(
@@ -124,7 +101,7 @@ fun ProtocolDetailsDialog(
                                 color = IndustrialOutline
                             )
                             Text(
-                                text = name,
+                                text = data.clientName,
                                 fontWeight = FontWeight.SemiBold,
                                 color = IndustrialOnSurface,
                                 fontSize = 14.sp
@@ -144,7 +121,7 @@ fun ProtocolDetailsDialog(
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
                                     Text(
-                                        text = systemType,
+                                        text = data.systemType,
                                         color = IndustrialOnPrimaryContainer,
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.Bold
@@ -162,7 +139,7 @@ fun ProtocolDetailsDialog(
                             color = IndustrialOutline
                         )
                         Text(
-                            text = address,
+                            text = data.address,
                             color = IndustrialOnSurface,
                             fontSize = 13.sp
                         )
@@ -180,7 +157,7 @@ fun ProtocolDetailsDialog(
                                 color = IndustrialOutline
                             )
                             Text(
-                                text = contractNumber,
+                                text = data.contractNumber,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 13.sp,
                                 color = IndustrialPrimary
@@ -194,7 +171,7 @@ fun ProtocolDetailsDialog(
                                 color = IndustrialOutline
                             )
                             Text(
-                                text = interval,
+                                text = data.interval,
                                 fontSize = 13.sp,
                                 color = IndustrialOnSurface
                             )
@@ -204,28 +181,23 @@ fun ProtocolDetailsDialog(
 
                 HorizontalDivider(color = IndustrialOutlineVariant)
 
-                // Section 2: Metadata / Techniker / Counts
+                // Section 2: Metadata / Counts
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "BEARBEITET DURCH",
+                            text = "ZULETZT BEARBEITET",
                             fontSize = 9.sp,
                             fontWeight = FontWeight.Bold,
                             color = IndustrialOutline
                         )
                         Text(
-                            text = lastEditedBy,
+                            text = lastEditedTime,
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 13.sp,
                             color = IndustrialOnSurface
-                        )
-                        Text(
-                            text = lastEditedTime,
-                            fontSize = 11.sp,
-                            color = IndustrialOutline
                         )
                     }
                     Column(modifier = Modifier.weight(1f)) {
@@ -236,7 +208,7 @@ fun ProtocolDetailsDialog(
                             color = IndustrialOutline
                         )
                         Text(
-                            text = "$triggeredCount / $activeCount",
+                            text = "${data.triggeredCount} / ${data.activeCount}",
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp,
                             color = IndustrialPrimary
@@ -249,13 +221,13 @@ fun ProtocolDetailsDialog(
                 // Section 3: Defective Detectors List
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        text = "DEFEKTE MELDER (${defectiveList.size})",
+                        text = "DEFEKTE MELDER (${data.defectiveList.size})",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFFEF4444)
                     )
 
-                    if (defectiveList.isNotEmpty()) {
+                    if (data.defectiveList.isNotEmpty()) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -266,14 +238,15 @@ fun ProtocolDetailsDialog(
                                 .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            defectiveList.forEach { def ->
+                            data.defectiveList.forEach { def ->
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "${def.groupName} • ${def.groupId} (Slot ${def.slotKey}) - ${def.type}",
+                                        // groupId is "{device}::{grp_num}" on the wire -- show only the Gruppen-Nummer.
+                                        text = "${def.groupName} • ${def.groupId.substringAfterLast("::")} (Slot ${def.slotKey}) - ${def.type}",
                                         fontSize = 10.sp,
                                         color = Color(0xFFB91C1C),
                                         modifier = Modifier.weight(1f)
@@ -314,10 +287,3 @@ fun ProtocolDetailsDialog(
         }
     )
 }
-
-data class DefectiveItem(
-    val groupId: String,
-    val groupName: String,
-    val slotKey: String,
-    val type: String
-)

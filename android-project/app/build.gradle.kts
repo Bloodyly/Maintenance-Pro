@@ -71,6 +71,14 @@ dependencies {
     kapt("com.google.dagger:hilt-compiler:2.51.1")
     implementation("androidx.hilt:hilt-navigation-compose:1.1.0")
 
+    // WorkManager: runs the sync-queue upload as a real background job (survives
+    // the app being closed/killed and device reboots), not just an in-memory
+    // coroutine tied to the ViewModel's lifecycle. hilt-work wires @HiltWorker's
+    // @AssistedInject constructors into the same DI graph as everything else.
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("androidx.hilt:hilt-work:1.2.0")
+    kapt("androidx.hilt:hilt-compiler:1.2.0")
+
     // Room Offline Database
     val roomVersion = "2.6.1"
     implementation("androidx.room:room-runtime:$roomVersion")
@@ -83,7 +91,12 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
-    // Barcode/QR Scanning (Simulated setup context - standard camera library / ZXing)
+    // Barcode/QR Scanning: CameraX for the live preview + frame capture, ZXing to decode
+    val cameraxVersion = "1.3.4"
+    implementation("androidx.camera:camera-core:$cameraxVersion")
+    implementation("androidx.camera:camera-camera2:$cameraxVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
+    implementation("androidx.camera:camera-view:$cameraxVersion")
     implementation("com.google.zxing:core:3.5.3")
 
     // Testing

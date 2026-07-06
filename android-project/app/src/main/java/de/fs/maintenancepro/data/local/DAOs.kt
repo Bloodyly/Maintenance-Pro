@@ -29,6 +29,12 @@ interface ProtocolDao {
     @Update
     suspend fun update(protocol: ProtocolEntity)
 
+    @Query("UPDATE protocols SET localStatus = :status WHERE id = :id")
+    suspend fun updateStatus(id: String, status: String)
+
+    @Query("UPDATE protocols SET localStatus = :status, lastEditedAt = :lastEditedAt WHERE id = :id")
+    suspend fun updateStatusAndEditedAt(id: String, status: String, lastEditedAt: Long)
+
     @Query("DELETE FROM protocols WHERE id = :id")
     suspend fun deleteById(id: String)
 
@@ -37,6 +43,81 @@ interface ProtocolDao {
 
     @Query("DELETE FROM protocols")
     suspend fun clearAll()
+}
+
+/** Structural row data (Melder-Gruppe / Anlage) — mirrors the server's `protocol_groups` table. */
+@Dao
+interface ProtocolGroupDao {
+    @Query("SELECT * FROM protocol_groups WHERE protocolId = :protocolId ORDER BY orderIndex ASC")
+    fun getGroupsFlow(protocolId: String): Flow<List<ProtocolGroupEntity>>
+
+    @Query("SELECT * FROM protocol_groups WHERE protocolId = :protocolId ORDER BY orderIndex ASC")
+    suspend fun getGroupsOnce(protocolId: String): List<ProtocolGroupEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertOrUpdate(group: ProtocolGroupEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertOrUpdateAll(groups: List<ProtocolGroupEntity>)
+
+    @Query("UPDATE protocol_groups SET groupId = :newGroupId, groupName = :newGroupName, groupType = :newGroupType WHERE protocolId = :protocolId AND groupId = :oldGroupId")
+    suspend fun updateGroupDetails(protocolId: String, oldGroupId: String, newGroupId: String, newGroupName: String, newGroupType: String)
+
+    @Query("DELETE FROM protocol_groups WHERE protocolId = :protocolId AND groupId = :groupId")
+    suspend fun deleteGroup(protocolId: String, groupId: String)
+
+    @Query("DELETE FROM protocol_groups WHERE protocolId = :protocolId")
+    suspend fun deleteAllForProtocol(protocolId: String)
+
+    @Query("SELECT COALESCE(MAX(orderIndex), -1) FROM protocol_groups WHERE protocolId = :protocolId")
+    suspend fun getMaxOrderIndex(protocolId: String): Int
+}
+
+/** Individual detector slots — mirrors the server's `group_cells` table (the hot edit path). */
+@Dao
+interface GroupCellDao {
+    @Query("SELECT * FROM group_cells WHERE protocolId = :protocolId ORDER BY groupId ASC, orderIndex ASC")
+    fun getCellsFlow(protocolId: String): Flow<List<GroupCellEntity>>
+
+    @Query("SELECT * FROM group_cells WHERE protocolId = :protocolId ORDER BY groupId ASC, orderIndex ASC")
+    suspend fun getCellsOnce(protocolId: String): List<GroupCellEntity>
+
+    @Query("SELECT * FROM group_cells WHERE protocolId = :protocolId AND groupId = :groupId AND slotKey = :slotKey LIMIT 1")
+    suspend fun getCell(protocolId: String, groupId: String, slotKey: String): GroupCellEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertOrUpdate(cell: GroupCellEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertOrUpdateAll(cells: List<GroupCellEntity>)
+
+    /** Targeted single-cell write — the whole point of this table: O(1) indexed UPDATE, not a whole-blob rewrite. */
+    @Query("UPDATE group_cells SET value = :value, updatedAt = :updatedAt WHERE protocolId = :protocolId AND groupId = :groupId AND slotKey = :slotKey")
+    suspend fun updateValue(protocolId: String, groupId: String, slotKey: String, value: String, updatedAt: Long)
+
+    @Query("UPDATE group_cells SET detectorType = :detectorType WHERE protocolId = :protocolId AND groupId = :groupId AND slotKey = :slotKey")
+    suspend fun updateDetectorType(protocolId: String, groupId: String, slotKey: String, detectorType: String)
+
+    @Query("DELETE FROM group_cells WHERE protocolId = :protocolId AND groupId = :groupId")
+    suspend fun deleteForGroup(protocolId: String, groupId: String)
+
+    @Query("DELETE FROM group_cells WHERE protocolId = :protocolId")
+    suspend fun deleteAllForProtocol(protocolId: String)
+
+    @Query("SELECT * FROM group_cells WHERE protocolId = :protocolId AND updatedAt > :since")
+    suspend fun getChangedSince(protocolId: String, since: Long): List<GroupCellEntity>
+
+    @Query("SELECT COALESCE(MAX(orderIndex), -1) FROM group_cells WHERE protocolId = :protocolId AND groupId = :groupId")
+    suspend fun getMaxOrderIndex(protocolId: String, groupId: String): Int
+
+    @Query("SELECT COUNT(*) FROM group_cells WHERE protocolId = :protocolId AND detectorType != '-'")
+    suspend fun countActive(protocolId: String): Int
+
+    @Query("SELECT COUNT(*) FROM group_cells WHERE protocolId = :protocolId AND detectorType != '-' AND value != '' AND value != 'Def.'")
+    suspend fun countTriggered(protocolId: String): Int
+
+    @Query("SELECT * FROM group_cells WHERE protocolId = :protocolId AND value = 'Def.'")
+    suspend fun getDefective(protocolId: String): List<GroupCellEntity>
 }
 
 @Dao

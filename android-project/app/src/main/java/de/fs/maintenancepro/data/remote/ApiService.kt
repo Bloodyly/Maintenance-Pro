@@ -60,7 +60,7 @@ data class SearchRequestDto(val query: String)
 data class LiveSyncRequestDto(val protocol_id: String, val payload_json: String)
 data class LiveSyncResponseDto(val protocol_id: String, val payload_json: String)
 
-data class AuthResponseDto(val status: String, val technician_id: String, val name: String)
+data class AuthResponseDto(val status: String, val technician_id: String, val name: String, val mandant_id: String = "standard")
 
 data class ProtocolItemDto(
     val id: String,
@@ -71,7 +71,8 @@ data class ProtocolItemDto(
     val system_type: String,
     val status: String,
     val is_live: Boolean? = false,
-    val has_cells: Boolean = true
+    val has_cells: Boolean = true,
+    val mandant_id: String = "standard"
 )
 
 data class UploadResponseDto(val status: String, val version: Int, val message: String)
@@ -139,6 +140,7 @@ data class SyncProtocolDto(
     val system_type: String,
     val status: String,
     val updated_at: Long = 0L,
+    val mandant_id: String = "standard",
     val definition: SyncDefinitionDto? = null,
     val rows: List<SyncRowDto> = emptyList()
 )

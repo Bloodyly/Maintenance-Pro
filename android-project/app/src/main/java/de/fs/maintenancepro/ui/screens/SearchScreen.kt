@@ -2,9 +2,11 @@ package de.fs.maintenancepro.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
@@ -37,15 +39,20 @@ fun SearchScreen(
     val searchResults by viewModel.searchResults.collectAsState()
     val localProtocols by viewModel.protocols.collectAsState(initial = emptyList())
     val isSyncing by viewModel.isSyncing.collectAsState()
+    val serverConfig by viewModel.serverConfig.collectAsState(initial = null)
+    val myMandantId = serverConfig?.myMandantId ?: "standard"
 
     var showFilterOptions by remember { mutableStateOf(false) }
     var filterSystemType by remember { mutableStateOf("Alle") }
     var sortByOption by remember { mutableStateOf("Kunde (Name)") }
     var showCompleted by remember { mutableStateOf(false) }
     var showWithoutCells by remember { mutableStateOf(false) }
-    var activeDetailsPayload by remember { mutableStateOf<String?>(null) }
+    // Default: only my own Mandant's contracts -- everything still syncs down for
+    // offline use, this only hides the other Mandant's Anlagen until asked for.
+    var showOtherMandant by remember { mutableStateOf(false) }
+    var activeDetailsProtocolId by remember { mutableStateOf<String?>(null) }
 
-    val filteredItems = remember(searchResults, localProtocols, filterSystemType, sortByOption, showCompleted, showWithoutCells) {
+    val filteredItems = remember(searchResults, localProtocols, filterSystemType, sortByOption, showCompleted, showWithoutCells, showOtherMandant, myMandantId) {
         var list = searchResults.map { item ->
             val local = localProtocols.find { it.id == item.id }
             if (local != null) item.copy(status = local.localStatus) else item
@@ -57,6 +64,9 @@ fun SearchScreen(
         // Hide synchronized/erledigte unless toggled on
         if (!showCompleted) {
             list = list.filter { it.status != "synchronized" }
+        }
+        if (!showOtherMandant) {
+            list = list.filter { it.mandant_id == myMandantId }
         }
         if (filterSystemType != "Alle") {
             list = list.filter { it.system_type == filterSystemType }
@@ -108,7 +118,7 @@ fun SearchScreen(
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { viewModel.updateSearchQuery(it) },
-                    placeholder = { Text("Suche nach Kunden oder Anlagen...") },
+                    placeholder = { Text("Suche") },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = IndustrialOutline) },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(8.dp),
@@ -135,6 +145,7 @@ fun SearchScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(LightSurfaceLow)
+                        .horizontalScroll(rememberScrollState())
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -165,7 +176,14 @@ fun SearchScreen(
                             shape = RoundedCornerShape(20.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                             modifier = Modifier.height(32.dp)
-                        ) { Text("Sort: $sortByOption", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                        ) {
+                            val sortShortLabel = when (sortByOption) {
+                                "Kunde (Name)" -> "Name"
+                                "Vertragsnummer" -> "Vertrag"
+                                else -> sortByOption
+                            }
+                            Text("Sort: $sortShortLabel", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
                         DropdownMenu(expanded = sortExpanded, onDismissRequest = { sortExpanded = false }) {
                             listOf("Kunde (Name)", "Adresse", "Vertragsnummer").forEach { s ->
                                 DropdownMenuItem(text = { Text(s) }, onClick = { sortByOption = s; sortExpanded = false })
@@ -183,6 +201,12 @@ fun SearchScreen(
                         selected = showWithoutCells,
                         onClick = { showWithoutCells = !showWithoutCells },
                         label = { Text("Ohne Liste", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                    )
+
+                    FilterChip(
+                        selected = showOtherMandant,
+                        onClick = { showOtherMandant = !showOtherMandant },
+                        label = { Text("Anderer Mandant", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
                     )
                 }
             }
@@ -202,7 +226,7 @@ fun SearchScreen(
                         onEdit = { onNavigateToInspection(item.id) },
                         onDownloadAndEdit = { viewModel.downloadProtocol(item) },
                         onShowDetails = {
-                            if (localEntity != null) activeDetailsPayload = localEntity.decryptedPayloadJson
+                            if (localEntity != null) activeDetailsProtocolId = localEntity.id
                         }
                     )
                 }
@@ -214,10 +238,11 @@ fun SearchScreen(
         }
     }
 
-    if (activeDetailsPayload != null) {
+    if (activeDetailsProtocolId != null) {
         de.fs.maintenancepro.ui.components.ProtocolDetailsDialog(
-            payloadJson = activeDetailsPayload!!,
-            onDismiss = { activeDetailsPayload = null }
+            protocolId = activeDetailsProtocolId!!,
+            viewModel = viewModel,
+            onDismiss = { activeDetailsProtocolId = null }
         )
     }
 }

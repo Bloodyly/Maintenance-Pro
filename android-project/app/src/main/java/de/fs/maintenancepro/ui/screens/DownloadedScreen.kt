@@ -44,7 +44,7 @@ fun DownloadedScreen(
         if (historyLimit <= 0) allRecent else allRecent.take(historyLimit)
     }
 
-    var activeDetailsPayload by remember { mutableStateOf<String?>(null) }
+    var activeDetailsProtocolId by remember { mutableStateOf<String?>(null) }
     var resetTarget by remember { mutableStateOf<ProtocolEntity?>(null) }
     var limitMenuExpanded by remember { mutableStateOf(false) }
 
@@ -118,17 +118,18 @@ fun DownloadedScreen(
                 VerlaufCard(
                     protocol = protocol,
                     onOpen = { onNavigateToInspection(protocol.id) },
-                    onShowDetails = { activeDetailsPayload = protocol.decryptedPayloadJson },
+                    onShowDetails = { activeDetailsProtocolId = protocol.id },
                     onLongPress = { resetTarget = protocol }
                 )
             }
         }
     }
 
-    if (activeDetailsPayload != null) {
+    if (activeDetailsProtocolId != null) {
         de.fs.maintenancepro.ui.components.ProtocolDetailsDialog(
-            payloadJson = activeDetailsPayload!!,
-            onDismiss = { activeDetailsPayload = null }
+            protocolId = activeDetailsProtocolId!!,
+            viewModel = viewModel,
+            onDismiss = { activeDetailsProtocolId = null }
         )
     }
 

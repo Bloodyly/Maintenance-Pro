@@ -70,7 +70,7 @@ fun ArchiveScreen(
         list
     }
 
-    var activeDetailsPayload by remember { mutableStateOf<String?>(null) }
+    var activeDetailsProtocolId by remember { mutableStateOf<String?>(null) }
     var selectedRestoreProtocol by remember { mutableStateOf<ProtocolEntity?>(null) }
     var selectedDeleteProtocol by remember { mutableStateOf<ProtocolEntity?>(null) }
 
@@ -275,7 +275,7 @@ fun ArchiveScreen(
                                 ) {
                                     // Info Button
                                     IconButton(
-                                        onClick = { activeDetailsPayload = protocol.decryptedPayloadJson },
+                                        onClick = { activeDetailsProtocolId = protocol.id },
                                         modifier = Modifier
                                             .size(40.dp)
                                             .border(1.dp, IndustrialOutlineVariant, RoundedCornerShape(8.dp))
@@ -326,10 +326,11 @@ fun ArchiveScreen(
     }
 
     // Details Modal
-    if (activeDetailsPayload != null) {
+    if (activeDetailsProtocolId != null) {
         de.fs.maintenancepro.ui.components.ProtocolDetailsDialog(
-            payloadJson = activeDetailsPayload!!,
-            onDismiss = { activeDetailsPayload = null }
+            protocolId = activeDetailsProtocolId!!,
+            viewModel = viewModel,
+            onDismiss = { activeDetailsProtocolId = null }
         )
     }
 

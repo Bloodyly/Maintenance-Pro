@@ -36,7 +36,9 @@ import androidx.compose.runtime.*
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import de.fs.maintenancepro.ui.components.QrScannerView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -113,7 +115,7 @@ fun SettingsScreen(
     val coroutineScope = rememberCoroutineScope()
 
     var serverAddress by remember { mutableStateOf("http://eno-nt-remote.dynip.online") }
-    var port by remember { mutableStateOf("3360") }
+    var port by remember { mutableStateOf("34313") }
     var username by remember { mutableStateOf("tprantl") }
     var password by remember { mutableStateOf("testpasswort") }
     var codeword by remember { mutableStateOf("77-XJ-900-PLX-22") }
@@ -134,12 +136,16 @@ fun SettingsScreen(
         }
     }
 
-    // Update form when database state is loaded
+    // Update form when database state is loaded -- previously password/codeword were
+    // never restored here, so a verified-working connection would silently fall back
+    // to hardcoded placeholder values on every app restart or re-entry into Settings.
     LaunchedEffect(configState) {
         configState?.let {
             serverAddress = it.serverAddress
             port = it.port.toString()
             username = it.username
+            if (it.encryptedPasswordBase64.isNotBlank()) password = it.encryptedPasswordBase64
+            if (it.codeword.isNotBlank()) codeword = it.codeword
         }
     }
 
@@ -609,6 +615,18 @@ fun SettingsScreen(
             }
 
             if (showQrInputDialog) {
+                fun trySubmitQr(text: String): Boolean {
+                    if (text.isBlank()) return false
+                    val success = viewModel.applyQrSetup(text)
+                    if (success) {
+                        Toast.makeText(context, "Verbindungsprofil erfolgreich geladen!", Toast.LENGTH_SHORT).show()
+                        showQrInputDialog = false
+                    } else {
+                        Toast.makeText(context, "Ungültiges QR-Format!", Toast.LENGTH_SHORT).show()
+                    }
+                    return success
+                }
+
                 AlertDialog(
                     onDismissRequest = { showQrInputDialog = false },
                     title = { Text("Mobiles QR-Kamera-Scanning", fontWeight = FontWeight.Bold, color = IndustrialPrimary) },
@@ -618,51 +636,31 @@ fun SettingsScreen(
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(
-                                text = "Kamera wird initialisiert... Scannen Sie den Einrichtungs-QR-Code auf dem Web-Dashboard der Zentrale.",
+                                text = "Scannen Sie den Einrichtungs-QR-Code auf dem Web-Dashboard der Zentrale.",
                                 fontSize = 13.sp,
                                 color = Color.Gray
                             )
 
-                            // Animated scanner viewfinder
-                            val infiniteTransition = rememberInfiniteTransition(label = "scanner")
-                            val scannerOffsetY by infiniteTransition.animateFloat(
-                                initialValue = 0f,
-                                targetValue = 180f,
-                                animationSpec = infiniteRepeatable(
-                                    animation = tween(1500, easing = LinearEasing),
-                                    repeatMode = RepeatMode.Reverse
-                                ),
-                                label = "scannerLine"
-                            )
-
                             Box(
                                 modifier = Modifier
-                                    .size(200.dp)
-                                    .background(Color(0xFF1E293B), RoundedCornerShape(12.dp))
-                                    .border(2.dp, IndustrialOutline, RoundedCornerShape(12.dp)),
-                                contentAlignment = Alignment.Center
+                                    .size(240.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color(0xFF1E293B))
+                                    .border(2.dp, IndustrialOutline, RoundedCornerShape(12.dp))
                             ) {
-                                // Crop bracket bounding box
+                                QrScannerView(
+                                    modifier = Modifier.fillMaxSize(),
+                                    onScanned = { text ->
+                                        qrInputText = text
+                                        trySubmitQr(text)
+                                    }
+                                )
+                                // Crop bracket bounding box overlay, purely visual
                                 Box(
                                     modifier = Modifier
-                                        .size(160.dp)
+                                        .align(Alignment.Center)
+                                        .size(180.dp)
                                         .border(2.dp, Color(0xFF22C55E), RoundedCornerShape(8.dp))
-                                ) {
-                                    // Glowing red/green scanning beam
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(3.dp)
-                                            .offset(y = scannerOffsetY.dp)
-                                            .background(Color(0xFF22C55E))
-                                    )
-                                }
-                                Text(
-                                    text = "LIVE-VIEWFINDER",
-                                    color = Color.White.copy(alpha = 0.5f),
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp)
                                 )
                             }
 
@@ -686,16 +684,10 @@ fun SettingsScreen(
                     confirmButton = {
                         Button(
                             onClick = {
-                                if (qrInputText.isNotBlank()) {
-                                    val success = viewModel.applyQrSetup(qrInputText)
-                                    if (success) {
-                                        Toast.makeText(context, "Verbindungsprofil erfolgreich geladen!", Toast.LENGTH_SHORT).show()
-                                        showQrInputDialog = false
-                                    } else {
-                                        Toast.makeText(context, "Ungültiges QR-Format!", Toast.LENGTH_SHORT).show()
-                                    }
-                                } else {
+                                if (qrInputText.isBlank()) {
                                     Toast.makeText(context, "Bitte geben Sie einen QR-Text ein.", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    trySubmitQr(qrInputText)
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = IndustrialPrimary)
