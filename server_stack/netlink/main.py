@@ -369,6 +369,10 @@ def init_db():
         cursor.execute("ALTER TABLE technicians ADD COLUMN mandant_id VARCHAR(50) DEFAULT 'standard'")
     except sqlite3.OperationalError:
         pass
+    try:
+        cursor.execute("ALTER TABLE mandanten ADD COLUMN company_name VARCHAR(255) DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
 
     # Populate initial values if empty
     cursor.execute("SELECT COUNT(*) as cnt FROM technicians")

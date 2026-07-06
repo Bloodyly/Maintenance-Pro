@@ -116,6 +116,10 @@ def get_db_connection():
                 cursor.execute("ALTER TABLE technicians ADD COLUMN mandant_id VARCHAR(50) DEFAULT 'standard'")
             except sqlite3.OperationalError:
                 pass
+            try:
+                cursor.execute("ALTER TABLE mandanten ADD COLUMN company_name VARCHAR(255) DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
 
             conn.commit()
             _schema_migrated = True
@@ -1025,7 +1029,7 @@ def print_blank_pdf(protocol_id, group_id):
 def list_mandanten():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, name, logo_filename FROM mandanten ORDER BY name")
+    cursor.execute("SELECT id, name, logo_filename, company_name FROM mandanten ORDER BY name")
     mandanten = cursor.fetchall()
 
     results = []
@@ -1040,6 +1044,7 @@ def list_mandanten():
         results.append({
             "id": m["id"],
             "name": m["name"],
+            "company_name": m["company_name"] or "",
             "has_logo": storage.exists(logo_path),
             "contract_count": contract_count,
             "technician_count": tech_count,
@@ -1065,6 +1070,10 @@ def switch_mandant():
 def save_mandant():
     m_id = request.form.get("id", "").strip()
     name = request.form.get("name", "").strip()
+    # Distinguish "field omitted" (renaming/logo-upload calls that don't touch
+    # this) from "field submitted, possibly empty" (the dedicated Firmenname
+    # editor) -- otherwise every rename/logo upload would silently wipe it.
+    company_name = request.form.get("company_name")
     logo_file = request.files.get("logo")
 
     if not name:
@@ -1076,11 +1085,14 @@ def save_mandant():
         if not m_id:
             m_id = sanitize_filename(name).lower().replace(" ", "-") or f"mandant-{int(time.time())}"
             cursor.execute(
-                "INSERT INTO mandanten (id, name, created_at) VALUES (?, ?, ?)",
-                (m_id, name, int(time.time() * 1000))
+                "INSERT INTO mandanten (id, name, company_name, created_at) VALUES (?, ?, ?, ?)",
+                (m_id, name, (company_name or "").strip(), int(time.time() * 1000))
             )
         else:
-            cursor.execute("UPDATE mandanten SET name = ? WHERE id = ?", (name, m_id))
+            if company_name is not None:
+                cursor.execute("UPDATE mandanten SET name = ?, company_name = ? WHERE id = ?", (name, company_name.strip(), m_id))
+            else:
+                cursor.execute("UPDATE mandanten SET name = ? WHERE id = ?", (name, m_id))
         conn.commit()
     except sqlite3.IntegrityError:
         conn.close()

@@ -22,12 +22,12 @@ import storage
 
 DB_PATH = os.environ.get("DB_PATH", "/shared_db/protocols.db")
 COMPANY_NAME = os.environ.get("COMPANY_NAME", "Firmenname GmbH")
-COMPANY_SUBTITLE = os.environ.get("COMPANY_SUBTITLE", "Brandschutz & Sicherheitstechnik")
 
 # ── Palette (matches the approved "Raster-Matrix" mockup) ───────────────────────
 INK = colors.HexColor("#1c2530")
 ACCENT = colors.HexColor("#c1481f")    # defects only
 OK_GREEN = colors.HexColor("#3d6b52")  # geprüft / i.O.
+OK_GREEN_BG = colors.HexColor("#e3ebe5")  # light wash behind geprüfte Melder
 MUTED = colors.HexColor("#736b5c")
 LINE = colors.HexColor("#dbd6c9")
 PAPER = colors.HexColor("#f7f5f0")
@@ -72,6 +72,7 @@ def ensure_schema(cursor):
         "ALTER TABLE protocol_groups ADD COLUMN blank_pdf_requested_at INTEGER DEFAULT 0",
         "ALTER TABLE protocols ADD COLUMN mandant_id VARCHAR(50) DEFAULT 'standard'",
         "ALTER TABLE technicians ADD COLUMN mandant_id VARCHAR(50) DEFAULT 'standard'",
+        "ALTER TABLE mandanten ADD COLUMN company_name VARCHAR(255) DEFAULT ''",
     ):
         try:
             cursor.execute(stmt)
@@ -246,8 +247,6 @@ def build_styles():
                                      textColor=INK, alignment=TA_RIGHT, leading=17),
         "company_name": ParagraphStyle("CompanyName", fontName="Helvetica-Bold", fontSize=12,
                                         textColor=INK, leading=14),
-        "company_sub": ParagraphStyle("CompanySub", fontName="Helvetica", fontSize=7,
-                                       textColor=MUTED, leading=9),
         "m_label": ParagraphStyle("MLabel", fontName="Helvetica-Bold", fontSize=6.5,
                                    textColor=MUTED, leading=9),
         "m_value": ParagraphStyle("MValue", fontName="Helvetica-Bold", fontSize=9.5,
@@ -258,7 +257,7 @@ def build_styles():
     }
 
 
-def build_letterhead(styles, p_info, dev_name, dev_type, logo_path):
+def build_letterhead(styles, p_info, dev_name, dev_type, logo_path, company_name):
     if logo_path:
         # Image() needs a local path or file-like object -- read via storage
         # so this works whether logo_path is local or a remote UNC path.
@@ -269,15 +268,17 @@ def build_letterhead(styles, p_info, dev_name, dev_type, logo_path):
             style=TableStyle([("BOX", (0, 0), (-1, -1), 1.2, INK)])
         )
 
+    # Logo column needs real breathing room -- it was previously only 12mm
+    # wide while the logo image itself renders up to 22mm wide, so real
+    # logos overflowed straight into the company name text next to them.
     company_block = Table(
         [[logo_cell, Table(
-            [[Paragraph(COMPANY_NAME, styles["company_name"])],
-             [Paragraph(COMPANY_SUBTITLE, styles["company_sub"])]],
-            colWidths=[60 * mm],
-            style=TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 6), ("TOPPADDING", (0, 0), (-1, -1), 0),
+            [[Paragraph(company_name, styles["company_name"])]],
+            colWidths=[58 * mm],
+            style=TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 10), ("TOPPADDING", (0, 0), (-1, -1), 0),
                                ("BOTTOMPADDING", (0, 0), (-1, -1), 0)])
         )]],
-        colWidths=[12 * mm, 64 * mm],
+        colWidths=[26 * mm, 58 * mm],
         style=TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (0, 0), 0)])
     )
 
@@ -303,13 +304,13 @@ def build_meta_grid(styles, p_info, is_blank):
     def cell(label, value):
         return [Paragraph(label, styles["m_label"]), Paragraph(str(value), styles["m_value"])]
 
-    date_label = "PRÜFDATUM" if not is_blank else "ERSTELLT AM"
+    date_label = "LETZTE PRÜFUNG:" if not is_blank else "ERSTELLT AM"
     date_value = (p_info["last_edited_at"] or "–") if not is_blank else datetime.now().strftime("%d.%m.%Y")
 
     data = [
         cell("KUNDE / OBJEKT", p_info["name"]) + cell("VERTRAGS-NR.", p_info["contract_number"]),
         cell("ADRESSE", p_info["address"] or "–") + cell("INTERVALL", p_info["interval"]),
-        cell("TECHNIKER", "–" if is_blank else (p_info["last_edited_by"] or "–")) + cell(date_label, date_value),
+        cell("ZULETZT BEARBEITET DURCH", "–" if is_blank else (p_info["last_edited_by"] or "–")) + cell(date_label, date_value),
     ]
     t = Table(data, colWidths=[32 * mm, 55 * mm, 32 * mm, 55 * mm])
     t.setStyle(TableStyle([("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
@@ -373,6 +374,7 @@ def build_matrix_table(rows_data, max_cols, bezeichnung_width, melder_col_width,
                 line.append("")
             else:
                 line.append(c["value"])
+                cell_styles.append(("bg", r_idx, col_offset, OK_GREEN_BG, False))
                 cell_styles.append(("fg", r_idx, col_offset, OK_GREEN, False))
         table_data.append(line)
 
@@ -447,7 +449,7 @@ def build_summary(styles, rows_data):
     return box, defective
 
 
-def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False):
+def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False, company_name=None):
     """Builds one Gerät's protocol PDF (filled or blank) and writes it to the
     active path, archiving whatever was there before."""
     if not is_blank:
@@ -474,7 +476,7 @@ def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, m
     logo_path = find_logo_path(mandant_folder)
 
     story = [
-        build_letterhead(styles, p_info, dev_name, "__blank__" if is_blank else dev_type, logo_path),
+        build_letterhead(styles, p_info, dev_name, "__blank__" if is_blank else dev_type, logo_path, company_name or COMPANY_NAME),
         Spacer(1, 5 * mm),
         build_meta_grid(styles, p_info, is_blank),
         Spacer(1, 4 * mm),
@@ -492,7 +494,7 @@ def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, m
     else:
         defective_count = 0
 
-    footer_left = f"{COMPANY_NAME} · {dev_name} ({p_info['contract_number']})"
+    footer_left = f"{company_name or COMPANY_NAME} · {dev_name} ({p_info['contract_number']})"
 
     def _make_canvas(*args, **kwargs):
         kwargs["pagesize"] = page_size
@@ -539,11 +541,12 @@ def generate_blank_now(protocol_id, group_id):
         dev_type = dev["anlage_type"] or dev["group_type"] or p_info["system_type"]
 
         mandant_row = cursor.execute(
-            "SELECT name FROM mandanten WHERE id = ?", (p_info["mandant_id"] or "standard",)
+            "SELECT name, company_name FROM mandanten WHERE id = ?", (p_info["mandant_id"] or "standard",)
         ).fetchone()
         mandant_folder = sanitize_filename(mandant_row["name"]) if mandant_row else "Standard"
+        company_name = (mandant_row["company_name"] if mandant_row and mandant_row["company_name"] else None) or COMPANY_NAME
 
-        pdf_bytes = generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=True)
+        pdf_bytes = generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=True, company_name=company_name)
 
         now_ms = int(time.time() * 1000)
         cursor.execute(
@@ -601,10 +604,13 @@ def run_worker_cycle():
 
                 mandant_id = cand["mandant_id"] or "standard"
                 if mandant_id not in mandant_folder_cache:
-                    cursor.execute("SELECT name FROM mandanten WHERE id = ?", (mandant_id,))
+                    cursor.execute("SELECT name, company_name FROM mandanten WHERE id = ?", (mandant_id,))
                     m_row = cursor.fetchone()
-                    mandant_folder_cache[mandant_id] = sanitize_filename(m_row["name"]) if m_row else "Standard"
-                mandant_folder = mandant_folder_cache[mandant_id]
+                    mandant_folder_cache[mandant_id] = (
+                        sanitize_filename(m_row["name"]) if m_row else "Standard",
+                        (m_row["company_name"] if m_row and m_row["company_name"] else None) or COMPANY_NAME,
+                    )
+                mandant_folder, company_name = mandant_folder_cache[mandant_id]
 
                 needs_regen = cand["protocol_status"] == "synchronized" and last_changed_at > (cand["pdf_generated_at"] or 0)
                 needs_blank = (
@@ -615,14 +621,14 @@ def run_worker_cycle():
                 now_ms = int(time.time() * 1000)
 
                 if needs_regen:
-                    generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False)
+                    generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False, company_name=company_name)
                     cursor.execute(
                         "UPDATE protocol_groups SET pdf_generated_at = ? WHERE protocol_id = ? AND group_id = ?",
                         (now_ms, p_id, group_id)
                     )
 
                 if needs_blank:
-                    generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=True)
+                    generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=True, company_name=company_name)
                     cursor.execute(
                         "UPDATE protocol_groups SET blank_generated_at = ?, blank_pdf_requested_at = 0 "
                         "WHERE protocol_id = ? AND group_id = ?",
