@@ -103,6 +103,119 @@ def test_external_connection(external_path, external_username, external_password
         return False, f"Verbindung fehlgeschlagen: {e}"
 
 
+def _backend_ops(config):
+    """A small namespace of file operations bound to an ARBITRARY config dict,
+    not necessarily the globally active one -- needed to migrate between two
+    storage targets (read from one, write to the other) at the same time."""
+    use_smb = config["mode"] == "external" and _SMB_AVAILABLE and bool(config.get("external_path"))
+
+    if use_smb:
+        server = _server_from_unc(config["external_path"])
+        if not server:
+            raise ValueError("Ungültiger UNC-Pfad (erwartet z.B. //server/freigabe/ordner).")
+        smbclient.register_session(
+            server, username=config.get("external_username") or None,
+            password=config.get("external_password") or None
+        )
+        root = config["external_path"].rstrip("/\\").replace("/", "\\")
+
+        return {
+            "root": root,
+            "exists": smbclient_path.exists,
+            "isdir": smbclient_path.isdir,
+            "makedirs": lambda p: smbclient.makedirs(p, exist_ok=True),
+            "listdir": smbclient.listdir,
+            "read": lambda p: smbclient.open_file(p, mode="rb").read(),
+            "write": lambda p, data: smbclient.open_file(p, mode="wb").write(data),
+            "remove": smbclient.remove,
+            "join": lambda base, name: base.rstrip("\\/") + "\\" + name,
+        }
+    else:
+        root = LOCAL_BASE_PATH
+        return {
+            "root": root,
+            "exists": os.path.exists,
+            "isdir": os.path.isdir,
+            "makedirs": lambda p: os.makedirs(p, exist_ok=True),
+            "listdir": os.listdir,
+            "read": lambda p: open(p, "rb").read(),
+            "write": lambda p, data: open(p, "wb").write(data),
+            "remove": os.remove,
+            "join": lambda base, name: os.path.join(base, name),
+        }
+
+
+def test_write_access(config):
+    """Verifies both reachability and write permission on an arbitrary
+    candidate config by creating and then removing a small probe file at its
+    root -- used before switching the Archiv-Ziel, per the WebUI's
+    check -> migrate -> cleanup flow."""
+    try:
+        ops = _backend_ops(config)
+        ops["makedirs"](ops["root"])
+        probe_path = ops["join"](ops["root"], ".maintenance_pro_write_test.tmp")
+        ops["write"](probe_path, b"probe")
+        ops["remove"](probe_path)
+        return True, "Verbindung und Schreibrechte erfolgreich geprüft."
+    except Exception as e:
+        return False, f"Prüfung fehlgeschlagen: {e}"
+
+
+def _walk_all_files(ops, path, rel_prefix=""):
+    """Yields (relative_posix_path, full_path) for every file under `path`."""
+    if not ops["exists"](path):
+        return
+    for name in ops["listdir"](path):
+        child = ops["join"](path, name)
+        rel_child = f"{rel_prefix}/{name}" if rel_prefix else name
+        if ops["isdir"](child):
+            yield from _walk_all_files(ops, child, rel_child)
+        else:
+            yield rel_child, child
+
+
+def migrate_active_to(new_config):
+    """Copies every file from the CURRENTLY ACTIVE storage target into
+    new_config's, preserving relative paths. Does not change the active
+    config or touch the source files -- purely a copy."""
+    old_ops = _backend_ops(_config)
+    new_ops = _backend_ops(new_config)
+
+    copied = 0
+    failed = []
+    for rel_path, full_old_path in _walk_all_files(old_ops, old_ops["root"]):
+        try:
+            data = old_ops["read"](full_old_path)
+            parts = rel_path.split("/")
+            dest_dir = new_ops["root"]
+            for part in parts[:-1]:
+                dest_dir = new_ops["join"](dest_dir, part)
+                new_ops["makedirs"](dest_dir)
+            dest_path = new_ops["join"](dest_dir, parts[-1])
+            new_ops["write"](dest_path, data)
+            copied += 1
+        except Exception as e:
+            failed.append({"path": rel_path, "error": str(e)})
+    return copied, failed
+
+
+def delete_all_active():
+    """Deletes every file under the CURRENTLY ACTIVE storage target -- used
+    after a confirmed migration to clean up the old target. Leaves empty
+    directories behind (harmless, and directory removal over SMB has more
+    edge cases than it's worth here)."""
+    ops = _backend_ops(_config)
+    removed = 0
+    failed = []
+    for rel_path, full_path in _walk_all_files(ops, ops["root"]):
+        try:
+            ops["remove"](full_path)
+            removed += 1
+        except Exception as e:
+            failed.append({"path": rel_path, "error": str(e)})
+    return removed, failed
+
+
 def _use_smb():
     return _config["mode"] == "external" and _SMB_AVAILABLE and bool(_config["external_path"])
 

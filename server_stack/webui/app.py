@@ -1335,6 +1335,63 @@ def test_archive_config():
     return jsonify({"success": ok, "message": message})
 
 
+def _candidate_config_from_request(data):
+    mode = data.get("mode", "integrated")
+    external_path = data.get("external_path", "")
+    external_username = data.get("external_username", "")
+    external_password = data.get("external_password", "")
+    if not external_password:
+        external_password = storage.get_config().get("external_password", "")
+    return {
+        "mode": mode if mode in ("integrated", "external") else "integrated",
+        "external_path": external_path.strip(),
+        "external_username": external_username.strip(),
+        "external_password": external_password,
+    }
+
+
+@app.route("/api/archive-config/check", methods=["POST"])
+def check_archive_config():
+    """Step 1 of switching the Archiv-Ziel: verify the candidate target is
+    reachable AND writable before anything else happens."""
+    candidate = _candidate_config_from_request(request.json or {})
+    if candidate["mode"] == "external" and not candidate["external_path"]:
+        return jsonify({"success": False, "error": "Bitte einen Pfad für die externe Freigabe angeben."}), 400
+    ok, message = storage.test_write_access(candidate)
+    return jsonify({"success": ok, "message": message})
+
+
+@app.route("/api/archive-config/migrate", methods=["POST"])
+def migrate_archive_config():
+    """Step 2 (only if the user confirms it): copies every file from the
+    currently active Archiv-Ziel into the candidate one. Does not switch the
+    active target or touch the source files."""
+    candidate = _candidate_config_from_request(request.json or {})
+    try:
+        copied, failed = storage.migrate_active_to(candidate)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Übertragung fehlgeschlagen: {e}"}), 500
+    message = f"{copied} Datei(en) übertragen."
+    if failed:
+        message += f" {len(failed)} fehlgeschlagen."
+    return jsonify({"success": True, "message": message, "copied": copied, "failed": failed})
+
+
+@app.route("/api/archive-config/purge-old", methods=["POST"])
+def purge_old_archive_config():
+    """Step 3 (only if the user confirms it, after a successful migration):
+    deletes every file from the currently active (about-to-be-replaced)
+    Archiv-Ziel."""
+    try:
+        removed, failed = storage.delete_all_active()
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Löschen fehlgeschlagen: {e}"}), 500
+    message = f"{removed} Datei(en) aus dem alten Archiv-Ziel gelöscht."
+    if failed:
+        message += f" {len(failed)} fehlgeschlagen."
+    return jsonify({"success": True, "message": message, "removed": removed, "failed": failed})
+
+
 @app.route("/api/anlagentypen", methods=["GET"])
 def api_get_anlagentypen():
     settings = load_settings()

@@ -1927,6 +1927,7 @@
 
                 // Archiv-Ziel (global storage backend: integrated Samba vs. external SMB share)
                 archiveConfig: { mode: 'integrated', external_path: '', external_username: '', external_password: '', external_password_set: false, smb_available_flag: true },
+                archiveConfigOriginal: { mode: 'integrated', external_path: '' },
                 archiveTestLoading: false,
 
                 activeSystemTypes: [],
@@ -2116,25 +2117,88 @@
                     .then(data => {
                         if (data.success) {
                             this.archiveConfig = { ...data.config, external_password: '', smb_available_flag: data.smb_available };
+                            // Snapshot of the currently-active target, so saveArchiveConfig() can
+                            // tell whether the user actually picked a different target (vs. just
+                            // re-saving credentials for the same one).
+                            this.archiveConfigOriginal = { mode: data.config.mode, external_path: data.config.external_path };
                         }
                     });
                 },
 
-                saveArchiveConfig() {
-                    fetch('/api/archive-config', {
+                archiveConfigCandidate() {
+                    return {
+                        mode: this.archiveConfig.mode,
+                        external_path: this.archiveConfig.external_path,
+                        external_username: this.archiveConfig.external_username,
+                        external_password: this.archiveConfig.external_password,
+                    };
+                },
+
+                postJson(url, body) {
+                    return fetch(url, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            mode: this.archiveConfig.mode,
-                            external_path: this.archiveConfig.external_path,
-                            external_username: this.archiveConfig.external_username,
-                            external_password: this.archiveConfig.external_password,
-                        })
-                    })
-                    .then(r => r.json())
-                    .then(data => {
+                        body: JSON.stringify(body || {})
+                    }).then(r => r.json());
+                },
+
+                finalizeSaveArchiveConfig(candidate) {
+                    this.postJson('/api/archive-config', candidate).then(data => {
                         this.triggerToast(data.message || data.error || '', data.success ? 'success' : 'error');
                         if (data.success) this.loadArchiveConfig();
+                    });
+                },
+
+                saveArchiveConfig() {
+                    const candidate = this.archiveConfigCandidate();
+                    const targetChanged = candidate.mode !== this.archiveConfigOriginal.mode
+                        || (candidate.mode === 'external' && candidate.external_path !== this.archiveConfigOriginal.external_path);
+
+                    // 1. Reachability + write-permission check on the NEW target first.
+                    this.postJson('/api/archive-config/check', candidate).then(checkResult => {
+                        if (!checkResult.success) {
+                            this.triggerToast(checkResult.message || checkResult.error || 'Prüfung fehlgeschlagen.', 'error');
+                            return;
+                        }
+                        if (!targetChanged) {
+                            // Same target as before (e.g. just updating credentials) -- nothing to migrate.
+                            this.finalizeSaveArchiveConfig(candidate);
+                            return;
+                        }
+
+                        // 2. Target genuinely changed -- offer to bring the existing archive along.
+                        const wantsMigrate = confirm(
+                            'Verbindung zum neuen Archiv-Ziel erfolgreich geprüft.\n\n' +
+                            'Sollen alle bisherigen Archiv-Inhalte in das neue Ziel übernommen werden?'
+                        );
+                        if (!wantsMigrate) {
+                            this.finalizeSaveArchiveConfig(candidate);
+                            return;
+                        }
+
+                        this.triggerToast('Übertrage vorhandene Dateien in das neue Archiv-Ziel…', 'success');
+                        this.postJson('/api/archive-config/migrate', candidate).then(migrateResult => {
+                            this.triggerToast(migrateResult.message || migrateResult.error || '', migrateResult.success ? 'success' : 'error');
+                            if (!migrateResult.success) {
+                                // Don't touch the old target's files or switch targets if the copy failed.
+                                return;
+                            }
+
+                            // 3. Migration done -- ask whether to keep or delete the old target's files.
+                            const wantsDelete = confirm(
+                                'Übertragung abgeschlossen.\n\n' +
+                                'Sollen die Dateien im alten Archiv-Ziel jetzt gelöscht werden?\n' +
+                                '(Abbrechen = alte Dateien behalten)'
+                            );
+                            if (wantsDelete) {
+                                this.postJson('/api/archive-config/purge-old').then(purgeResult => {
+                                    this.triggerToast(purgeResult.message || purgeResult.error || '', purgeResult.success ? 'success' : 'error');
+                                    this.finalizeSaveArchiveConfig(candidate);
+                                });
+                            } else {
+                                this.finalizeSaveArchiveConfig(candidate);
+                            }
+                        });
                     });
                 },
 
