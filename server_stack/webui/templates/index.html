@@ -862,6 +862,12 @@
                                 <i data-lucide="building-2" class="w-3.5 h-3.5 shrink-0"></i>
                                 <span>Mandanten-Verwaltung</span>
                             </button>
+                            <button type="button" @click="settingsSection='archiv'; loadArchiveConfig();"
+                                class="text-left px-4 py-2.5 text-xs font-semibold flex items-center gap-2 transition"
+                                :class="settingsSection==='archiv' ? 'bg-[#003D9B]/10 text-[#003D9B] border-l-2 border-[#003D9B]' : 'text-slate-600 hover:bg-slate-50 border-l-2 border-transparent'">
+                                <i data-lucide="hard-drive" class="w-3.5 h-3.5 shrink-0"></i>
+                                <span>Archiv-Ziel</span>
+                            </button>
                         </nav>
                     </div>
                 </div>
@@ -1204,6 +1210,89 @@
                                 >
                                     <i data-lucide="plus" class="w-3.5 h-3.5"></i>
                                     <span>Mandant anlegen</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ── ARCHIV-ZIEL ── -->
+                    <div x-show="settingsSection==='archiv'" class="space-y-4">
+                        <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-6">
+                            <h3 class="text-base font-bold text-slate-950 mb-1">Archiv-Ziel</h3>
+                            <p class="text-xs text-slate-500 mb-4">
+                                Wohin Protokoll-PDFs und Archive geschrieben werden — der integrierte Samba-Dienst
+                                dieses Deployments, oder eine externe Netzwerkfreigabe. Gilt für die gesamte
+                                Installation, unabhängig vom Mandanten.
+                            </p>
+
+                            <template x-if="archiveConfig && !archiveConfig.smb_available_flag">
+                                <div class="mb-4 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                                    Hinweis: SMB-Unterstützung ist auf dem Server nicht installiert — eine externe
+                                    Freigabe kann konfiguriert, aber nicht genutzt werden, bis das nachgeholt wird.
+                                </div>
+                            </template>
+
+                            <div class="flex gap-2 mb-5">
+                                <button
+                                    @click="archiveConfig.mode = 'integrated'"
+                                    class="flex-1 px-4 py-3 rounded-xl border text-left transition"
+                                    :class="archiveConfig.mode === 'integrated' ? 'border-[#003D9B] bg-[#003D9B]/5' : 'border-slate-200 hover:border-slate-300'"
+                                >
+                                    <div class="flex items-center gap-2 text-sm font-bold" :class="archiveConfig.mode === 'integrated' ? 'text-[#003D9B]' : 'text-slate-700'">
+                                        <i data-lucide="server" class="w-4 h-4"></i>
+                                        <span>Integrierter Samba-Dienst</span>
+                                    </div>
+                                    <p class="text-[11px] text-slate-500 mt-1">Der mit diesem Deployment mitgelieferte Samba-Container.</p>
+                                </button>
+                                <button
+                                    @click="archiveConfig.mode = 'external'"
+                                    class="flex-1 px-4 py-3 rounded-xl border text-left transition"
+                                    :class="archiveConfig.mode === 'external' ? 'border-[#003D9B] bg-[#003D9B]/5' : 'border-slate-200 hover:border-slate-300'"
+                                >
+                                    <div class="flex items-center gap-2 text-sm font-bold" :class="archiveConfig.mode === 'external' ? 'text-[#003D9B]' : 'text-slate-700'">
+                                        <i data-lucide="network" class="w-4 h-4"></i>
+                                        <span>Externe Freigabe</span>
+                                    </div>
+                                    <p class="text-[11px] text-slate-500 mt-1">Ein eigenes NAS / eine andere SMB-Freigabe im Netzwerk.</p>
+                                </button>
+                            </div>
+
+                            <div x-show="archiveConfig.mode === 'external'" class="space-y-3 pt-4 border-t border-slate-100">
+                                <div>
+                                    <label class="block text-[10px] uppercase font-bold text-slate-500 mb-1">Pfad (UNC)</label>
+                                    <input type="text" x-model="archiveConfig.external_path" placeholder="//192.168.1.50/Archiv"
+                                        class="border border-slate-200 px-3 py-2 rounded-lg w-full text-sm font-mono" />
+                                </div>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-[10px] uppercase font-bold text-slate-500 mb-1">Benutzer</label>
+                                        <input type="text" x-model="archiveConfig.external_username" placeholder="Benutzername"
+                                            class="border border-slate-200 px-3 py-2 rounded-lg w-full text-sm" />
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] uppercase font-bold text-slate-500 mb-1">Passwort</label>
+                                        <input type="password" x-model="archiveConfig.external_password"
+                                            :placeholder="archiveConfig.external_password_set ? '•••••••• (unverändert lassen zum Beibehalten)' : 'Passwort'"
+                                            class="border border-slate-200 px-3 py-2 rounded-lg w-full text-sm" />
+                                    </div>
+                                </div>
+                                <button
+                                    @click="testArchiveConnection()"
+                                    :disabled="archiveTestLoading"
+                                    class="px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition disabled:opacity-50"
+                                >
+                                    <i data-lucide="plug-zap" class="w-3.5 h-3.5"></i>
+                                    <span x-text="archiveTestLoading ? 'Teste…' : 'Verbindung testen'"></span>
+                                </button>
+                            </div>
+
+                            <div class="mt-5 pt-4 border-t border-slate-100 flex justify-end">
+                                <button
+                                    @click="saveArchiveConfig()"
+                                    class="px-4 py-2 bg-[#003D9B] hover:bg-blue-800 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition"
+                                >
+                                    <i data-lucide="save" class="w-3.5 h-3.5"></i>
+                                    <span>Archiv-Ziel speichern</span>
                                 </button>
                             </div>
                         </div>
@@ -1835,6 +1924,10 @@
                 activeMandant: null,
                 newMandantName: '',
 
+                // Archiv-Ziel (global storage backend: integrated Samba vs. external SMB share)
+                archiveConfig: { mode: 'integrated', external_path: '', external_username: '', external_password: '', external_password_set: false, smb_available_flag: true },
+                archiveTestLoading: false,
+
                 activeSystemTypes: [],
                 activeFilterTab: 'offen',
                 expandedContractId: null,
@@ -2013,6 +2106,56 @@
                     .then(data => {
                         this.triggerToast(data.message || data.error || '', data.success ? 'success' : 'error');
                         if (data.success) this.loadMandanten();
+                    });
+                },
+
+                loadArchiveConfig() {
+                    fetch('/api/archive-config')
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            this.archiveConfig = { ...data.config, external_password: '', smb_available_flag: data.smb_available };
+                        }
+                    });
+                },
+
+                saveArchiveConfig() {
+                    fetch('/api/archive-config', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            mode: this.archiveConfig.mode,
+                            external_path: this.archiveConfig.external_path,
+                            external_username: this.archiveConfig.external_username,
+                            external_password: this.archiveConfig.external_password,
+                        })
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        this.triggerToast(data.message || data.error || '', data.success ? 'success' : 'error');
+                        if (data.success) this.loadArchiveConfig();
+                    });
+                },
+
+                testArchiveConnection() {
+                    this.archiveTestLoading = true;
+                    fetch('/api/archive-config/test', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            external_path: this.archiveConfig.external_path,
+                            external_username: this.archiveConfig.external_username,
+                            external_password: this.archiveConfig.external_password,
+                        })
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        this.archiveTestLoading = false;
+                        this.triggerToast(data.message || data.error || '', data.success ? 'success' : 'error');
+                    })
+                    .catch(() => {
+                        this.archiveTestLoading = false;
+                        this.triggerToast('Verbindungstest fehlgeschlagen.', 'error');
                     });
                 },
 

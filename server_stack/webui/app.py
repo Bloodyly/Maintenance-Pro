@@ -17,6 +17,7 @@ import time
 import secrets
 import zipfile
 import qrcode
+import storage
 from datetime import datetime, date
 from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for, session
 
@@ -42,7 +43,8 @@ app = Flask(__name__)
 app.secret_key = "office-webui-secret-key-182392"
 
 DB_PATH = os.environ.get("DB_PATH", "/shared_db/protocols.db")
-SAMBA_SHARE_PATH = os.environ.get("SAMBA_SHARE_PATH", "/samba_shares")
+# File I/O against the Samba/Archiv target goes through storage.py instead of a
+# local SAMBA_SHARE_PATH constant, so it can be an external SMB share too.
 # Needed to build the SECURE_MANDANT;... QR setup string for technicians -- the
 # codeword is the same shared transport-encryption secret netlink uses, and the
 # public address/port is what a technician's phone actually connects to (not
@@ -210,21 +212,21 @@ def create_full_backup(mandant_id):
     ).fetchall()]
     conn.close()
 
-    mandant_dir = os.path.join(SAMBA_SHARE_PATH, folder_name)
-    backup_dir = os.path.join(mandant_dir, "Backups")
-    os.makedirs(backup_dir, exist_ok=True)
+    mandant_dir = storage.resolve(folder_name)
+    backup_dir = storage.resolve(folder_name, "Backups")
+    storage.makedirs(backup_dir)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    zip_path = os.path.join(backup_dir, f"{timestamp}.zip")
+    zip_path = storage.resolve(folder_name, "Backups", f"{timestamp}.zip")
 
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("mandant_export.json", json.dumps(export, ensure_ascii=False, indent=2, default=str))
-        if os.path.exists(mandant_dir):
-            for root, _dirs, files in os.walk(mandant_dir):
-                if os.path.commonpath([root, backup_dir]) == backup_dir:
+    with storage.open_file(zip_path, "wb") as raw_out:
+        with zipfile.ZipFile(raw_out, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("mandant_export.json", json.dumps(export, ensure_ascii=False, indent=2, default=str))
+            for root, _dirs, files in storage.walk(mandant_dir):
+                if root == backup_dir or root.startswith(backup_dir + "\\") or root.startswith(backup_dir + "/"):
                     continue  # don't zip previous backups into this one
                 for f in files:
-                    full_path = os.path.join(root, f)
-                    zf.write(full_path, os.path.relpath(full_path, mandant_dir))
+                    full_path = storage.join(root, f)
+                    zf.writestr(storage.relpath(full_path, mandant_dir), storage.read_bytes(full_path))
 
     return zip_path
 
@@ -371,28 +373,28 @@ def save_settings(settings, mandant_id=None):
 
 # Helper to look up file-level archives of a contract number
 def get_archives_for_contract(contract_number):
-    archive_dir = os.path.join(SAMBA_SHARE_PATH, "Archiv", contract_number)
-    if not os.path.exists(archive_dir):
+    archive_dir = storage.resolve("Archiv", contract_number)
+    if not storage.exists(archive_dir):
         return []
-    
+
     archive_list = []
     # Recursively traverse Year / HalfYear folders
-    for root, dirs, files in os.walk(archive_dir):
+    for root, dirs, files in storage.walk(archive_dir):
         for f in files:
             if f.endswith(".pdf"):
-                full_path = os.path.join(root, f)
+                full_path = storage.join(root, f)
                 # derive year/half-year from relative directory structure
-                rel_path = os.path.relpath(root, archive_dir)
-                parts = rel_path.split(os.sep)
+                rel_path = storage.relpath(root, archive_dir)
+                parts = rel_path.split("/")
                 year = parts[0] if len(parts) > 0 and parts[0] != "." else "Unknown"
                 half_year = parts[1] if len(parts) > 1 else "H1"
-                
+
                 archive_list.append({
                     "filename": f,
                     "year": year,
                     "half_year": half_year,
                     "path": f"/download_archive/{contract_number}/{year}/{half_year}/{f}",
-                    "size_kb": round(os.path.getsize(full_path) / 1024, 1)
+                    "size_kb": round(storage.getsize(full_path) / 1024, 1)
                 })
     return sorted(archive_list, key=lambda x: (x["year"], x["half_year"], x["filename"]), reverse=True)
 
@@ -703,7 +705,7 @@ def get_protocol_detail(p_id):
     conn.close()
 
     archives = get_archives_for_contract(p["contract_number"])
-    has_pdf = os.path.exists(os.path.join(SAMBA_SHARE_PATH, "Protokolle", f"{p['contract_number']}.pdf"))
+    has_pdf = storage.exists(storage.resolve("Protokolle", f"{p['contract_number']}.pdf"))
 
     return jsonify({
         "success": True,
@@ -854,7 +856,7 @@ def reset_protocol(p_id):
         return jsonify({"success": False, "error": "Protokoll nicht gefunden."}), 404
         
     contract_num = prod["contract_number"]
-    active_pdf = os.path.join(SAMBA_SHARE_PATH, "Protokolle", f"{contract_num}.pdf")
+    active_pdf = storage.resolve("Protokolle", f"{contract_num}.pdf")
 
     # Determine archive period subfolder from protocol's interval setting
     cursor.execute("SELECT interval FROM protocols WHERE id = ?", (p_id,))
@@ -869,17 +871,17 @@ def reset_protocol(p_id):
         period = "H1" if now_month <= 6 else "H2"
 
     # 1. Back up active PDF to versioned Samba directory if it exists
-    if os.path.exists(active_pdf):
+    if storage.exists(active_pdf):
         year = datetime.now().strftime("%Y")
-        archive_dir = os.path.join(SAMBA_SHARE_PATH, "Archiv", contract_num, year, period)
-        os.makedirs(archive_dir, exist_ok=True)
-        
-        existing_files = [f for f in os.listdir(archive_dir) if f.startswith(contract_num) and f.endswith(".pdf")]
+        archive_dir = storage.resolve("Archiv", contract_num, year, period)
+        storage.makedirs(archive_dir)
+
+        existing_files = [f for f in storage.listdir(archive_dir) if f.startswith(contract_num) and f.endswith(".pdf")]
         next_ver = len(existing_files) + 1
-        archived_pdf_path = os.path.join(archive_dir, f"{contract_num}_V{next_ver}.pdf")
-        
+        archived_pdf_path = storage.resolve("Archiv", contract_num, year, period, f"{contract_num}_V{next_ver}.pdf")
+
         try:
-            shutil.move(active_pdf, archived_pdf_path)
+            storage.move(active_pdf, archived_pdf_path)
         except Exception as err:
             print(f"WARN: Failed to move PDF: {str(err)}")
             
@@ -977,11 +979,11 @@ def list_mandanten():
         tech_count = cursor.execute(
             "SELECT COUNT(*) FROM technicians WHERE mandant_id = ?", (m["id"],)
         ).fetchone()[0]
-        logo_path = os.path.join(SAMBA_SHARE_PATH, mandant_folder_name(m), "logo.png")
+        logo_path = storage.resolve(mandant_folder_name(m), "logo.png")
         results.append({
             "id": m["id"],
             "name": m["name"],
-            "has_logo": os.path.exists(logo_path),
+            "has_logo": storage.exists(logo_path),
             "contract_count": contract_count,
             "technician_count": tech_count,
         })
@@ -1029,9 +1031,9 @@ def save_mandant():
 
     if logo_file and logo_file.filename:
         mandant_row = conn.execute("SELECT id, name FROM mandanten WHERE id = ?", (m_id,)).fetchone()
-        folder = os.path.join(SAMBA_SHARE_PATH, mandant_folder_name(mandant_row))
-        os.makedirs(folder, exist_ok=True)
-        logo_file.save(os.path.join(folder, "logo.png"))
+        folder = storage.resolve(mandant_folder_name(mandant_row))
+        storage.makedirs(folder)
+        storage.write_bytes(storage.join(folder, "logo.png"), logo_file.read())
         cursor.execute("UPDATE mandanten SET logo_filename = 'logo.png' WHERE id = ?", (m_id,))
         conn.commit()
 
@@ -1225,6 +1227,51 @@ def post_settings():
         return jsonify({"success": True, "message": "Einstellungen erfolgreich gespeichert."})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ----------------- ARCHIV-ZIEL (STORAGE) API -----------------
+# Global, not per-Mandant -- the Samba/SMB target is shared infrastructure,
+# unlike TAIFUN/Anlagentypen settings which are organizational per Mandant.
+
+@app.route("/api/archive-config", methods=["GET"])
+def get_archive_config():
+    config = storage.get_config()
+    config["external_password_set"] = bool(config.pop("external_password", ""))
+    return jsonify({"success": True, "config": config, "smb_available": storage._SMB_AVAILABLE})
+
+
+@app.route("/api/archive-config", methods=["POST"])
+def post_archive_config():
+    data = request.json or {}
+    mode = data.get("mode", "integrated")
+    external_path = data.get("external_path", "")
+    external_username = data.get("external_username", "")
+    external_password = data.get("external_password", "")
+
+    if mode == "external" and not external_path.strip():
+        return jsonify({"success": False, "error": "Bitte einen Pfad für die externe Freigabe angeben."}), 400
+
+    # Leave the stored password untouched if the field was left blank on edit
+    # (matches the technician-password editing convention elsewhere in this app).
+    if not external_password:
+        external_password = storage.get_config().get("external_password", "")
+
+    storage.save_config(mode, external_path, external_username, external_password)
+    return jsonify({"success": True, "message": "Archiv-Ziel gespeichert."})
+
+
+@app.route("/api/archive-config/test", methods=["POST"])
+def test_archive_config():
+    data = request.json or {}
+    external_path = data.get("external_path", "")
+    external_username = data.get("external_username", "")
+    external_password = data.get("external_password", "")
+    if not external_password:
+        external_password = storage.get_config().get("external_password", "")
+    if not external_path.strip():
+        return jsonify({"success": False, "error": "Bitte einen Pfad angeben."}), 400
+    ok, message = storage.test_external_connection(external_path, external_username, external_password)
+    return jsonify({"success": ok, "message": message})
 
 
 @app.route("/api/anlagentypen", methods=["GET"])
@@ -1744,10 +1791,9 @@ def import_taifun():
         
     try:
         # Save content to central wartungVT.xml
-        taifun_xml_path = os.path.join(SAMBA_SHARE_PATH, "wartungVT.xml")
+        taifun_xml_path = storage.resolve("wartungVT.xml")
         try:
-            with open(taifun_xml_path, "w", encoding="utf-8") as f:
-                f.write(content)
+            storage.write_bytes(taifun_xml_path, content.encode("utf-8"))
         except Exception as err:
             print(f"WARN: Could not write central wartungVT.xml: {str(err)}")
             
@@ -2245,17 +2291,19 @@ def run_import():
 
 @app.route("/download_pdf/<contract_num>")
 def download_active_pdf(contract_num):
-    pdf_path = os.path.join(SAMBA_SHARE_PATH, "Protokolle", f"{contract_num}.pdf")
-    if not os.path.exists(pdf_path):
+    pdf_path = storage.resolve("Protokolle", f"{contract_num}.pdf")
+    if not storage.exists(pdf_path):
         return "<h3>PDF-Protokoll wurde vom Netlink/Core Server noch nicht synchronisiert oder gerendert.</h3>", 404
-    return send_file(pdf_path, as_attachment=True, download_name=f"{contract_num}.pdf")
+    return send_file(io.BytesIO(storage.read_bytes(pdf_path)), mimetype="application/pdf",
+                      as_attachment=True, download_name=f"{contract_num}.pdf")
 
 @app.route("/download_archive/<contract_number>/<year>/<half_year>/<filename>")
 def download_archive_pdf(contract_number, year, half_year, filename):
-    pdf_path = os.path.join(SAMBA_SHARE_PATH, "Archiv", contract_number, year, half_year, filename)
-    if not os.path.exists(pdf_path):
+    pdf_path = storage.resolve("Archiv", contract_number, year, half_year, filename)
+    if not storage.exists(pdf_path):
         return "<h3>Archiviertes PDF-Protokoll wurde nicht gefunden.</h3>", 404
-    return send_file(pdf_path, as_attachment=True, download_name=filename)
+    return send_file(io.BytesIO(storage.read_bytes(pdf_path)), mimetype="application/pdf",
+                      as_attachment=True, download_name=filename)
 
 
 @app.route("/mandant_logo/<m_id>")
@@ -2265,10 +2313,10 @@ def mandant_logo(m_id):
     conn.close()
     if not mandant_row:
         return "", 404
-    logo_path = os.path.join(SAMBA_SHARE_PATH, mandant_folder_name(mandant_row), "logo.png")
-    if not os.path.exists(logo_path):
+    logo_path = storage.resolve(mandant_folder_name(mandant_row), "logo.png")
+    if not storage.exists(logo_path):
         return "", 404
-    return send_file(logo_path, mimetype="image/png")
+    return send_file(io.BytesIO(storage.read_bytes(logo_path)), mimetype="image/png")
 
 if __name__ == "__main__":
     print("Starting production companion Flask WebUI app on port 8080...")

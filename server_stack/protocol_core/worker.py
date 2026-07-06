@@ -4,7 +4,7 @@ import sys
 import time
 import json
 import sqlite3
-import shutil
+import io
 from datetime import datetime
 
 from reportlab.lib.pagesizes import A4, landscape, portrait
@@ -16,8 +16,9 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.pdfgen import canvas as pdfcanvas
 from reportlab.pdfbase.pdfmetrics import stringWidth
 
+import storage
+
 DB_PATH = os.environ.get("DB_PATH", "/shared_db/protocols.db")
-SAMBA_SHARE_PATH = os.environ.get("SAMBA_SHARE_PATH", "/samba_shares")
 COMPANY_NAME = os.environ.get("COMPANY_NAME", "Firmenname GmbH")
 COMPANY_SUBTITLE = os.environ.get("COMPANY_SUBTITLE", "Brandschutz & Sicherheitstechnik")
 
@@ -79,12 +80,14 @@ def ensure_schema(cursor):
 def find_logo_path(mandant_folder):
     """Drop a logo.png/logo.jpg into <Mandant>/ on the Samba share to brand
     that Mandant's PDFs -- no rebuild needed. Each Mandant looks up its own,
-    matching the WebUI's per-Mandant logo upload (server_stack/webui/app.py)."""
+    matching the WebUI's per-Mandant logo upload (server_stack/webui/app.py).
+    Returns the resolved storage path (local or UNC), not a guaranteed-local
+    path -- callers must read it via storage.read_bytes(), not plain open()."""
     for candidate in (
-        os.path.join(SAMBA_SHARE_PATH, mandant_folder, "logo.png"),
-        os.path.join(SAMBA_SHARE_PATH, mandant_folder, "logo.jpg"),
+        storage.resolve(mandant_folder, "logo.png"),
+        storage.resolve(mandant_folder, "logo.jpg"),
     ):
-        if os.path.exists(candidate):
+        if storage.exists(candidate):
             return candidate
     return None
 
@@ -105,41 +108,41 @@ def device_filename(dev_name, dev_type, suffix=""):
 
 
 def active_pdf_path(mandant_folder, p_info, dev_name, dev_type):
-    return os.path.join(SAMBA_SHARE_PATH, mandant_folder, contract_folder_name(p_info),
-                         device_filename(dev_name, dev_type))
+    return storage.resolve(mandant_folder, contract_folder_name(p_info),
+                            device_filename(dev_name, dev_type))
 
 
 def blank_pdf_path(mandant_folder, p_info, dev_name, dev_type):
-    return os.path.join(SAMBA_SHARE_PATH, mandant_folder, contract_folder_name(p_info),
-                         device_filename(dev_name, dev_type, "-blanko"))
+    return storage.resolve(mandant_folder, contract_folder_name(p_info),
+                            device_filename(dev_name, dev_type, "-blanko"))
 
 
 def archive_pdf_path(mandant_folder, p_info, dev_name, dev_type, archived_date_str):
     year = archived_date_str[:4]
-    return os.path.join(SAMBA_SHARE_PATH, mandant_folder, "Archiv", year, contract_folder_name(p_info),
-                         device_filename(dev_name, dev_type, f"-{archived_date_str}"))
+    return storage.resolve(mandant_folder, "Archiv", year, contract_folder_name(p_info),
+                            device_filename(dev_name, dev_type, f"-{archived_date_str}"))
 
 
 def archive_existing_device_pdf(mandant_folder, p_info, dev_name, dev_type):
     """Moves the currently active PDF for one Gerät (if any) into
     Archiv/<Jahr>/<Vertrag>/ before a fresh one replaces it."""
     active_path = active_pdf_path(mandant_folder, p_info, dev_name, dev_type)
-    if not os.path.exists(active_path):
+    if not storage.exists(active_path):
         return
 
     date_str = datetime.now().strftime("%Y-%m-%d")
     archived_path = archive_pdf_path(mandant_folder, p_info, dev_name, dev_type, date_str)
-    os.makedirs(os.path.dirname(archived_path), exist_ok=True)
+    storage.makedirs(storage.dirname(archived_path))
 
-    if os.path.exists(archived_path):
+    if storage.exists(archived_path):
         base, ext = os.path.splitext(archived_path)
         i = 2
-        while os.path.exists(f"{base}_{i}{ext}"):
+        while storage.exists(f"{base}_{i}{ext}"):
             i += 1
         archived_path = f"{base}_{i}{ext}"
 
     print(f"[ARCHIVER] Archiving previous version to: {archived_path}")
-    shutil.move(active_path, archived_path)
+    storage.move(active_path, archived_path)
 
 
 # ── Unified per-device storage expansion (mirrors netlink/main.py's ────────────
@@ -255,7 +258,9 @@ def build_styles():
 
 def build_letterhead(styles, p_info, dev_name, dev_type, logo_path):
     if logo_path:
-        logo_cell = Image(logo_path, width=22 * mm, height=15 * mm, kind="proportional")
+        # Image() needs a local path or file-like object -- read via storage
+        # so this works whether logo_path is local or a remote UNC path.
+        logo_cell = Image(io.BytesIO(storage.read_bytes(logo_path)), width=22 * mm, height=15 * mm, kind="proportional")
     else:
         logo_cell = Table(
             [[""]], colWidths=[9 * mm], rowHeights=[9 * mm],
@@ -458,14 +463,18 @@ def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, m
     else:
         pdf_path = blank_pdf_path(mandant_folder, p_info, dev_name, dev_type)
 
-    os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
+    storage.makedirs(storage.dirname(pdf_path))
     print(f"[CORE-WORKER] Generating {'Blanko-' if is_blank else ''}PDF for Gerät '{dev_name}' ({mandant_folder}) at: {pdf_path}")
 
     page_size, bezeichnung_width, melder_col_width, col_span = compute_layout(rows_data, max_cols)
     content_width = page_size[0] - 2 * MARGIN
 
+    # Build into an in-memory buffer, then hand the finished bytes to storage --
+    # ReportLab's canvas does a lot of seek()/tell() while building, which a
+    # local BytesIO always supports cleanly regardless of storage backend.
+    pdf_buffer = io.BytesIO()
     doc = SimpleDocTemplate(
-        pdf_path, pagesize=page_size,
+        pdf_buffer, pagesize=page_size,
         leftMargin=MARGIN, rightMargin=MARGIN, topMargin=12 * mm, bottomMargin=18 * mm
     )
 
@@ -502,6 +511,7 @@ def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, m
         return c
 
     doc.build(story, canvasmaker=_make_canvas)
+    storage.write_bytes(pdf_path, pdf_buffer.getvalue())
     print(f"[CORE-WORKER] PDF built for '{dev_name}' — {len(rows_data)} Meldergruppen"
           + ("" if is_blank else f", {defective_count} Defekt(e)."))
 
