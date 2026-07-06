@@ -1686,23 +1686,24 @@ def get_tag_value(xml, tag, default_value=""):
         return ""
     return default_value
 
+def taifun_name_lines(xml, prefix):
+    """TAIFUN always reserves 3 slots for MtName/OjName (e.g. MtName1/2/3), but
+    numbers them backwards: <prefix>3 is line 1, <prefix>2 is line 2, <prefix>1
+    is line 3. If an object only has e.g. MtName3 and MtName2, the name is just
+    those two lines in that order -- missing slots are skipped, not blanked."""
+    return [v for v in (get_tag_value(xml, f"{prefix}{n}") for n in (3, 2, 1)) if v]
+
+
 def build_taifun_address(xml):
-    mt3 = get_tag_value(xml, "MtName3")
-    mt2 = get_tag_value(xml, "MtName2")
-    mt1 = get_tag_value(xml, "MtName1")
+    parts = taifun_name_lines(xml, "MtName")
     str_val = get_tag_value(xml, "Strasse") or get_tag_value(xml, "Straße")
     plz = get_tag_value(xml, "Plz") or get_tag_value(xml, "PLZ")
     ort = get_tag_value(xml, "Ort")
-    
-    parts = []
-    if mt3: parts.append(mt3)
-    if mt2: parts.append(mt2)
-    if mt1: parts.append(mt1)
+
     if str_val: parts.append(str_val)
-    
     city = " ".join(filter(None, [plz, ort]))
     if city: parts.append(city)
-    
+
     return ", ".join(parts) if parts else ""
 
 def match_detector_type(info_str, name_str, available_detectors):
@@ -1796,9 +1797,9 @@ def import_taifun():
                     address = "Aus TAIFUN importiert"
                     for wtag in wtag_blocks:
                         wtag_hdr = re.split(r"<WtGrtList>|<WtVLList>", wtag, flags=re.IGNORECASE)[0]
-                        mt3 = get_tag_value(wtag_hdr, "MtName3") or get_tag_value(wtag_hdr, "MtName2")
-                        if mt3:
-                            address = mt3
+                        mt_lines = taifun_name_lines(wtag_hdr, "MtName")
+                        if mt_lines:
+                            address = ", ".join(mt_lines)
                             break
 
                     # Build flat list of devices (one per WtGrt)
@@ -1815,9 +1816,11 @@ def import_taifun():
                         wtag_hdr = re.split(r"<WtGrtList>|<WtVLList>", wtag, flags=re.IGNORECASE)[0]
 
                         anlage_nr = get_tag_value(wtag_hdr, "Nr") or f"A{ag_idx:03d}"
-                        # OjName3 = building/object name (Haus 1, Gebäude A, ...)
-                        obj_name = get_tag_value(wtag_hdr, "OjName3") or get_tag_value(wtag_hdr, "MtName3") or f"Standort {ag_idx}"
-                        customer = get_tag_value(wtag_hdr, "MtName3") or ""
+                        # OjName = building/object name (Haus 1, Gebäude A, ...), up to 3 lines
+                        oj_lines = taifun_name_lines(wtag_hdr, "OjName")
+                        mt_lines = taifun_name_lines(wtag_hdr, "MtName")
+                        obj_name = ", ".join(oj_lines) or ", ".join(mt_lines) or f"Standort {ag_idx}"
+                        customer = ", ".join(mt_lines)
 
                         # Interval from first WtVL of this WtAg
                         wtvl_block = extract_tag_content(wtag, "WtVLList")
