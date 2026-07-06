@@ -53,56 +53,68 @@ PUBLIC_SERVER_PORT = os.environ.get("PUBLIC_SERVER_PORT", "3360")
 
 _entities_migrated = False
 
+_schema_migrated = False
+
+
 def get_db_connection():
-    global _entities_migrated
+    global _entities_migrated, _schema_migrated
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    # Ensure subsystem columns exist dynamically
-    try:
-        cursor = conn.cursor()
-        for col_name, col_type in [
-            ("anlage_id", "VARCHAR(100) DEFAULT 'default'"),
-            ("anlage_name", "VARCHAR(255) DEFAULT 'Hauptanlage'"),
-            ("anlage_type", "VARCHAR(50) DEFAULT 'BMA'"),
-            ("anlage_address", "VARCHAR(255) DEFAULT ''"),
-            ("anlage_interval", "VARCHAR(50) DEFAULT 'Halbjährlich'"),
-        ]:
+
+    # Schema migration only needs to run once per process, not on every single
+    # connection -- running ALTER TABLE/CREATE TABLE on every request was both
+    # needlessly slow (every API call paid for it) and dangerous: a second
+    # connection attempting these writes while a long-running request (e.g. a
+    # TAIFUN import with hundreds of rows) holds an open write transaction on
+    # its own connection can hit "database is locked", since sqlite3's default
+    # busy_timeout is 0 (fails immediately instead of waiting).
+    if not _schema_migrated:
+        try:
+            cursor = conn.cursor()
+            for col_name, col_type in [
+                ("anlage_id", "VARCHAR(100) DEFAULT 'default'"),
+                ("anlage_name", "VARCHAR(255) DEFAULT 'Hauptanlage'"),
+                ("anlage_type", "VARCHAR(50) DEFAULT 'BMA'"),
+                ("anlage_address", "VARCHAR(255) DEFAULT ''"),
+                ("anlage_interval", "VARCHAR(50) DEFAULT 'Halbjährlich'"),
+            ]:
+                try:
+                    cursor.execute(f"ALTER TABLE protocol_groups ADD COLUMN {col_name} {col_type}")
+                except sqlite3.OperationalError:
+                    pass
             try:
-                cursor.execute(f"ALTER TABLE protocol_groups ADD COLUMN {col_name} {col_type}")
+                cursor.execute("ALTER TABLE protocols ADD COLUMN synchronized_quarter VARCHAR(20) DEFAULT ''")
             except sqlite3.OperationalError:
                 pass
-        try:
-            cursor.execute("ALTER TABLE protocols ADD COLUMN synchronized_quarter VARCHAR(20) DEFAULT ''")
-        except sqlite3.OperationalError:
-            pass
 
-        # Mandant = organizational sub-unit of the same company, not a security
-        # boundary -- see server_stack/protocol_core/worker.py and netlink/main.py
-        # for the matching migration (each service owns its own idempotent bootstrap).
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS mandanten (
-            id VARCHAR(50) PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            logo_filename VARCHAR(255) DEFAULT '',
-            created_at INTEGER DEFAULT 0
-        );
-        """)
-        cursor.execute(
-            "INSERT OR IGNORE INTO mandanten (id, name, created_at) VALUES ('standard', 'Standard', ?)",
-            (int(time.time() * 1000),)
-        )
-        try:
-            cursor.execute("ALTER TABLE protocols ADD COLUMN mandant_id VARCHAR(50) DEFAULT 'standard'")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            cursor.execute("ALTER TABLE technicians ADD COLUMN mandant_id VARCHAR(50) DEFAULT 'standard'")
-        except sqlite3.OperationalError:
-            pass
+            # Mandant = organizational sub-unit of the same company, not a security
+            # boundary -- see server_stack/protocol_core/worker.py and netlink/main.py
+            # for the matching migration (each service owns its own idempotent bootstrap).
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mandanten (
+                id VARCHAR(50) PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                logo_filename VARCHAR(255) DEFAULT '',
+                created_at INTEGER DEFAULT 0
+            );
+            """)
+            cursor.execute(
+                "INSERT OR IGNORE INTO mandanten (id, name, created_at) VALUES ('standard', 'Standard', ?)",
+                (int(time.time() * 1000),)
+            )
+            try:
+                cursor.execute("ALTER TABLE protocols ADD COLUMN mandant_id VARCHAR(50) DEFAULT 'standard'")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cursor.execute("ALTER TABLE technicians ADD COLUMN mandant_id VARCHAR(50) DEFAULT 'standard'")
+            except sqlite3.OperationalError:
+                pass
 
-        conn.commit()
-    except Exception:
-        pass
+            conn.commit()
+            _schema_migrated = True
+        except Exception:
+            pass
 
     # One-time migration: decode HTML entities (&#228; → ä etc.) stored by the regex XML parser
     if not _entities_migrated:
@@ -1749,10 +1761,11 @@ def import_taifun():
             
         settings = load_settings()
         imported_count = 0
-        
+        active_mandant_id = get_active_mandant_id()
+
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+
         # We process in transactions
         try:
             for block in contract_blocks:
@@ -1939,7 +1952,7 @@ def import_taifun():
                         interval=EXCLUDED.interval,
                         system_type=EXCLUDED.system_type,
                         contract_number=EXCLUDED.contract_number
-                """, (p_id, name, address, contract_number, interval, default_system_type, cols, app_vals, det_types, get_active_mandant_id()))
+                """, (p_id, name, address, contract_number, interval, default_system_type, cols, app_vals, det_types, active_mandant_id))
 
                 if is_taifun_format:
                     # One protocol_group row per WtGrt — no cells created
