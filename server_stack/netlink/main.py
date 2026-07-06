@@ -206,20 +206,21 @@ def apply_wire_row_to_device(cursor, protocol_id, wire_group_id, cells, group_na
         slot_key = f"{grp_num}_{cell.get('slot_key')}"
         det_type = cell.get("detector_type", "-")
         val = cell.get("value", "")
-        ts = cell.get("updated_at")
-        if ts is not None:
-            cursor.execute("""
-                INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(protocol_id, group_id, slot_key)
-                DO UPDATE SET detector_type = EXCLUDED.detector_type, value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
-            """, (protocol_id, device_group_id, slot_key, det_type, val, ts))
-        else:
-            cursor.execute("""
-                INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET detector_type = EXCLUDED.detector_type, value = EXCLUDED.value
-            """, (protocol_id, device_group_id, slot_key, det_type, val))
+        # The full-upload ("Abschließen") path sends updated_at=0 for every cell
+        # (an Android DTO default, not a real timestamp) -- writing that through
+        # verbatim used to permanently defeat protocol_core's needs_regen gate
+        # (last_changed_at > pdf_generated_at), so a re-edited, re-uploaded
+        # protocol silently never got a new PDF or archive entry. Stamp with the
+        # server clock whenever the wire value is missing/zero instead of
+        # trusting it; sync_upload_cells's own last-write-wins values are always
+        # real timestamps already, so this is a no-op for that path.
+        ts = cell.get("updated_at") or int(datetime.now(timezone.utc).timestamp() * 1000)
+        cursor.execute("""
+            INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(protocol_id, group_id, slot_key)
+            DO UPDATE SET detector_type = EXCLUDED.detector_type, value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+        """, (protocol_id, device_group_id, slot_key, det_type, val, ts))
     return True
 
 
