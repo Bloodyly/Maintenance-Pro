@@ -76,8 +76,8 @@ The frontend uses `subSystems` for rendering; the DB stores groups flat with `an
 | `POST /api/import` | Import ESSER `.etb`, CSV/XLSX, Notifier, or Hekatron files |
 | `GET /api/settings` / `POST /api/settings` | Read/write active system types and detector configs |
 | `GET /api/technicians` | List technicians |
-| `GET /download_pdf/:contractNum` | Download active PDF from samba_shares/Protokolle/ |
-| `GET /download_archive/:contractNumber/:year/:halfYear/:filename` | Download archived PDF |
+| `GET /download_pdf/:protocolId/:groupId` | Download one Gerät's active PDF (PDFs are per-Gerät, not per-Vertrag) |
+| `GET /download_archive/:protocolId/:year/:filename` | Download an archived Gerät-PDF |
 | `GET /webui` | Serve legacy Alpine.js WebUI from server_stack/webui/templates/index.html |
 
 ### TypeScript

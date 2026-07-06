@@ -177,6 +177,39 @@ def mandant_folder_name(mandant_row):
     return sanitize_filename(mandant_row["name"])
 
 
+def contract_folder_name(p):
+    """Mirrors protocol_core/worker.py's contract_folder_name -- kept in sync
+    manually since the two services share no code, only the Samba/SMB layout
+    convention (one PDF per Gerät now, not one per Vertrag)."""
+    return sanitize_filename(f"{p['contract_number']}-{p['name']}")
+
+
+def device_filename(dev_name, dev_type, suffix=""):
+    """Mirrors protocol_core/worker.py's device_filename."""
+    return sanitize_filename(f"{dev_name}-{dev_type}") + f"{suffix}.pdf"
+
+
+def get_device_pdf_context(cursor, protocol_id, group_id):
+    """Resolves everything needed to build a device's PDF path: the Mandant
+    folder name, the protocol row, and the device's display name/type. Returns
+    None if the protocol or device doesn't exist."""
+    p = cursor.execute("SELECT * FROM protocols WHERE id = ?", (protocol_id,)).fetchone()
+    if not p:
+        return None
+    dev = cursor.execute(
+        "SELECT * FROM protocol_groups WHERE protocol_id = ? AND group_id = ?", (protocol_id, group_id)
+    ).fetchone()
+    if not dev:
+        return None
+    mandant_row = cursor.execute(
+        "SELECT id, name FROM mandanten WHERE id = ?", (p["mandant_id"] or "standard",)
+    ).fetchone()
+    mandant_folder = mandant_folder_name(mandant_row) if mandant_row else "Standard"
+    dev_name = dev["group_name"] or group_id
+    dev_type = dev["anlage_type"] or dev["group_type"] or p["system_type"]
+    return mandant_folder, p, dev_name, dev_type
+
+
 def create_full_backup(mandant_id):
     """Exports this Mandant's DB rows as JSON and zips them together with its
     complete Samba folder tree (PDFs, logo) into
@@ -372,31 +405,37 @@ def save_settings(settings, mandant_id=None):
         pass
 
 # Helper to look up file-level archives of a contract number
-def get_archives_for_contract(contract_number):
-    archive_dir = storage.resolve("Archiv", contract_number)
-    if not storage.exists(archive_dir):
+def get_archives_for_contract(protocol_id, mandant_folder, contract_folder):
+    """Archived PDFs live at <Mandant>/Archiv/<Jahr>/<Vertragsordner>/*.pdf --
+    one file per archived Gerät-PDF (see protocol_core/worker.py's
+    archive_pdf_path), the filename itself already encodes which Gerät and
+    which date it was archived on. Every device that was ever archived shows
+    up here, newest first."""
+    archiv_root = storage.resolve(mandant_folder, "Archiv")
+    if not storage.exists(archiv_root):
         return []
 
     archive_list = []
-    # Recursively traverse Year / HalfYear folders
-    for root, dirs, files in storage.walk(archive_dir):
-        for f in files:
-            if f.endswith(".pdf"):
-                full_path = storage.join(root, f)
-                # derive year/half-year from relative directory structure
-                rel_path = storage.relpath(root, archive_dir)
-                parts = rel_path.split("/")
-                year = parts[0] if len(parts) > 0 and parts[0] != "." else "Unknown"
-                half_year = parts[1] if len(parts) > 1 else "H1"
+    try:
+        years = [y for y in storage.listdir(archiv_root) if storage.isdir(storage.join(archiv_root, y))]
+    except Exception:
+        years = []
 
-                archive_list.append({
-                    "filename": f,
-                    "year": year,
-                    "half_year": half_year,
-                    "path": f"/download_archive/{contract_number}/{year}/{half_year}/{f}",
-                    "size_kb": round(storage.getsize(full_path) / 1024, 1)
-                })
-    return sorted(archive_list, key=lambda x: (x["year"], x["half_year"], x["filename"]), reverse=True)
+    for year in years:
+        contract_dir = storage.join(archiv_root, year, contract_folder)
+        if not storage.exists(contract_dir):
+            continue
+        for f in storage.listdir(contract_dir):
+            if not f.endswith(".pdf"):
+                continue
+            full_path = storage.join(contract_dir, f)
+            archive_list.append({
+                "filename": f,
+                "year": year,
+                "path": f"/download_archive/{protocol_id}/{year}/{f}",
+                "size_kb": round(storage.getsize(full_path) / 1024, 1)
+            })
+    return sorted(archive_list, key=lambda x: (x["year"], x["filename"]), reverse=True)
 
 # ----------------- WEB API ROUTES -----------------
 
@@ -672,7 +711,15 @@ def get_protocol_detail(p_id):
         except Exception:
             pass
 
-    # Build flat devices list (one entry per WtGrt / protocol_group row)
+    # Build flat devices list (one entry per WtGrt / protocol_group row). PDFs
+    # are per-Gerät now (see protocol_core/worker.py), so has_pdf is resolved
+    # per device rather than once for the whole contract.
+    mandant_row = conn.execute(
+        "SELECT id, name FROM mandanten WHERE id = ?", (p["mandant_id"] or "standard",)
+    ).fetchone()
+    mandant_folder = mandant_folder_name(mandant_row) if mandant_row else "Standard"
+    contract_folder = contract_folder_name(p)
+
     devices_list = []
     for g in groups:
         a_interval = "Halbjährlich"
@@ -682,10 +729,12 @@ def get_protocol_detail(p_id):
         except Exception:
             pass
         cs = cell_stats_by_group.get(g["group_id"])
+        dev_type = (g["anlage_type"] if "anlage_type" in g.keys() and g["anlage_type"] else p["system_type"]) or "BMA"
+        dev_pdf_path = storage.resolve(mandant_folder, contract_folder, device_filename(g["group_name"], dev_type))
         devices_list.append({
             "id": g["group_id"],
             "name": g["group_name"],
-            "type": (g["anlage_type"] if "anlage_type" in g.keys() and g["anlage_type"] else p["system_type"]) or "BMA",
+            "type": dev_type,
             "anlage_id": (g["anlage_id"] if "anlage_id" in g.keys() else "") or "",
             "anlage_name": (g["anlage_name"] if "anlage_name" in g.keys() else "") or "",
             "anlage_address": (g["anlage_address"] if "anlage_address" in g.keys() else "") or "",
@@ -694,6 +743,7 @@ def get_protocol_detail(p_id):
             "total_cells": cs["total"] if cs else 0,
             "filled_cells": cs["filled"] if cs else 0,
             "defect_cells": cs["defects"] if cs else 0,
+            "has_pdf": storage.exists(dev_pdf_path),
         })
 
     for sub in sub_systems_map.values():
@@ -704,8 +754,7 @@ def get_protocol_detail(p_id):
     sub_systems_list = list(sub_systems_map.values())
     conn.close()
 
-    archives = get_archives_for_contract(p["contract_number"])
-    has_pdf = storage.exists(storage.resolve("Protokolle", f"{p['contract_number']}.pdf"))
+    archives = get_archives_for_contract(p["id"], mandant_folder, contract_folder)
 
     return jsonify({
         "success": True,
@@ -725,7 +774,6 @@ def get_protocol_detail(p_id):
             "rows": rows_data,
             "subSystems": sub_systems_list,
             "devices": devices_list,
-            "has_pdf": has_pdf
         },
         "archives": archives
     })
@@ -845,56 +893,69 @@ def delete_protocol(p_id):
 @app.route("/api/protocols/reset/<p_id>", methods=["POST"])
 def reset_protocol(p_id):
     """
-    Triggers turnus changeover: Archives active report and clears measurements, keeping detector mappings intact.
+    Triggers turnus changeover: archives every device's active PDF and clears
+    measurements, keeping detector mappings intact. PDFs are per-Gerät (see
+    protocol_core/worker.py), so each device is archived individually with
+    the same <Mandant>/Archiv/<Jahr>/<Vertrag>/<Gerät-Typ>-<Datum>.pdf naming
+    the core worker itself uses.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT contract_number FROM protocols WHERE id = ?", (p_id,))
-    prod = cursor.fetchone()
-    if not prod:
+    p = cursor.execute("SELECT * FROM protocols WHERE id = ?", (p_id,)).fetchone()
+    if not p:
         conn.close()
         return jsonify({"success": False, "error": "Protokoll nicht gefunden."}), 404
-        
-    contract_num = prod["contract_number"]
-    active_pdf = storage.resolve("Protokolle", f"{contract_num}.pdf")
 
-    # Determine archive period subfolder from protocol's interval setting
-    cursor.execute("SELECT interval FROM protocols WHERE id = ?", (p_id,))
-    proto_row = cursor.fetchone()
-    iv = ((proto_row["interval"] if proto_row else "") or "Halbjährlich").lower()
-    now_month = datetime.now().month
-    if "quartal" in iv:
-        period = f"Q{(now_month - 1) // 3 + 1}"
-    elif "jähr" in iv and "halb" not in iv:
-        period = "J"
-    else:
-        period = "H1" if now_month <= 6 else "H2"
+    mandant_row = cursor.execute(
+        "SELECT id, name FROM mandanten WHERE id = ?", (p["mandant_id"] or "standard",)
+    ).fetchone()
+    mandant_folder = mandant_folder_name(mandant_row) if mandant_row else "Standard"
+    contract_folder = contract_folder_name(p)
+    date_str = datetime.now().strftime("%Y-%m-%d")
 
-    # 1. Back up active PDF to versioned Samba directory if it exists
-    if storage.exists(active_pdf):
-        year = datetime.now().strftime("%Y")
-        archive_dir = storage.resolve("Archiv", contract_num, year, period)
+    # 1. Archive each device's currently active PDF, if it has one
+    devices = cursor.execute("SELECT * FROM protocol_groups WHERE protocol_id = ?", (p_id,)).fetchall()
+    for dev in devices:
+        dev_name = dev["group_name"] or dev["group_id"]
+        dev_type = dev["anlage_type"] or dev["group_type"] or p["system_type"]
+        active_path = storage.resolve(mandant_folder, contract_folder, device_filename(dev_name, dev_type))
+        if not storage.exists(active_path):
+            continue
+
+        archive_dir = storage.resolve(mandant_folder, "Archiv", date_str[:4], contract_folder)
         storage.makedirs(archive_dir)
-
-        existing_files = [f for f in storage.listdir(archive_dir) if f.startswith(contract_num) and f.endswith(".pdf")]
-        next_ver = len(existing_files) + 1
-        archived_pdf_path = storage.resolve("Archiv", contract_num, year, period, f"{contract_num}_V{next_ver}.pdf")
+        archived_path = storage.resolve(mandant_folder, "Archiv", date_str[:4], contract_folder,
+                                         device_filename(dev_name, dev_type, f"-{date_str}"))
+        if storage.exists(archived_path):
+            base, ext = os.path.splitext(archived_path)
+            i = 2
+            while storage.exists(f"{base}_{i}{ext}"):
+                i += 1
+            archived_path = f"{base}_{i}{ext}"
 
         try:
-            storage.move(active_pdf, archived_pdf_path)
+            storage.move(active_path, archived_path)
         except Exception as err:
-            print(f"WARN: Failed to move PDF: {str(err)}")
-            
-    # 2. Reset status back to 'ready_to_download' and measurements back to ''
+            print(f"WARN: Failed to archive PDF for device '{dev_name}': {err}")
+
+    # 2. Reset status back to 'ready_to_download' and measurements back to ''.
+    # slot_key '__rows__' is the device's group-structure registry, not a
+    # measurement -- clearing it would destroy the Melder-Gruppen layout, so
+    # it's excluded. updated_at is bumped so protocol_core's change-detection
+    # notices and regenerates a fresh (empty) PDF for the new cycle.
     try:
+        now_ms = int(time.time() * 1000)
         cursor.execute("UPDATE protocols SET status = 'ready_to_download' WHERE id = ?", (p_id,))
-        cursor.execute("UPDATE group_cells SET value = '' WHERE protocol_id = ?", (p_id,))
+        cursor.execute(
+            "UPDATE group_cells SET value = '', updated_at = ? WHERE protocol_id = ? AND slot_key NOT IN ('__rows__', '__grid__')",
+            (now_ms, p_id)
+        )
         conn.commit()
     except Exception as e:
         conn.rollback()
         conn.close()
         return jsonify({"success": False, "error": f"Datenbank-Fehler beim Zurücksetzen: {str(e)}"}), 500
-        
+
     conn.close()
     return jsonify({"success": True, "message": "Wartungsvertrag erfolgreich für das nächste Turnusintervall freigegeben!"})
 
@@ -2289,17 +2350,39 @@ def run_import():
 
 # ----------------- PDF DOWNLOADS & ARCHIVES ROUTING -----------------
 
-@app.route("/download_pdf/<contract_num>")
-def download_active_pdf(contract_num):
-    pdf_path = storage.resolve("Protokolle", f"{contract_num}.pdf")
-    if not storage.exists(pdf_path):
-        return "<h3>PDF-Protokoll wurde vom Netlink/Core Server noch nicht synchronisiert oder gerendert.</h3>", 404
-    return send_file(io.BytesIO(storage.read_bytes(pdf_path)), mimetype="application/pdf",
-                      as_attachment=True, download_name=f"{contract_num}.pdf")
+@app.route("/download_pdf/<protocol_id>/<group_id>")
+def download_active_pdf(protocol_id, group_id):
+    """PDFs are per-Gerät (see protocol_core/worker.py) -- this downloads one
+    device's currently active protocol, not a single whole-contract file."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ctx = get_device_pdf_context(cursor, protocol_id, group_id)
+    conn.close()
+    if not ctx:
+        return "<h3>Vertrag oder Gerät nicht gefunden.</h3>", 404
+    mandant_folder, p, dev_name, dev_type = ctx
 
-@app.route("/download_archive/<contract_number>/<year>/<half_year>/<filename>")
-def download_archive_pdf(contract_number, year, half_year, filename):
-    pdf_path = storage.resolve("Archiv", contract_number, year, half_year, filename)
+    pdf_path = storage.resolve(mandant_folder, contract_folder_name(p), device_filename(dev_name, dev_type))
+    if not storage.exists(pdf_path):
+        return "<h3>PDF-Protokoll wurde vom Core-Server noch nicht synchronisiert oder gerendert.</h3>", 404
+    return send_file(io.BytesIO(storage.read_bytes(pdf_path)), mimetype="application/pdf",
+                      as_attachment=True, download_name=device_filename(dev_name, dev_type))
+
+@app.route("/download_archive/<protocol_id>/<year>/<filename>")
+def download_archive_pdf(protocol_id, year, filename):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    p = cursor.execute("SELECT * FROM protocols WHERE id = ?", (protocol_id,)).fetchone()
+    if not p:
+        conn.close()
+        return "<h3>Vertrag nicht gefunden.</h3>", 404
+    mandant_row = cursor.execute(
+        "SELECT id, name FROM mandanten WHERE id = ?", (p["mandant_id"] or "standard",)
+    ).fetchone()
+    conn.close()
+    mandant_folder = mandant_folder_name(mandant_row) if mandant_row else "Standard"
+
+    pdf_path = storage.resolve(mandant_folder, "Archiv", year, contract_folder_name(p), filename)
     if not storage.exists(pdf_path):
         return "<h3>Archiviertes PDF-Protokoll wurde nicht gefunden.</h3>", 404
     return send_file(io.BytesIO(storage.read_bytes(pdf_path)), mimetype="application/pdf",

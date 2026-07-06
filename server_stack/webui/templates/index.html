@@ -377,16 +377,8 @@
                                             <i data-lucide="edit" class="w-3.5 h-3.5"></i>
                                             <span>Vertrag editieren</span>
                                         </button>
-                                        <template x-if="expandedProtocolDetails && expandedProtocolDetails.has_pdf">
-                                            <a
-                                                :href="'/download_pdf/' + p.contract_number"
-                                                target="_blank"
-                                                class="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold rounded-lg border border-emerald-200/50 flex items-center gap-1.5 transition"
-                                            >
-                                                <i data-lucide="file-text" class="w-3.5 h-3.5"></i>
-                                                <span>PDF herunterladen</span>
-                                            </a>
-                                        </template>
+                                        <!-- PDF-Download ist jetzt pro Gerät (siehe Gerätekacheln unten) --
+                                             ein Vertrag kann mehrere Geräte mit je eigenem PDF haben. -->
                                         <button
                                             x-show="p.status !== 'synchronized'"
                                             @click="markDone(p.id)"
@@ -545,6 +537,16 @@
                                                             <i data-lucide="printer" class="w-3 h-3"></i>
                                                             <span>Druck Blanko</span>
                                                         </button>
+                                                        <a
+                                                            x-show="dev.has_pdf"
+                                                            :href="'/download_pdf/' + expandedProtocolDetails.id + '/' + dev.id"
+                                                            target="_blank"
+                                                            title="Aktuelles Geräte-PDF herunterladen"
+                                                            class="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 text-[10px] font-semibold rounded-lg flex items-center gap-1 transition"
+                                                        >
+                                                            <i data-lucide="file-text" class="w-3 h-3"></i>
+                                                            <span>PDF</span>
+                                                        </a>
                                                     </div>
                                                 </div>
                                             </template>
@@ -564,9 +566,8 @@
                                                 <template x-for="arc in expandedProtocolArchives" :key="arc.filename">
                                                     <div class="py-2 flex items-center justify-between text-xs">
                                                         <div>
-                                                            <span class="font-bold text-slate-700" x-text="arc.year"></span> –
-                                                            <span class="text-slate-600 font-semibold" x-text="arc.half_year"></span>
-                                                            <span class="block text-[10px] text-slate-400 font-mono" x-text="arc.filename"></span>
+                                                            <span class="font-mono font-semibold text-slate-700" x-text="arc.filename"></span>
+                                                            <span class="block text-[10px] text-slate-400" x-text="arc.year + ' · ' + arc.size_kb + ' KB'"></span>
                                                         </div>
                                                         <a :href="arc.path" class="text-[#003D9B] font-bold hover:underline flex items-center gap-0.5">
                                                             <span>Herunterladen</span>
