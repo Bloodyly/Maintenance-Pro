@@ -1099,6 +1099,54 @@ def init_status():
 def health():
     return jsonify({"status": "running", "database": os.path.exists(DB_PATH)})
 
+
+# ── App-Update distribution ──────────────────────────────────────────────────
+# The app is sideloaded (no Play Store), so it self-updates by asking netlink
+# for the latest release. Deliberately unauthenticated and outside the AES-GCM
+# envelope used everywhere else -- it's just a version number and a public
+# binary, not user data, and the app needs to be able to check/download this
+# even with stale or not-yet-configured credentials. Always reads from the
+# fixed local samba_shares mount (see docker-compose.yml), independent of the
+# webui/protocol_core "Archiv-Ziel" swappable-storage setting -- app releases
+# have nothing to do with where Wartungsprotokoll archives are kept, and
+# keeping this path fixed avoids the two ever getting out of sync.
+APP_UPDATES_PATH = os.environ.get("APP_UPDATES_PATH", "/samba_shares/AppUpdates")
+
+
+@app.route("/app/update-info", methods=["GET"])
+def app_update_info():
+    info_path = os.path.join(APP_UPDATES_PATH, "update_info.json")
+    if not os.path.exists(info_path):
+        return jsonify({"available": False})
+    try:
+        with open(info_path, "r", encoding="utf-8") as f:
+            info = json.load(f)
+    except Exception as e:
+        return jsonify({"available": False, "error": str(e)}), 500
+    return jsonify({
+        "available": True,
+        "version_code": info.get("version_code", 0),
+        "version_name": info.get("version_name", ""),
+        "release_notes": info.get("release_notes", ""),
+        "min_supported_version_code": info.get("min_supported_version_code", 0),
+        "sha256": info.get("sha256", ""),
+        "download_url": "/app/download",
+    })
+
+
+@app.route("/app/download", methods=["GET"])
+def app_download():
+    apk_path = os.path.join(APP_UPDATES_PATH, "latest.apk")
+    if not os.path.exists(apk_path):
+        return jsonify({"error": "NO_RELEASE_AVAILABLE"}), 404
+    return send_file(
+        apk_path,
+        mimetype="application/vnd.android.package-archive",
+        as_attachment=True,
+        download_name="MaintenancePro-update.apk",
+    )
+
+
 if __name__ == "__main__":
     init_db()
     print(f"Starting Secure Netlink Service stack Gateway on port {PORT}...")

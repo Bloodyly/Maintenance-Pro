@@ -1298,6 +1298,70 @@ def post_settings():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+# ----------------- APP-UPDATE DISTRIBUTION -----------------
+# The Android app is sideloaded (no Play Store), so it self-updates by asking
+# netlink for the latest release. netlink reads the same fixed local path
+# read-only (see docker-compose.yml) -- deliberately NOT routed through the
+# swappable storage.py Archiv-Ziel abstraction, since app releases have
+# nothing to do with where Wartungsprotokoll archives live, and keeping this
+# path fixed on both sides avoids them ever pointing at different storage.
+APP_UPDATES_PATH = os.path.join(storage.LOCAL_BASE_PATH, "AppUpdates")
+
+
+@app.route("/api/app-updates", methods=["GET"])
+def get_app_update_info():
+    info_path = os.path.join(APP_UPDATES_PATH, "update_info.json")
+    if not os.path.exists(info_path):
+        return jsonify({"success": True, "release": None})
+    with open(info_path, "r", encoding="utf-8") as f:
+        info = json.load(f)
+    return jsonify({"success": True, "release": info})
+
+
+@app.route("/api/app-updates/upload", methods=["POST"])
+def upload_app_update():
+    apk_file = request.files.get("apk")
+    version_code_raw = request.form.get("version_code", "").strip()
+    version_name = request.form.get("version_name", "").strip()
+    release_notes = request.form.get("release_notes", "").strip()
+    min_supported_raw = request.form.get("min_supported_version_code", "").strip()
+
+    if not apk_file or not apk_file.filename:
+        return jsonify({"success": False, "error": "Bitte eine APK-Datei auswählen."}), 400
+    if not apk_file.filename.lower().endswith(".apk"):
+        return jsonify({"success": False, "error": "Datei muss eine .apk sein."}), 400
+    if not version_code_raw.isdigit():
+        return jsonify({"success": False, "error": "Versionscode muss eine Zahl sein."}), 400
+    if not version_name:
+        return jsonify({"success": False, "error": "Bitte einen Versionsnamen angeben."}), 400
+
+    version_code = int(version_code_raw)
+    min_supported_version_code = int(min_supported_raw) if min_supported_raw.isdigit() else 0
+    if min_supported_version_code > version_code:
+        return jsonify({"success": False, "error": "Mindestversion kann nicht größer als die neue Version sein."}), 400
+
+    os.makedirs(APP_UPDATES_PATH, exist_ok=True)
+    apk_bytes = apk_file.read()
+    sha256 = hashlib.sha256(apk_bytes).hexdigest()
+
+    with open(os.path.join(APP_UPDATES_PATH, "latest.apk"), "wb") as f:
+        f.write(apk_bytes)
+
+    info = {
+        "version_code": version_code,
+        "version_name": version_name,
+        "release_notes": release_notes,
+        "min_supported_version_code": min_supported_version_code,
+        "sha256": sha256,
+        "uploaded_at": int(time.time() * 1000),
+        "file_size": len(apk_bytes),
+    }
+    with open(os.path.join(APP_UPDATES_PATH, "update_info.json"), "w", encoding="utf-8") as f:
+        json.dump(info, f, ensure_ascii=False, indent=2)
+
+    return jsonify({"success": True, "release": info})
+
+
 # ----------------- ARCHIV-ZIEL (STORAGE) API -----------------
 # Global, not per-Mandant -- the Samba/SMB target is shared infrastructure,
 # unlike TAIFUN/Anlagentypen settings which are organizational per Mandant.

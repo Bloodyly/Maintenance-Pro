@@ -38,8 +38,13 @@ services:
       - PORT=3000
       - DB_PATH=/shared_db/protocols.db
       - SERVER_CODEWORD=77-XJ-900-PLX-22 # Symmetrischem AES Key
+      - APP_UPDATES_PATH=/samba_shares/AppUpdates
     volumes:
       - db_data:/shared_db:rw  # SHARED DIRECTORY WITH THE DB (ProtocolDB Volume)
+      # Read-only: netlink only serves the latest APK release the webui uploads,
+      # never writes here. Fixed to the local samba_data volume regardless of the
+      # webui/protocol_core "Archiv-Ziel" setting -- see the /app/update-info comment.
+      - samba_data:/samba_shares:ro
     networks:
       - internet_wan # Only has internet access, no internal_lan connection
     ports:

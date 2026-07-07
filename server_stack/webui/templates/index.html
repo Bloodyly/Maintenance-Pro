@@ -870,6 +870,12 @@
                                 <i data-lucide="hard-drive" class="w-3.5 h-3.5 shrink-0"></i>
                                 <span>Archiv-Ziel</span>
                             </button>
+                            <button type="button" @click="settingsSection='app-updates'; loadAppUpdateInfo();"
+                                class="text-left px-4 py-2.5 text-xs font-semibold flex items-center gap-2 transition"
+                                :class="settingsSection==='app-updates' ? 'bg-[#003D9B]/10 text-[#003D9B] border-l-2 border-[#003D9B]' : 'text-slate-600 hover:bg-slate-50 border-l-2 border-transparent'">
+                                <i data-lucide="smartphone" class="w-3.5 h-3.5 shrink-0"></i>
+                                <span>App-Updates</span>
+                            </button>
                         </nav>
                     </div>
                 </div>
@@ -1301,6 +1307,83 @@
                                 >
                                     <i data-lucide="save" class="w-3.5 h-3.5"></i>
                                     <span>Archiv-Ziel speichern</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ── APP-UPDATES ── -->
+                    <div x-show="settingsSection==='app-updates'" class="space-y-4">
+                        <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-6">
+                            <h3 class="text-base font-bold text-slate-950 mb-1">App-Updates</h3>
+                            <p class="text-xs text-slate-500 mb-4">
+                                Die Android-App wird ohne Play Store verteilt und prüft selbstständig beim Start,
+                                ob hier eine neuere Version hinterlegt ist. Ein hochgeladenes Release ersetzt das
+                                vorherige vollständig.
+                            </p>
+
+                            <template x-if="appUpdateInfo && appUpdateInfo.version_code">
+                                <div class="border border-slate-200 rounded-xl p-4 mb-5 bg-slate-50/50">
+                                    <div class="flex items-center justify-between">
+                                        <div>
+                                            <p class="text-sm font-bold text-slate-900" x-text="'Version ' + appUpdateInfo.version_name + ' (Code ' + appUpdateInfo.version_code + ')'"></p>
+                                            <p class="text-[11px] text-slate-400 mt-0.5" x-text="'Hochgeladen am ' + new Date(appUpdateInfo.uploaded_at).toLocaleString('de-DE') + ' · ' + (appUpdateInfo.file_size / 1024 / 1024).toFixed(1) + ' MB'"></p>
+                                        </div>
+                                        <span
+                                            class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold border"
+                                            :class="appUpdateInfo.min_supported_version_code > 0 ? 'bg-red-50 text-red-700 border-red-100' : 'bg-slate-100 text-slate-500 border-slate-200'"
+                                            x-text="appUpdateInfo.min_supported_version_code > 0 ? ('Erzwungen ab Code < ' + appUpdateInfo.min_supported_version_code) : 'Nicht erzwungen'"
+                                        ></span>
+                                    </div>
+                                    <p class="text-xs text-slate-600 mt-3 whitespace-pre-wrap" x-text="appUpdateInfo.release_notes || 'Keine Release Notes hinterlegt.'"></p>
+                                </div>
+                            </template>
+                            <template x-if="!appUpdateInfo || !appUpdateInfo.version_code">
+                                <div class="border border-dashed border-slate-200 rounded-xl p-4 mb-5 text-xs text-slate-400 text-center">
+                                    Noch kein Release hochgeladen — die App findet aktuell kein Update.
+                                </div>
+                            </template>
+
+                            <div class="space-y-3">
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-[11px] font-semibold text-slate-500 mb-1">Versionsname (z.B. 2.5.0)</label>
+                                        <input x-model="appUpdateForm.version_name" type="text" placeholder="2.5.0"
+                                            class="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#003D9B]/30" />
+                                    </div>
+                                    <div>
+                                        <label class="block text-[11px] font-semibold text-slate-500 mb-1">Versionscode (versionCode, ganzzahlig, aufsteigend)</label>
+                                        <input x-model.number="appUpdateForm.version_code" type="number" min="1" placeholder="z.B. 2"
+                                            class="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#003D9B]/30" />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] font-semibold text-slate-500 mb-1">Release Notes</label>
+                                    <textarea x-model="appUpdateForm.release_notes" rows="3" placeholder="Was wurde geändert?"
+                                        class="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#003D9B]/30"></textarea>
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] font-semibold text-slate-500 mb-1">Mindestversion erzwingen (optional)</label>
+                                    <input x-model.number="appUpdateForm.min_supported_version_code" type="number" min="0" placeholder="0 = nicht erzwingen"
+                                        class="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#003D9B]/30" />
+                                    <p class="text-[11px] text-slate-400 mt-1">
+                                        Geräte mit einem Versionscode darunter können die App nicht mehr nutzen, bis aktualisiert wurde. Leer/0 lassen für ein optionales Update.
+                                    </p>
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] font-semibold text-slate-500 mb-1">APK-Datei</label>
+                                    <input type="file" accept=".apk" @change="appUpdateForm.file = $event.target.files[0]"
+                                        class="w-full text-xs text-slate-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-[#003D9B] file:text-white file:text-xs file:font-semibold hover:file:bg-blue-800" />
+                                </div>
+                            </div>
+
+                            <div class="mt-5 pt-4 border-t border-slate-100 flex justify-end">
+                                <button
+                                    @click="uploadAppUpdate()"
+                                    class="px-4 py-2 bg-[#003D9B] hover:bg-blue-800 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition"
+                                >
+                                    <i data-lucide="upload-cloud" class="w-3.5 h-3.5"></i>
+                                    <span>Release hochladen</span>
                                 </button>
                             </div>
                         </div>
@@ -1937,6 +2020,10 @@
                 archiveConfigOriginal: { mode: 'integrated', external_path: '' },
                 archiveTestLoading: false,
 
+                // App-Updates (sideloaded Android app self-update distribution)
+                appUpdateInfo: null,
+                appUpdateForm: { version_name: '', version_code: null, release_notes: '', min_supported_version_code: 0, file: null },
+
                 activeSystemTypes: [],
                 activeFilterTab: 'offen',
                 expandedContractId: null,
@@ -2134,6 +2221,41 @@
                         this.triggerToast(data.message || data.error || '', data.success ? 'success' : 'error');
                         if (data.success) this.loadMandanten();
                     });
+                },
+
+                loadAppUpdateInfo() {
+                    fetch('/api/app-updates')
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) this.appUpdateInfo = data.release;
+                    });
+                },
+
+                uploadAppUpdate() {
+                    if (!this.appUpdateForm.file) {
+                        this.triggerToast('Bitte eine APK-Datei auswählen.', 'error');
+                        return;
+                    }
+                    if (!this.appUpdateForm.version_name || !this.appUpdateForm.version_code) {
+                        this.triggerToast('Bitte Versionsname und Versionscode angeben.', 'error');
+                        return;
+                    }
+                    const form = new FormData();
+                    form.append('apk', this.appUpdateForm.file);
+                    form.append('version_name', this.appUpdateForm.version_name);
+                    form.append('version_code', this.appUpdateForm.version_code);
+                    form.append('release_notes', this.appUpdateForm.release_notes);
+                    form.append('min_supported_version_code', this.appUpdateForm.min_supported_version_code || 0);
+                    fetch('/api/app-updates/upload', { method: 'POST', body: form })
+                    .then(r => r.json())
+                    .then(data => {
+                        this.triggerToast(data.success ? 'Release hochgeladen.' : (data.error || 'Fehlgeschlagen.'), data.success ? 'success' : 'error');
+                        if (data.success) {
+                            this.appUpdateInfo = data.release;
+                            this.appUpdateForm = { version_name: '', version_code: null, release_notes: '', min_supported_version_code: 0, file: null };
+                        }
+                    })
+                    .catch(() => this.triggerToast('Release konnte nicht hochgeladen werden.', 'error'));
                 },
 
                 loadArchiveConfig() {
