@@ -22,6 +22,8 @@ import de.fs.maintenancepro.data.crypto.CryptoManager
 import de.fs.maintenancepro.data.sync.SyncQueueProcessor
 import de.fs.maintenancepro.data.sync.SyncWorkScheduler
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
@@ -217,18 +219,83 @@ class MainViewModel @Inject constructor(
         _activeProtocolId.value = id
     }
 
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
     init {
         // Run initial background tasks
+        viewModelScope.launch(Dispatchers.IO) {
+            // ActiveSessionManager is an in-memory @Singleton that starts with
+            // hardcoded placeholder server/credentials -- it's only ever fed real
+            // values by saveConfig()/testConnectionWithSettings()/applyQrSetup(),
+            // never restored from the persisted ServerConfigEntity on a fresh
+            // process start. That's why a closed-and-reopened app authenticated
+            // against the placeholder (always fails -> UNREACHABLE) until the user
+            // manually re-ran the connection test, which happened to be the first
+            // thing that ever wrote real config into the session manager.
+            loadPersistedSessionConfig()
+            checkConnectivity()
+            startConnectivityCheckLoop()
+        }
+        registerNetworkCallback()
         processSyncQueue()
         startLiveSyncLoop()
-        startConnectivityCheckLoop()
         updateSearchQuery("")
         loadHistoryLimit()
+    }
+
+    private suspend fun loadPersistedSessionConfig() {
+        val config = serverConfigDao.getConfig() ?: return
+        // A row can exist with only some fields ever populated (e.g. checkConnectivity()
+        // copies the existing row just to update myMandantId) -- deriveKey() throws on an
+        // empty codeword, so only rehydrate once real credentials are actually present.
+        if (config.codeword.isEmpty() || config.username.isEmpty()) return
+        sessionManager.setNetworkConfig(config.serverAddress, config.port)
+        sessionManager.setSession(
+            config.username,
+            config.encryptedPasswordBase64.toCharArray(),
+            config.codeword.toCharArray()
+        )
+    }
+
+    /** Instant, zero-cost signal for the common case (wifi/mobile data toggling)
+     * so the badge doesn't have to wait for the next poll tick to react. The
+     * periodic loop below is still needed to catch "network is fine but the
+     * maintenance server itself is down/unreachable", which the OS can't tell us. */
+    private fun registerNetworkCallback() {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                checkConnectivity()
+            }
+            override fun onLost(network: Network) {
+                _isServerAvailable.value = false
+            }
+        }
+        try {
+            connectivityManager.registerDefaultNetworkCallback(callback)
+            networkCallback = callback
+        } catch (e: Exception) {
+            // Some OEM/emulator setups restrict this -- the periodic loop below
+            // still covers connectivity changes, just less instantly.
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        networkCallback?.let {
+            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            try { connectivityManager.unregisterNetworkCallback(it) } catch (e: Exception) { }
+        }
     }
 
     private fun startConnectivityCheckLoop() {
         viewModelScope.launch(Dispatchers.IO) {
             while (true) {
+                // The NetworkCallback above handles fast reactions to the network
+                // itself dropping/returning; this loop's job is just to periodically
+                // re-confirm the actual server is reachable, so it can afford to be
+                // infrequent rather than polling every few seconds.
+                kotlinx.coroutines.delay(60000) // check every 60 seconds
                 if (_isOffline.value) {
                     _isServerAvailable.value = false
                 } else {
@@ -239,7 +306,6 @@ class MainViewModel @Inject constructor(
                         _isServerAvailable.value = false
                     }
                 }
-                kotlinx.coroutines.delay(10000) // check every 10 seconds
             }
         }
     }
