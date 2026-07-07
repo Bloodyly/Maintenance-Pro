@@ -1,0 +1,20 @@
+# Signing material -- never commit. Losing this keystore means losing the
+# ability to ship updates as the same package on Play Store (self-managed
+# upload key) or breaking the sideload update chain (all installs must be
+# signed with the same key to upgrade in place without an uninstall).
+keystore.properties
+keystore/
+*.jks
+*.keystore
+
+# Local machine config, not portable across checkouts
+local.properties
+
+# Gradle/IDE build artifacts
+.gradle/
+.idea/
+build/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/

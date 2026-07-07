@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
+    <!-- Local Room DB is a sync cache, not a source of truth: restoring a stale
+         copy via cloud backup or device transfer would fight with the server sync
+         logic, so it's excluded entirely and always re-synced fresh instead. -->
     <cloud-backup>
-        <exclude path="db" />
+        <exclude domain="database" path="." />
     </cloud-backup>
     <device-transfer>
-        <exclude path="db" />
+        <exclude domain="database" path="." />
     </device-transfer>
 </data-extraction-rules>
