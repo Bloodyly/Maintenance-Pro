@@ -10,6 +10,11 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
+    <!-- App wird ohne Play Store verteilt und aktualisiert sich selbst per
+         heruntergeladener APK: erfordert diese Berechtigung ab Android 8, plus
+         die pro-App-Freigabe, die der Nutzer beim ersten Update manuell erteilt. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:name=".MaintenanceProApp"
         android:allowBackup="true"
@@ -46,6 +51,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Shares the downloaded update APK (app-specific external storage, see
+             AppUpdateInstaller/DownloadManager) with the system package installer
+             via a content:// URI: required since Android 7, raw file:// URIs
+             across app boundaries throw a FileUriExposedException. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

@@ -3,6 +3,7 @@ package de.fs.maintenancepro
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -22,6 +23,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import dagger.hilt.android.AndroidEntryPoint
+import de.fs.maintenancepro.ui.components.AppUpdateOverlay
 import de.fs.maintenancepro.ui.screens.*
 import de.fs.maintenancepro.ui.theme.IndustrialOutlineVariant
 import de.fs.maintenancepro.ui.theme.LightSurfaceLow
@@ -45,6 +47,7 @@ class MainActivity : ComponentActivity() {
                 val currentRoute = navBackStackEntry?.destination?.route ?: ""
                 val showBottomBar = !currentRoute.startsWith("inspection/") && !currentRoute.startsWith("edit/")
 
+                Box(modifier = Modifier.fillMaxSize()) {
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
                     bottomBar = {
@@ -181,6 +184,8 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                     }
+                }
+                AppUpdateOverlay(viewModel)
                 }
             }
         }

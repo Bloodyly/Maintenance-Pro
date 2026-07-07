@@ -2,6 +2,7 @@ package de.fs.maintenancepro.data.remote
 
 import retrofit2.Response
 import retrofit2.http.Body
+import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
 
@@ -9,6 +10,15 @@ interface ApiService {
 
     @POST("auth/check")
     suspend fun checkAuth(): Response<AuthResponseDto>
+
+    // Unauthenticated on purpose (see netlink's /app/update-info) -- must work even
+    // with stale/unconfigured credentials. Response is small plain JSON starting with
+    // '{', which CryptoInterceptor already passes through undecrypted, so this is safe
+    // to call through the normal apiService. The actual APK binary at download_url is
+    // NOT fetched this way -- see AppUpdateInstaller, which uses DownloadManager
+    // directly to avoid CryptoInterceptor's response.body!!.string() mangling binary data.
+    @GET("app/update-info")
+    suspend fun getAppUpdateInfo(): Response<UpdateInfoDto>
 
     @POST("protocols/search")
     suspend fun searchProtocols(@Body request: SearchRequestDto): Response<List<ProtocolItemDto>>
@@ -61,6 +71,16 @@ data class LiveSyncRequestDto(val protocol_id: String, val payload_json: String)
 data class LiveSyncResponseDto(val protocol_id: String, val payload_json: String)
 
 data class AuthResponseDto(val status: String, val technician_id: String, val name: String, val mandant_id: String = "standard")
+
+data class UpdateInfoDto(
+    val available: Boolean = false,
+    val version_code: Int = 0,
+    val version_name: String = "",
+    val release_notes: String = "",
+    val min_supported_version_code: Int = 0,
+    val sha256: String = "",
+    val download_url: String = ""
+)
 
 data class ProtocolItemDto(
     val id: String,

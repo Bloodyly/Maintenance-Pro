@@ -18,9 +18,14 @@ import de.fs.maintenancepro.data.remote.SyncUploadCellsDto
 import de.fs.maintenancepro.data.remote.SyncCellChangeDto
 import de.fs.maintenancepro.data.remote.SyncProtocolDto
 import kotlinx.coroutines.flow.first
+import de.fs.maintenancepro.BuildConfig
 import de.fs.maintenancepro.data.crypto.CryptoManager
+import de.fs.maintenancepro.data.remote.UpdateInfoDto
 import de.fs.maintenancepro.data.sync.SyncQueueProcessor
 import de.fs.maintenancepro.data.sync.SyncWorkScheduler
+import de.fs.maintenancepro.data.update.AppUpdateInstaller
+import de.fs.maintenancepro.data.update.UpdateDownloadResult
+import de.fs.maintenancepro.data.update.UpdateDownloadUiState
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
@@ -45,6 +50,7 @@ class MainViewModel @Inject constructor(
     private val apiService: ApiService,
     private val sessionManager: ActiveSessionManager,
     private val syncQueueProcessor: SyncQueueProcessor,
+    private val appUpdateInstaller: AppUpdateInstaller,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -235,12 +241,76 @@ class MainViewModel @Inject constructor(
             loadPersistedSessionConfig()
             checkConnectivity()
             startConnectivityCheckLoop()
+            checkForAppUpdate()
         }
         registerNetworkCallback()
         processSyncQueue()
         startLiveSyncLoop()
         updateSearchQuery("")
         loadHistoryLimit()
+    }
+
+    // ── App-Update (sideloaded, no Play Store) ──────────────────────────────
+    private val _updateInfo = MutableStateFlow<UpdateInfoDto?>(null)
+    val updateInfo: StateFlow<UpdateInfoDto?> = _updateInfo
+
+    private val _updateBannerDismissed = MutableStateFlow(false)
+    val updateBannerDismissed: StateFlow<Boolean> = _updateBannerDismissed
+
+    private val _updateDownloadState = MutableStateFlow<UpdateDownloadUiState>(UpdateDownloadUiState.Idle)
+    val updateDownloadState: StateFlow<UpdateDownloadUiState> = _updateDownloadState
+
+    /** True once the installed version is below the server's min_supported_version_code --
+     * the UI shows a non-dismissible dialog instead of the optional banner in that case. */
+    fun isUpdateForced(): Boolean {
+        val info = _updateInfo.value ?: return false
+        return BuildConfig.VERSION_CODE < info.min_supported_version_code
+    }
+
+    fun dismissUpdateBanner() {
+        _updateBannerDismissed.value = true
+    }
+
+    private suspend fun checkForAppUpdate() {
+        try {
+            val response = apiService.getAppUpdateInfo()
+            val info = response.body()
+            if (response.isSuccessful && info != null && info.available && info.version_code > BuildConfig.VERSION_CODE) {
+                _updateInfo.value = info
+            }
+        } catch (e: Exception) {
+            // No update server reachable right now -- not worth surfacing as an error,
+            // the periodic connectivity loop already covers "server unreachable".
+        }
+    }
+
+    fun canInstallUnknownApps(context: Context): Boolean = appUpdateInstaller.canInstallUnknownApps(context)
+
+    fun requestInstallPermissionIntent(context: Context) = appUpdateInstaller.requestInstallPermissionIntent(context)
+
+    fun downloadAndInstallUpdate(context: Context) {
+        val info = _updateInfo.value ?: return
+        viewModelScope.launch {
+            _updateDownloadState.value = UpdateDownloadUiState.Downloading(0)
+            val fullUrl = sessionManager.getActiveBaseUrl().removeSuffix("/") + info.download_url
+            val result = appUpdateInstaller.downloadAndVerify(context, fullUrl, info.sha256) { progress ->
+                _updateDownloadState.value = UpdateDownloadUiState.Downloading(progress)
+            }
+            when (result) {
+                is UpdateDownloadResult.Success -> {
+                    _updateDownloadState.value = UpdateDownloadUiState.ReadyToInstall
+                    appUpdateInstaller.launchInstall(context)
+                }
+                is UpdateDownloadResult.ChecksumMismatch -> {
+                    _updateDownloadState.value = UpdateDownloadUiState.Error(
+                        "Prüfsumme stimmt nicht überein -- Download unvollständig oder beschädigt. Bitte erneut versuchen."
+                    )
+                }
+                is UpdateDownloadResult.Failed -> {
+                    _updateDownloadState.value = UpdateDownloadUiState.Error(result.reason)
+                }
+            }
+        }
     }
 
     private suspend fun loadPersistedSessionConfig() {
