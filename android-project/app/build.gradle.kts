@@ -20,12 +20,12 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "de.fs.maintenancepro"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "de.fs.maintenancepro"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 36
         versionCode = 1
         versionName = "2.4.0"
 
