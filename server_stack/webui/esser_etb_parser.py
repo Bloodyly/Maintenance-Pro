@@ -15,6 +15,8 @@ import csv
 import json
 import re
 import argparse
+import bisect
+from collections import Counter
 
 RECORD_MARKER = bytes([0x04, 0x00, 0x00, 0x00, 0x00, 0xFF])
 RECORD_MARKER_V2 = bytes([0x04, 0x00, 0xFD, 0x00, 0x00, 0xFF])  # variant used in some Type-A files
@@ -25,8 +27,22 @@ VALID_TYPE_CODES = {
     0x0160, 0x0161, 0x0180, 0x01A0, 0x0119,
 }
 TYPE_NAMES = {
+    # 0x0114 vs 0x0164 does NOT encode detector technology (optical vs
+    # thermal) — validated against a real installation's "Alle Teilnehmer"
+    # ring export: a group with 2 genuine TDiff heat detectors mixed among
+    # optical ones showed the two codes scattered with no clean split by
+    # technology. The best-supported hypothesis is "ohne/mit eingebautem
+    # Signalgeber" (plain vs sounder-base variant), but even that wasn't
+    # 100% clean, and Esser's own detailed hardware type (O2T, O2T/So,
+    # TDIFF, ...) isn't stored in the ETB project file at all — only in the
+    # panel's live hardware inventory. Per user decision: since true thermal
+    # (TDiff/Tmax) detectors are the rare exception and everything else
+    # ("O", "O2T", "O2T/So", "OT/So", "O/F", "O/SoF", etc.) counts as
+    # "Automatischer Melder" (AM) for Auslöselisten purposes, both codes
+    # default to that label rather than risk mislabeling an optical
+    # detector as thermal.
     0x0114: 'AM',
-    0x0164: 'Wärme',
+    0x0164: 'AM',
     0x0127: 'DKM',
     0x0150: 'IO',
     0x0160: 'IO',
@@ -35,6 +51,31 @@ TYPE_NAMES = {
     0x01A0: 'MASI',
     0x0119: 'Koppler',
 }
+
+# Gruppenart (group category), read from the metadata block at mpos+54.
+# This is independent of the individual detector hardware type codes above:
+# e.g. a TAL group's inputs are wired via the same DKM-style module as a real
+# manual call point, but the group's role is "technischer Alarm", not "Melder".
+# Codes confirmed against several real ETB files (Sek Arendsee, APH am Dom
+# Halberstadt, Lisa Halle, zast, Kanzlei Seumestrasse).
+GROUP_CATEGORY_NAMES = {
+    1: 'Automatische Melder',
+    2: 'Nichtautomatische Melder',
+    3: 'Koppler',
+    4: 'Signalgeber',
+    8: 'TAL',
+    # Synthetic codes derived from the zone object's class rather than the
+    # Gruppenart byte (which only exists for analog zones):
+    100: 'Konventionell',
+    101: 'Störung',
+}
+
+# Categories that are not physical fire detectors and can be hidden from
+# Auslöselisten (trigger/alarm lists).
+NON_DETECTOR_CATEGORIES = {3, 4, 8, 101}
+
+CATEGORY_KONVENTIONELL = 100
+CATEGORY_STOERUNG = 101
 
 _VERSION_RE = re.compile(r'^\d{1,2}\.\d{2}\.\d{3}$')
 
@@ -136,6 +177,100 @@ def find_all_group_records_no_marker(data):
     return results
 
 
+def find_metadata_blocks_type_c2(data, f1_to_f3, all_group_recs, root_entries=()):
+    """
+    Oldest known Type-C sub-variant (written natively by Tools 1.16 / 2010,
+    e.g. classic 8000 panels): zone anchor e3 00 02 00 at mpos+20, grpnum at
+    mpos+38, and the zone's own sequence number at mpos+14 which must equal
+    the root table's f3 for the f1 handle at mpos+0 — that check is what
+    makes the detection safe. Zones with an embedded detector record at
+    mpos+158 are resolved; detached records in this generation carry no
+    owner link at all (validated via controlled 1.16 save-diffs), so the
+    remaining zones are reported number-only (detectors unknown).
+
+    Conventional (Grenzwert) zones use anchor e6 00 02 00 with the same
+    header layout; they have no analog detector list by nature.
+
+    Returns dict: grpnum → {'text': str, 'subs': list|None, 'konventionell': bool}
+    """
+    n = len(data)
+    # Per-generation field layout, keyed by the anchor's variant byte:
+    # (grpnum offset, embedded-record offset). Both confirmed against
+    # installer CSV exports (variant 0x02: Zentrum Nachwuchsgewinnung 2010;
+    # variant 0x04: Altes Theater Magdeburg / Grundschule Peine).
+    VARIANTS = {0x02: (38, 158), 0x04: (42, 184)}
+
+    found = []  # (grpnum, mpos, f1, rec_off, konventionell)
+    for anchor_byte, konv in ((0xe3, False), (0xe6, True)):
+        i = 0
+        seen = set()
+        while i < n - 4:
+            if not (data[i] == anchor_byte and data[i+1] == 0x00 and data[i+3] == 0x00):
+                i += 1
+                continue
+            layout = VARIANTS.get(data[i+2])
+            if layout is None:
+                i += 1
+                continue
+            grp_off, rec_off = layout
+            mpos = i - 20
+            if mpos < 0 or mpos + grp_off + 4 > n:
+                i += 1
+                continue
+            f1 = struct.unpack_from('<I', data, mpos)[0]
+            if f1 not in f1_to_f3:
+                i += 1
+                continue
+            if struct.unpack_from('<I', data, mpos + 14)[0] != f1_to_f3[f1]:
+                i += 1
+                continue
+            grpnum = struct.unpack_from('<I', data, mpos + grp_off)[0]
+            if not (1 <= grpnum <= 9999) or grpnum in seen:
+                i += 1
+                continue
+            seen.add(grpnum)
+            found.append((grpnum, mpos, f1, rec_off, konv))
+            i += 1
+
+    if not found:
+        return {}
+
+    # POET object addressing: the zone stores its detector list's OID at +4
+    # (0 = embedded). See find_oid_pointer_groups for the derivation.
+    base = _calibrate_base([(mp, f1) for _, mp, f1, _, _ in found])
+    default_delta = found[0][3] - OID_SLOT
+    delta = _calibrate_delta(
+        data, [(mp, f1, base) for _, mp, f1, _, _ in found],
+        all_group_recs.keys(), default=default_delta)
+
+    results = {}
+    for grpnum, mpos, f1, rec_off, konv in found:
+        if grpnum in results:
+            continue
+        if konv:
+            results[grpnum] = {'text': '', 'subs': None, 'konventionell': True}
+            continue
+        ptr = struct.unpack_from('<I', data, mpos + ZONE_PTR_OFF)[0]
+        rp = (ptr * OID_SLOT + base + delta) if ptr else (mpos + rec_off)
+        rec = all_group_recs.get(rp)
+        if rec is not None:
+            results[grpnum] = {'text': rec['text'], 'subs': rec['subs'],
+                               'konventionell': False}
+        else:
+            results[grpnum] = {'text': '', 'subs': None, 'konventionell': False}
+
+    # Guarantee completeness: any zone in the root table that the anchor scan
+    # above did not cover (other object classes) still gets its number out.
+    for z in enumerate_zones(data, root_entries, base):
+        if z['grpnum'] not in results:
+            results[z['grpnum']] = {
+                'text': '', 'subs': None,
+                'konventionell': z['cls'] in _CONVENTIONAL,
+                'stoerung': z['cls'] == ZONE_CLS_STOERUNG,
+            }
+    return results
+
+
 def find_metadata_blocks_type_c(data, all_f1_set, all_group_recs):
     """
     Type C format (VG Eilsleben): anchor META_ANCHOR_C at mpos+20.
@@ -197,9 +332,12 @@ def find_metadata_blocks_type_c(data, all_f1_set, all_group_recs):
         else:
             unmatched.append(cb)
 
-    # Pass 2: process of elimination for remaining unmatched pairs
-    for cb, g in zip(unmatched, unused):
-        resolved[cb['grpnum']] = {'text': cb['text'], 'subs': g['subs']}
+    # Remaining unmatched blocks: report the group (number, name) without
+    # detectors instead of pairing leftovers by position. Positional
+    # elimination can silently attach the wrong detector list to a group —
+    # for a fire-safety Auslöseliste an honest gap beats a plausible guess.
+    for cb in unmatched:
+        resolved[cb['grpnum']] = {'text': cb['text'], 'subs': None}
 
     return resolved
 
@@ -273,17 +411,20 @@ def find_metadata_blocks_type_b(data, all_f1_set, group_records):
             pending.append((grpnum, mpos, bus_hint))
         idx += 1
 
-    # Pass 2: resolve pending blocks via bus_hint — prefer GROUP with most sub-records
+    # Pass 2: resolve pending blocks via bus_hint. Only an unambiguous single
+    # candidate is accepted — picking "the best of several" can attach a
+    # wrong detector list, which is worse than an honest gap. Ambiguous
+    # blocks keep their group number but no detector list (subs=None).
     for grpnum, mpos, bus_hint in pending:
         if grpnum in resolved:
             continue
         candidates = [g for g in bus_to_gpos.get(bus_hint, []) if g not in used_gpos]
-        if not candidates:
-            continue
-        best = max(candidates, key=lambda g: group_records[g]['count'])
-        rec = group_records[best]
-        resolved[grpnum] = {'text': rec['text'], 'subs': _get_subs(rec)}
-        used_gpos.add(best)
+        if len(candidates) == 1:
+            rec = group_records[candidates[0]]
+            resolved[grpnum] = {'text': rec['text'], 'subs': _get_subs(rec)}
+            used_gpos.add(candidates[0])
+        else:
+            resolved[grpnum] = {'text': '', 'subs': None}
 
     # Pass 3: e3 00 10 00 blocks — logic groups (no physical detectors).
     # Group names come from count=0 GROUP records (e.g. "Fireray"), matched
@@ -344,8 +485,12 @@ def find_metadata_blocks_type_b(data, all_f1_set, group_records):
 
     b2_blocks.sort(key=lambda x: x[0])
     zero_name_recs.sort(key=lambda x: x[0])
+    # Positional name matching is only trustworthy when it is a perfect
+    # bijection; with unequal counts a single insertion shifts every name
+    # after it onto the wrong group.
+    use_positional = len(zero_name_recs) == len(b2_blocks)
     for i, (mpos, grpnum, text_fallback) in enumerate(b2_blocks):
-        text = zero_name_recs[i][1] if i < len(zero_name_recs) else text_fallback
+        text = zero_name_recs[i][1] if use_positional else text_fallback
         resolved[grpnum] = {'text': text, 'subs': []}
 
     return resolved, used_gpos
@@ -602,6 +747,81 @@ def find_metadata_blocks(data, all_f1_set, group_pos_set):
     return results
 
 
+def _is_zone_block(data, mpos, all_f1_set, f1_to_f3=None):
+    """
+    Validity check for a zone metadata block at mpos (anchor at +20).
+    Newer generations carry flag==1 at +46; blocks written by older Tools
+    versions (e.g. 1.26) have filler there, but every generation stores the
+    zone's own sequence number at +14, which must equal the root table's f3
+    for the zone's f1 handle.
+    """
+    n = len(data)
+    if mpos < 0 or mpos + 48 > n:
+        return False
+    f1 = struct.unpack_from('<I', data, mpos)[0]
+    if f1 not in all_f1_set:
+        return False
+    if struct.unpack_from('<H', data, mpos + 46)[0] == 1:
+        return True
+    if f1_to_f3 is not None:
+        return struct.unpack_from('<I', data, mpos + 14)[0] == f1_to_f3.get(f1)
+    return False
+
+
+def find_group_categories(data, all_f1_set, f1_to_f3=None):
+    """
+    Scan metadata blocks (Type A) for the Gruppenart code at mpos+54 (and its
+    sub-code at mpos+58). Unlike find_metadata_blocks, this does not require a
+    matching detector GROUP record, so it also covers groups with zero
+    physical inputs (e.g. Signalgeber groups) that would otherwise disappear
+    from the output entirely.
+
+    Returns dict: grpnum → (category_code, subcode).
+    """
+    n = len(data)
+    results = {}
+    idx = 0
+    while True:
+        idx = data.find(META_ANCHOR, idx)
+        if idx < 0:
+            break
+        mpos = idx - 20
+        if mpos < 0 or mpos + 60 > n:
+            idx += 1
+            continue
+        if not _is_zone_block(data, mpos, all_f1_set, f1_to_f3):
+            idx += 1
+            continue
+        grpnum = struct.unpack_from('<I', data, mpos + 42)[0]
+        if not (1 <= grpnum <= 9999):
+            idx += 1
+            continue
+        if grpnum not in results:
+            code = struct.unpack_from('<H', data, mpos + 54)[0]
+            sub = struct.unpack_from('<H', data, mpos + 58)[0]
+            results[grpnum] = (code, sub)
+        idx += 1
+    return results
+
+
+# The 4 bytes immediately preceding a GROUP record encode its owner class.
+# Meldegruppen-owned records carry a per-file value (5c33ffc8, f2010100,
+# 33000000, ... — varies between project files, sometimes several per file),
+# so it cannot serve as a positive filter. But Steuergruppen-owned records
+# (relay/output activation lists like "Sirenen KG - EG", "Notfall/Reset")
+# consistently carry 01 00 00 00 across every examined file, and no correct
+# Meldegruppen resolution ever used such a record (validated on 8 files,
+# 3 of them against installer ground-truth exports).
+STEUERGRUPPE_PREFIX = b'\x01\x00\x00\x00'
+
+
+def is_steuergruppe_record(data, gpos):
+    """True if the GROUP record at gpos is owned by a Steuergruppe (control
+    group) rather than a Meldegruppe — such records must be excluded from
+    zone resolution and from the output."""
+    return gpos >= 4 and bytes(data[gpos-4:gpos]) == STEUERGRUPPE_PREFIX
+
+
 def find_nonstandard_groups(data, all_f1_set, group_records, already_resolved_gpos,
                             skip_pass_d=False):
     """
@@ -619,7 +839,7 @@ def find_nonstandard_groups(data, all_f1_set, group_records, already_resolved_gp
     n = len(data)
 
     # Collect non-standard metadata blocks: val64 = f1+1
-    non_std = {}  # grpnum → (mpos, f1, val64, sec_byte)
+    non_std = {}  # grpnum → (mpos, f1, val64, sec_byte, category)
     idx = 0
     while True:
         idx = data.find(META_ANCHOR, idx)
@@ -640,7 +860,8 @@ def find_nonstandard_groups(data, all_f1_set, group_records, already_resolved_gp
         val64 = int.from_bytes(data[mpos+64:mpos+68], 'little')
         if val64 == f1 + 1:
             sec_byte = int.from_bytes(data[mpos+78:mpos+80], 'little') if mpos + 80 <= n else 0
-            non_std[grpnum] = (mpos, f1, val64, sec_byte)
+            category = struct.unpack_from('<H', data, mpos + 54)[0] if mpos + 56 <= n else None
+            non_std[grpnum] = (mpos, f1, val64, sec_byte, category)
         idx += 1
 
     # Remove groups already resolved via standard method
@@ -651,7 +872,7 @@ def find_nonstandard_groups(data, all_f1_set, group_records, already_resolved_gp
                 del non_std[grpnum]
 
     if not non_std:
-        return {}
+        return {}, {}
 
     val64_to_grpnum = {info[2]: g for g, info in non_std.items()}
     f1_to_grpnum_ns = {info[1]: g for g, info in non_std.items()}
@@ -661,6 +882,11 @@ def find_nonstandard_groups(data, all_f1_set, group_records, already_resolved_gp
     gpos_to_matches = {}
     for gpos, rec in group_records.items():
         if gpos in already_resolved_gpos:
+            continue
+        # Skip Steuergruppen-owned records — their addresses colliding with
+        # a zone's pointer is exactly what used to produce wrong assignments
+        # (e.g. "Notfall/Reset" stealing Meldegruppe 2's slot).
+        if is_steuergruppe_record(data, gpos):
             continue
         count = rec['count']
         sub_start = rec['sub_start']
@@ -680,60 +906,492 @@ def find_nonstandard_groups(data, all_f1_set, group_records, already_resolved_gp
         if matches:
             gpos_to_matches[gpos] = matches
 
-    result = {}  # grpnum → gpos
+    # Candidate pools per grpnum, per evidence tier (A strongest, C weakest).
+    # Built independently for every grpnum — no shared state, no ordering.
+    pools = {g: {'A': set(), 'B': set(), 'C': set()} for g in non_std}
+    for gpos, matches in gpos_to_matches.items():
+        for grpnum, kind in matches:
+            tier = {'val64_bus': 'A', 'f1_sec': 'B', 'sec_byte': 'C'}[kind]
+            pools[grpnum][tier].add(gpos)
 
-    # Iterative resolution: keep assigning until stable
-    changed = True
-    while changed:
-        changed = False
+    # Category veto at candidate level: "Automatische Melder" (category 1)
+    # groups never contain DKM hardware, "Nichtautomatische Melder"
+    # (category 2) never contain AM hardware — real projects don't mix them.
+    # A candidate violating this is a mislinked foreign object (observed in
+    # practice: a Steuergruppe's relay contact whose address coincidentally
+    # collides with a Meldegruppe's expected pointer). Validated against
+    # ground-truth exports from 3 buildings.
+    AM_CODES = {0x0114, 0x0164}
+    DKM_CODE = 0x0127
 
-        # Pass A: val64_bus matches (EsserNet style)
-        for gpos, matches in gpos_to_matches.items():
-            if any(r == gpos for r in result.values()):
+    def _category_ok(grpnum, gpos):
+        category = non_std[grpnum][4]
+        if category not in (1, 2):
+            return True
+        rec = group_records[gpos]
+        det_types = set()
+        for i in range(rec['count']):
+            sp = rec['sub_start'] + i * 14
+            if sp + 14 > n:
+                break
+            det_types.add(struct.unpack_from('<H', data, sp + 12)[0])
+        if category == 1:
+            return DKM_CODE not in det_types
+        return not (det_types & AM_CODES)
+
+    for grpnum, tiers in pools.items():
+        for tier in ('A', 'B', 'C'):
+            tiers[tier] = {gp for gp in tiers[tier] if _category_ok(grpnum, gp)}
+
+    # Cascade-proof tiered resolution. Design constraint (safety-critical):
+    # a single bad slot in the source file must never shift or displace other
+    # groups' assignments. Therefore:
+    #   - every grpnum resolves from its own evidence only, in one shot;
+    #   - a grpnum uses its strongest non-empty tier; no fallback to weaker
+    #     tiers when the strong tier is ambiguous or already claimed;
+    #   - within a tier, all proposals are made simultaneously; if two
+    #     grpnums propose the same GROUP record, BOTH stay unresolved
+    #     (flagged downstream) instead of one silently winning;
+    #   - no process-of-elimination for leftovers, ever.
+    result = {}
+    tier_info = {}  # grpnum → (tier, mpos)
+    assigned = set()
+    for tier in ('A', 'B', 'C'):
+        proposals = {}
+        for grpnum, tiers in pools.items():
+            if grpnum in result:
                 continue
-            bus_matches = [m[0] for m in matches if m[1] == 'val64_bus' and m[0] not in result]
-            unique_bus = list(dict.fromkeys(bus_matches))
-            if len(unique_bus) == 1:
-                result[unique_bus[0]] = gpos
-                changed = True
-
-        # Pass B: f1_sec matches (no val64_bus match in this record)
-        for gpos, matches in gpos_to_matches.items():
-            if any(r == gpos for r in result.values()):
+            # strongest non-empty tier decides; skip grpnum in weaker rounds
+            decisive = next((t for t in ('A', 'B', 'C') if tiers[t]), None)
+            if decisive != tier:
                 continue
-            has_bus = any(m[1] == 'val64_bus' for m in matches)
-            if has_bus:
-                continue
-            sec_matches = [m[0] for m in matches if m[1] == 'f1_sec' and m[0] not in result]
-            unique_sec = list(dict.fromkeys(sec_matches))
-            if len(unique_sec) == 1:
-                result[unique_sec[0]] = gpos
-                changed = True
+            cands = tiers[tier] - assigned
+            if len(cands) == 1:
+                proposals[grpnum] = next(iter(cands))
+        claim_count = {}
+        for gp in proposals.values():
+            claim_count[gp] = claim_count.get(gp, 0) + 1
+        for grpnum, gp in proposals.items():
+            if claim_count[gp] == 1:
+                result[grpnum] = gp
+                tier_info[grpnum] = (tier, non_std[grpnum][0])
+                assigned.add(gp)
 
-        # Pass C: sec_byte matches (single-loop panels where bus=0)
-        for gpos, matches in gpos_to_matches.items():
-            if any(r == gpos for r in result.values()):
-                continue
-            has_bus = any(m[1] in ('val64_bus', 'f1_sec') for m in matches)
-            if has_bus:
-                continue
-            sb_matches = [m[0] for m in matches if m[1] == 'sec_byte' and m[0] not in result]
-            unique_sb = list(dict.fromkeys(sb_matches))
-            if len(unique_sb) == 1:
-                result[unique_sb[0]] = gpos
-                changed = True
+    return result, tier_info
 
-    # Pass D: process of elimination — disabled for multi-panel to avoid cross-Anlage matches
-    if not skip_pass_d:
-        unmatched_grpnums = [g for g in non_std if g not in result]
-        unmatched_gpos = [gpos for gpos in group_records
-                          if gpos not in already_resolved_gpos and gpos not in result.values()]
-        for grpnum, gpos in zip(unmatched_grpnums, unmatched_gpos):
-            result[grpnum] = gpos
 
+# Fixed 4-byte marker found inside the "long" metadata block variant used for
+# groups with a timed alarm reaction (e.g. Betriebsart "ALZ 10 sek."). The 14
+# bytes immediately before it are a detector sub-record (bus, sec, zeros,
+# type_code) — same layout as the 14-byte entries in a GROUP record — that
+# reliably identifies one specific detector belonging to that metadata block.
+_LONG_BLOCK_MARKER = bytes([0x97, 0xed, 0x0b, 0x18])
+
+
+# ---------------------------------------------------------------------------
+# POET object addressing — the authoritative link between a zone and its
+# detector list, valid across every file generation seen so far.
+#
+# Objects are allocated in 64-byte slots. An object handle (OID) maps to a
+# file offset by  offset = OID * 64 + OID_BASE.  The root pointer table's
+# first handle (f1) IS the zone object's OID: f1 * 64 + 960 == zone block
+# start, verified on every zone of every test file (0 exceptions).
+#
+# Each zone block stores, at mpos+4, the OID of the object holding its
+# detector list — or 0 when the list is embedded in the zone object itself.
+# Within the target object the record sits 64 bytes earlier than the
+# embedded record would sit in a zone object, i.e.
+#     record_pos = ptr * 64 + OID_BASE + (embedded_offset - 64)
+#
+# This replaces all address-collision-prone heuristics. Confirmed against
+# installer CSV exports: Arendsee 60/60, Kalbe 249/249, Gymnasium 68/68,
+# Nachwuchsgewinnung 136/136, Theater 53/53 — zero wrong.
+OID_BASE = 960
+OID_SLOT = 64
+ZONE_PTR_OFF = 4
+
+
+def _oid_addr(oid):
+    return oid * OID_SLOT + OID_BASE
+
+
+# Zone object classes, read as u16 at mpos+20. The variant (u16 at mpos+22)
+# only shifts the grpnum field: the 2010-generation puts it at +38, every
+# other generation at +42.
+ZONE_CLS_ANALOG = 0x00e3        # analog Meldegruppe (has a detector list)
+ZONE_CLS_KONVENTIONELL = 0x00e6  # conventional (Grenzwert) Meldegruppe
+ZONE_CLS_KONV_ALT = 0x01af       # conventional, older/other serialization
+ZONE_CLS_STOERUNG = 0x007a       # Störung / Überwachungseingang
+
+_CONVENTIONAL = (ZONE_CLS_KONVENTIONELL, ZONE_CLS_KONV_ALT)
+
+
+def enumerate_zones(data, root_entries, base=OID_BASE):
+    """
+    Enumerate every Meldegruppe of a panel directly from its root pointer
+    table — the authoritative source, so no group can ever be missed.
+
+    Each root entry is a handle pair (f1, f3) where f1 is the zone object's
+    POET OID: its block starts at f1 * 64 + base, and the block's own
+    sequence number (u32 at +14) must equal f3. That double check makes the
+    enumeration self-validating; a handle that fails it is skipped rather
+    than guessed at.
+
+    Verified to yield exactly the installer's group list (no misses, no
+    extras) on all five ground-truth files, spanning four file generations.
+
+    Returns list of dicts: {grpnum, mpos, f1, cls, variant}.
+    """
+    n = len(data)
+    zones = []
+    seen = set()
+    for f1, f3 in root_entries:
+        mpos = f1 * OID_SLOT + base
+        if not (0 <= mpos < n - 64):
+            continue
+        if struct.unpack_from('<I', data, mpos)[0] != f1:
+            continue
+        if struct.unpack_from('<I', data, mpos + 14)[0] != f3:
+            continue
+        cls = struct.unpack_from('<H', data, mpos + 20)[0]
+        variant = struct.unpack_from('<H', data, mpos + 22)[0]
+        # Only the oldest serializations of the two Meldegruppen classes put
+        # the group number at +38; everything else (incl. the special classes
+        # regardless of their variant byte) uses +42.
+        grp_off = 38 if (cls in (ZONE_CLS_ANALOG, ZONE_CLS_KONVENTIONELL)
+                         and variant in (1, 2)) else 42
+        grpnum = struct.unpack_from('<I', data, mpos + grp_off)[0]
+        if not (1 <= grpnum <= 9999) or grpnum in seen:
+            continue
+        seen.add(grpnum)
+        zones.append({'grpnum': grpnum, 'mpos': mpos, 'f1': f1,
+                      'cls': cls, 'variant': variant})
+    return zones
+
+
+def _calibrate_base(zones):
+    """zones: iterable of (mpos, f1). Returns the dominant OID base."""
+    counts = Counter(mpos - f1 * OID_SLOT for mpos, f1 in zones)
+    return counts.most_common(1)[0][0] if counts else OID_BASE
+
+
+def _calibrate_delta(data, zones, record_positions, default):
+    """
+    Empirically determine the record's offset inside a pointed-to object by
+    majority vote, so the parser adapts if a generation shifts the layout.
+    """
+    rec_sorted = sorted(record_positions)
+    deltas = Counter()
+    for mpos, f1, base in zones:
+        ptr = struct.unpack_from('<I', data, mpos + ZONE_PTR_OFF)[0]
+        if not ptr:
+            continue
+        addr = ptr * OID_SLOT + base
+        i = bisect.bisect_left(rec_sorted, addr)
+        if i < len(rec_sorted) and rec_sorted[i] - addr < 600:
+            deltas[rec_sorted[i] - addr] += 1
+    return deltas.most_common(1)[0][0] if deltas else default
+
+
+def _find_oid_base(data, root_entries):
+    """Locate the OID→offset base; 960 in every file seen, but self-checked."""
+    n = len(data)
+    counts = Counter()
+    for f1, f3 in root_entries:
+        for b in (OID_BASE, 0):
+            mpos = f1 * OID_SLOT + b
+            if 0 <= mpos < n - 64 and struct.unpack_from('<I', data, mpos)[0] == f1 \
+                    and struct.unpack_from('<I', data, mpos + 14)[0] == f3:
+                counts[b] += 1
+    return counts.most_common(1)[0][0] if counts else OID_BASE
+
+
+def resolve_zones(data, root_entries, records):
+    """
+    Complete, generation-independent resolution of a panel's Meldegruppen.
+
+    Enumerates every zone from the root table (see enumerate_zones), then
+    links each analog zone to its detector record through the POET object
+    pointer at mpos+4:
+
+        ptr == 0  → record embedded inside the zone object
+        ptr != 0  → record at  ptr * 64 + base + (embedded_offset - 64)
+
+    Both the embedded offset and the resulting delta are measured from the
+    file itself (majority vote over zones whose record position is
+    unambiguous), so a new generation with a shifted layout self-calibrates
+    instead of silently mislinking. Conventional and Störung zones have no
+    analog detector list by nature and are returned with record=None.
+
+    `records` maps a record's lookup position to its parsed record.
+    Returns list of dicts: {grpnum, cls, variant, record_pos or None}.
+    """
+    base = _find_oid_base(data, root_entries)
+    zones = enumerate_zones(data, root_entries, base)
+    if not zones:
+        return []
+
+    rec_sorted = sorted(records)
+
+    def _nearest(pos, span=400):
+        i = bisect.bisect_left(rec_sorted, pos)
+        if i < len(rec_sorted) and rec_sorted[i] - pos < span:
+            return rec_sorted[i]
+        return None
+
+    # embedded offset: measured on zones whose pointer is 0
+    emb_counts = Counter()
+    for z in zones:
+        if struct.unpack_from('<I', data, z['mpos'] + ZONE_PTR_OFF)[0]:
+            continue
+        hit = _nearest(z['mpos'])
+        if hit is not None:
+            emb_counts[hit - z['mpos']] += 1
+    embedded = emb_counts.most_common(1)[0][0] if emb_counts else 182
+
+    # delta: measured on zones whose pointer is set; falls back to the
+    # structural relation delta == embedded - 64.
+    delta_counts = Counter()
+    for z in zones:
+        ptr = struct.unpack_from('<I', data, z['mpos'] + ZONE_PTR_OFF)[0]
+        if not ptr:
+            continue
+        addr = ptr * OID_SLOT + base
+        hit = _nearest(addr, 600)
+        if hit is not None:
+            delta_counts[hit - addr] += 1
+    delta = delta_counts.most_common(1)[0][0] if delta_counts else embedded - OID_SLOT
+
+    out = []
+    for z in zones:
+        rp = None
+        if z['cls'] == ZONE_CLS_ANALOG:
+            ptr = struct.unpack_from('<I', data, z['mpos'] + ZONE_PTR_OFF)[0]
+            cand = (ptr * OID_SLOT + base + delta) if ptr else (z['mpos'] + embedded)
+            if cand in records:
+                rp = cand
+        out.append({'grpnum': z['grpnum'], 'cls': z['cls'],
+                    'variant': z['variant'], 'record_pos': rp})
+    return out
+
+
+def zone_category(cls, fallback=None):
+    """Map a zone object class to the parser's category code."""
+    if cls in _CONVENTIONAL:
+        return CATEGORY_KONVENTIONELL
+    if cls == ZONE_CLS_STOERUNG:
+        return CATEGORY_STOERUNG
+    return fallback
+
+
+def find_oid_pointer_groups(data, f1_to_f3, all_f1_set, group_records):
+    """
+    Resolve zone → detector record via the POET object pointer at mpos+4
+    (Type A files). Returns dict grpnum → GROUP_pos.
+
+    A zone whose pointer is 0 carries its record embedded at mpos+182 (or
+    +180 in a few blocks); those are already handled by find_metadata_blocks
+    but are resolved here too so the pass can stand alone.
+    """
+    n = len(data)
+    zones = {}
+    idx = 0
+    while True:
+        idx = data.find(META_ANCHOR, idx)
+        if idx < 0:
+            break
+        mpos = idx - 20
+        if mpos >= 0 and mpos + 48 <= n:
+            f1 = struct.unpack_from('<I', data, mpos)[0]
+            if f1 in all_f1_set and _is_zone_block(data, mpos, all_f1_set, f1_to_f3):
+                grpnum = struct.unpack_from('<I', data, mpos + 42)[0]
+                if 1 <= grpnum <= 9999 and grpnum not in zones:
+                    zones[grpnum] = (mpos, f1)
+        idx += 1
+    if not zones:
+        return {}
+
+    base = _calibrate_base(zones.values())
+    delta = _calibrate_delta(
+        data, [(mp, f1, base) for mp, f1 in zones.values()],
+        group_records.keys(), default=118)
+
+    result = {}
+    for grpnum, (mpos, f1) in zones.items():
+        ptr = struct.unpack_from('<I', data, mpos + ZONE_PTR_OFF)[0]
+        if ptr:
+            rp = ptr * OID_SLOT + base + delta
+        else:
+            rp = next((mpos + off for off in (182, 180) if mpos + off in group_records), None)
+        if rp in group_records:
+            result[grpnum] = rp
     return result
 
 
+def find_seq_based_groups(data, f1_to_f3, all_f1_set, group_records):
+    """
+    Deterministic zone→record resolution via POET object sequence numbers.
+
+    Discovered through controlled save-diffs of a real project: the root
+    pointer table's second handle (f3) is the zone object's sequence number
+    in the database's object directory, and the zone's detector-list object
+    is allocated with the directly following sequence number. That list
+    object's header carries [OID u32][seq u32], and its GROUP record starts
+    exactly 64 bytes after the seq field. So for a zone with handle pair
+    (f1, f3): find the u32 value f3+1 whose position + 64 is a valid GROUP
+    record and whose preceding u32 looks like an OID — that record is the
+    zone's detector list. This resolves the ordering database-side, exactly
+    like Tools 8000 itself, and is immune to the address collisions that
+    plague the heuristic passes (validated: 59/60 zones correct on the file
+    with a corrupted slot that defeated every heuristic, 0 wrong).
+
+    Only some file-format versions carry these per-object headers (newer
+    versions embed records differently and yield no candidates — which is
+    harmless). Callers must gate the result via cross-check against
+    standard-resolved zones (see parse_etb_all) before trusting it.
+
+    Returns dict: grpnum → GROUP_pos. Ambiguous or headerless zones are
+    simply absent. Two zones claiming the same record are both dropped.
+    """
+    n = len(data)
+
+    meta_f1 = {}  # grpnum → f1
+    idx = 0
+    while True:
+        idx = data.find(META_ANCHOR, idx)
+        if idx < 0:
+            break
+        mpos = idx - 20
+        if mpos >= 0 and mpos + 56 <= n:
+            f1 = struct.unpack_from('<I', data, mpos)[0]
+            if f1 in all_f1_set and struct.unpack_from('<H', data, mpos + 46)[0] == 1:
+                g = struct.unpack_from('<I', data, mpos + 42)[0]
+                if 1 <= g <= 9999 and g not in meta_f1:
+                    meta_f1[g] = f1
+        idx += 1
+
+    proposals = {}
+    for g, f1 in meta_f1.items():
+        f3 = f1_to_f3.get(f1)
+        if f3 is None:
+            continue
+        target = struct.pack('<I', f3 + 1)
+        hits = set()
+        idx2 = 0
+        while True:
+            idx2 = data.find(target, idx2)
+            if idx2 < 0:
+                break
+            gp_cand = idx2 + 64
+            if gp_cand in group_records and idx2 >= 4:
+                oid = struct.unpack_from('<I', data, idx2 - 4)[0]
+                if 0 < oid < 10**6:
+                    hits.add(gp_cand)
+            idx2 += 1
+        if len(hits) == 1:
+            proposals[g] = next(iter(hits))
+
+    # drop same-record conflicts entirely (cascade safety)
+    claim = {}
+    for gp in proposals.values():
+        claim[gp] = claim.get(gp, 0) + 1
+    return {g: gp for g, gp in proposals.items() if claim[gp] == 1}
+
+
+def find_marker_based_groups(data, all_f1_set, group_records, already_resolved_gpos,
+                              already_resolved_grpnums):
+    """
+    Resolve remaining groups via the _LONG_BLOCK_MARKER anchor (see above)
+    instead of the val64==f1+1 signature used by find_nonstandard_groups.
+
+    The extracted (bus, sec, type_code) triple is looked up against every
+    detector in every not-yet-used GROUP record. Some of these triples also
+    appear inside large "ring/topology" objects (a Steuergruppe-linked
+    superset listing every device on a physical loop) — such an object turns
+    up as a candidate for many different grpnums, whereas a genuine 1:1 match
+    is specific to exactly one. Candidates matched by more than one grpnum
+    are therefore dropped as untrustworthy; only grpnums left with exactly
+    one surviving candidate are resolved.
+
+    Returns dict: grpnum → GROUP_pos.
+    """
+    n = len(data)
+
+    unresolved_meta = {}  # grpnum → mpos
+    idx = 0
+    while True:
+        idx = data.find(META_ANCHOR, idx)
+        if idx < 0:
+            break
+        mpos = idx - 20
+        if mpos < 0 or mpos + 56 > n:
+            idx += 1
+            continue
+        f1 = struct.unpack_from('<I', data, mpos)[0]
+        if f1 not in all_f1_set:
+            idx += 1
+            continue
+        if struct.unpack_from('<H', data, mpos + 46)[0] != 1:
+            idx += 1
+            continue
+        grpnum = struct.unpack_from('<I', data, mpos + 42)[0]
+        if not (1 <= grpnum <= 9999) or grpnum in already_resolved_grpnums:
+            idx += 1
+            continue
+        if grpnum not in unresolved_meta:
+            unresolved_meta[grpnum] = mpos
+        idx += 1
+
+    if not unresolved_meta:
+        return {}
+
+    triple_index = {}
+    for gpos, rec in group_records.items():
+        if gpos in already_resolved_gpos:
+            continue
+        if is_steuergruppe_record(data, gpos):
+            continue
+        for i in range(rec['count']):
+            sp = rec['sub_start'] + i * 14
+            if sp + 14 > n:
+                break
+            bus, sec = struct.unpack_from('<II', data, sp)
+            if data[sp+8:sp+12] != bytes(4):
+                continue
+            tc = struct.unpack_from('<H', data, sp + 12)[0]
+            if tc not in VALID_TYPE_CODES:
+                continue
+            triple_index.setdefault((bus, sec, tc), set()).add(gpos)
+
+    grp_candidates = {}
+    for grpnum, mpos in unresolved_meta.items():
+        window = data[mpos:mpos+600]
+        mi = window.find(_LONG_BLOCK_MARKER)
+        if mi < 18:
+            continue
+        sp = mi - 18
+        bus, sec = struct.unpack_from('<II', window, sp)
+        if window[sp+8:sp+12] != bytes(4):
+            continue
+        tc = struct.unpack_from('<H', window, sp + 12)[0]
+        if tc not in VALID_TYPE_CODES:
+            continue
+        cands = triple_index.get((bus, sec, tc))
+        if cands:
+            grp_candidates[grpnum] = cands
+
+    popularity = {}
+    for cands in grp_candidates.values():
+        for gpos in cands:
+            popularity[gpos] = popularity.get(gpos, 0) + 1
+
+    result = {}
+    for grpnum, cands in grp_candidates.items():
+        trustworthy = [gpos for gpos in cands if popularity[gpos] == 1]
+        if len(trustworthy) == 1:
+            result[grpnum] = trustworthy[0]
+
+    return result
 
 
 def find_panel_topology(data, panel_sep, next_sep, panel_f1_set, all_resolved_grpnums):
@@ -831,13 +1489,21 @@ def extract_detectors(data, group_rec):
     return detectors
 
 
-def _build_group_dict(grpnum, text, detectors, unresolved=False):
+def _build_group_dict(grpnum, text, detectors, unresolved=False, category=None, detectors_unknown=False):
     return {
         'grpnum': grpnum,
         'text': text,
         'detectors': detectors,
         'det_count': len(detectors),
         'unresolved': unresolved,
+        'category': category,
+        'category_name': GROUP_CATEGORY_NAMES.get(category) if category is not None else None,
+        'hideable': category in NON_DETECTOR_CATEGORIES,
+        # True when the group's metadata was found but no detector array could
+        # be linked to it — det_count is 0 here for lack of data, not because
+        # the group is genuinely empty. Don't treat det_count as ground truth
+        # when this is set.
+        'detectors_unknown': detectors_unknown,
     }
 
 
@@ -887,52 +1553,191 @@ def parse_etb_all(filepath):
 
         if fmt == 'C':
             all_group_recs = find_all_group_records_no_marker(data)
-            type_c = find_metadata_blocks_type_c(data, all_f1_set, all_group_recs)
+            f1_to_f3_c = {f1: f3 for f1, f3 in root['entries']}
+            # Try the oldest sub-variant first (anchor e3 00 02 00 with
+            # seq==f3 validation); fall back to the classic C layout.
+            zones_c = resolve_zones(data, root['entries'], all_group_recs)
+            if zones_c:
+                type_c = {}
+                for z in zones_c:
+                    rec = all_group_recs.get(z['record_pos']) if z['record_pos'] else None
+                    type_c[z['grpnum']] = {
+                        'text': rec['text'] if rec else '',
+                        'subs': rec['subs'] if rec else None,
+                        'konventionell': z['cls'] in _CONVENTIONAL,
+                        'stoerung': z['cls'] == ZONE_CLS_STOERUNG,
+                    }
+            else:
+                type_c = find_metadata_blocks_type_c2(data, f1_to_f3_c, all_group_recs,
+                                                      root['entries'])
+            if len(type_c) < 3:
+                type_c = find_metadata_blocks_type_c(data, all_f1_set, all_group_recs)
+                for info in type_c.values():
+                    info.setdefault('konventionell', False)
             used_pos = set()
             groups = []
             for grpnum, info in type_c.items():
+                if info['subs'] is None:
+                    if info.get('konventionell'):
+                        cat = CATEGORY_KONVENTIONELL
+                    elif info.get('stoerung'):
+                        cat = CATEGORY_STOERUNG
+                    else:
+                        cat = None
+                    groups.append(_build_group_dict(grpnum, info['text'], [],
+                                                    category=cat, detectors_unknown=True))
+                    continue
                 groups.append(_build_group_dict(grpnum, info['text'], _dets_from_subs(info['subs'])))
                 for lp, grec in all_group_recs.items():
                     if grec['subs'] == info['subs']:
                         used_pos.add(lp)
                         break
-            for lp, grec in all_group_recs.items():
-                if lp not in used_pos:
-                    groups.append(_build_group_dict(None, grec['text'], _dets_from_subs(grec['subs']), True))
+            if not zones_c:
+                for lp, grec in all_group_recs.items():
+                    if lp not in used_pos:
+                        groups.append(_build_group_dict(None, grec['text'],
+                                                        _dets_from_subs(grec['subs']), True))
             result.append({'name': name, 'groups': _sort_groups(groups)})
             break  # Type C is always single-panel
 
         elif fmt == 'B':
-            type_b, used_gpos = find_metadata_blocks_type_b(data, all_f1_set, group_records)
-            groups = []
-            for grpnum, info in type_b.items():
-                groups.append(_build_group_dict(grpnum, info['text'], _dets_from_subs(info['subs'])))
-            for gpos, rec in group_records.items():
-                if gpos not in used_gpos:
-                    groups.append(_build_group_dict(None, rec['text'], extract_detectors(data, rec), True))
+            # Prefer the authoritative root-table + object-pointer resolution;
+            # only fall back to the old anchor heuristics if it finds nothing.
+            zones = resolve_zones(data, root['entries'], group_records)
+            if zones:
+                categories = find_group_categories(
+                    data, all_f1_set, {f1: f3 for f1, f3 in root['entries']})
+                groups = []
+                used_gpos = set()
+                for z in zones:
+                    cat = zone_category(z['cls'], categories.get(z['grpnum'], (None,))[0])
+                    rp = z['record_pos']
+                    if rp is None:
+                        groups.append(_build_group_dict(z['grpnum'], '', [], category=cat,
+                                                        detectors_unknown=True))
+                    else:
+                        rec = group_records[rp]
+                        used_gpos.add(rp)
+                        groups.append(_build_group_dict(z['grpnum'], rec['text'],
+                                                        extract_detectors(data, rec), category=cat))
+            else:
+                type_b, used_gpos = find_metadata_blocks_type_b(data, all_f1_set, group_records)
+                groups = []
+                for grpnum, info in type_b.items():
+                    if info['subs'] is None:
+                        groups.append(_build_group_dict(grpnum, info['text'], [], detectors_unknown=True))
+                    else:
+                        groups.append(_build_group_dict(grpnum, info['text'], _dets_from_subs(info['subs'])))
+            if not zones:
+                # Only when the root table could not be trusted do leftover
+                # records get reported; with a complete zone list every
+                # remaining record belongs to a Steuergruppe by definition.
+                for gpos, rec in group_records.items():
+                    if gpos not in used_gpos and not is_steuergruppe_record(data, gpos):
+                        groups.append(_build_group_dict(None, rec['text'],
+                                                        extract_detectors(data, rec), True))
             result.append({'name': name, 'groups': _sort_groups(groups)})
             break  # Type B is always single-panel
 
         else:
             # Type A — standard metadata + non-standard resolution
             grpnum_to_gpos = find_metadata_blocks(data, all_f1_set, group_pos_set)
+
+            # Deterministic sequence-number resolution (database-index level,
+            # same mechanism Tools 8000 uses). Gate: every zone that BOTH
+            # this pass and the structural standard pass resolve must agree,
+            # with at least 3 overlaps — otherwise the whole pass is
+            # distrusted for this file. When trusted it takes precedence,
+            # because it is immune to the address collisions that can steer
+            # the heuristics below onto a wrong record.
+            f1_to_f3 = {f1: f3 for f1, f3 in root['entries']}
+
+            # Authoritative: this panel's own zones, resolved through the POET
+            # object pointer. Scoped to the panel's root entries, so a
+            # multi-panel (EsserNet) file resolves each panel independently.
+            # It is validated by two independent structural invariants (the
+            # zone's own sequence number, and the object pointer landing on a
+            # parsable record), so it overrides the heuristics below rather
+            # than being vetoed by them.
+            zone_matches = {z['grpnum']: z['record_pos']
+                            for z in resolve_zones(data, root['entries'], group_records)
+                            if z['record_pos'] is not None}
+            if len(zone_matches) >= 3:
+                grpnum_to_gpos.update(zone_matches)
+
+            # Legacy whole-file pointer pass, kept as a safety net.
+            oid_matches = find_oid_pointer_groups(data, f1_to_f3, all_f1_set, group_records)
+            oid_overlap = [g for g in oid_matches if g in grpnum_to_gpos]
+            if (len(oid_overlap) >= 3
+                    and all(oid_matches[g] == grpnum_to_gpos[g] for g in oid_overlap)):
+                for g, gp in oid_matches.items():
+                    grpnum_to_gpos.setdefault(g, gp)
+
+            seq_matches = find_seq_based_groups(data, f1_to_f3, all_f1_set, group_records)
+            overlap = [g for g in seq_matches if g in grpnum_to_gpos]
+            seq_trusted = (
+                len(overlap) >= 3
+                and all(seq_matches[g] == grpnum_to_gpos[g] for g in overlap)
+            )
+            if seq_trusted:
+                for g, gp in seq_matches.items():
+                    grpnum_to_gpos.setdefault(g, gp)
+
             already = set(grpnum_to_gpos.values()) | global_used_gpos
-            ns = find_nonstandard_groups(
+            ns, _ns_tiers = find_nonstandard_groups(
                 data, all_f1_set, group_records, already,
                 skip_pass_d=True,
             )
-            grpnum_to_gpos.update(ns)
+            # heuristics only fill zones the deterministic passes left open
+            for g, gp in ns.items():
+                if g not in grpnum_to_gpos and gp not in grpnum_to_gpos.values():
+                    grpnum_to_gpos[g] = gp
+            already = set(grpnum_to_gpos.values()) | global_used_gpos
+
+            marker_matches = find_marker_based_groups(
+                data, all_f1_set, group_records, already, set(grpnum_to_gpos.keys()),
+            )
+            for g, gp in marker_matches.items():
+                if g not in grpnum_to_gpos and gp not in grpnum_to_gpos.values():
+                    grpnum_to_gpos[g] = gp
             global_used_gpos.update(grpnum_to_gpos.values())
+
+            categories = find_group_categories(data, all_f1_set, f1_to_f3)
 
             groups = []
             for grpnum, gpos in grpnum_to_gpos.items():
                 rec = group_records[gpos]
-                groups.append(_build_group_dict(grpnum, rec['text'], extract_detectors(data, rec)))
+                cat = categories.get(grpnum, (None, None))[0]
+                groups.append(_build_group_dict(grpnum, rec['text'], extract_detectors(data, rec), category=cat))
 
-            if not multi:
+            # Every zone listed in the panel's root table must appear, even
+            # when it has no analog detector list (conventional / Störung
+            # zones) — the group number itself is what the Auslöseliste needs.
+            zones_a = enumerate_zones(data, root['entries'])
+            emitted = set(grpnum_to_gpos)
+            for z in zones_a:
+                if z['grpnum'] in emitted:
+                    continue
+                cat = zone_category(z['cls'], categories.get(z['grpnum'], (None,))[0])
+                groups.append(_build_group_dict(z['grpnum'], '', [], category=cat,
+                                                detectors_unknown=True))
+                emitted.add(z['grpnum'])
+
+            # Fallback for any category-bearing block the root table missed.
+            for grpnum, (cat, sub) in categories.items():
+                if grpnum not in emitted:
+                    groups.append(_build_group_dict(grpnum, '', [], category=cat, detectors_unknown=True))
+                    emitted.add(grpnum)
+
+            # With a complete zone list from the root table, any record still
+            # unclaimed belongs to a Steuergruppe or another object class —
+            # never to a Meldegruppe. Only report leftovers when the zone
+            # enumeration failed, so nothing can silently disappear.
+            if not multi and not zones_a:
                 for gpos, rec in group_records.items():
-                    if gpos not in global_used_gpos:
-                        groups.append(_build_group_dict(None, rec['text'], extract_detectors(data, rec), True))
+                    if gpos in global_used_gpos or is_steuergruppe_record(data, gpos):
+                        continue
+                    groups.append(_build_group_dict(None, rec['text'], extract_detectors(data, rec), True))
 
             result.append({'name': name, 'groups': _sort_groups(groups)})
 
@@ -988,28 +1793,34 @@ def format_summary(groups, project_name, topology=None):
     lines.append(f"Resolved groups: {len(resolved)}, Unresolved: {len(unresolved)}")
     lines.append("")
 
-    lines.append(f"{'Gruppe':>6}  {'Melder':>6}  {'Typen':<40}  {'Text'}")
-    lines.append("-" * 80)
+    lines.append(f"{'Gruppe':>6}  {'Melder':>6}  {'Typen':<40}  {'Gruppenart':<26}  {'Text'}")
+    lines.append("-" * 100)
     for g in groups:
         gn = str(g['grpnum']) if g['grpnum'] is not None else "???"
         types = ', '.join(d['type_name'] for d in g['detectors']) if g['detectors'] else '—'
-        cnt = g['det_count']
+        cnt = '?' if g['detectors_unknown'] else str(g['det_count'])
         text = g['text'] or ''
-        lines.append(f"{gn:>6}  {cnt:>6}  {types:<40}  {text}")
+        art = g['category_name'] or ''
+        if g['hideable']:
+            art += ' [ausblendbar]'
+        lines.append(f"{gn:>6}  {cnt:>6}  {types:<40}  {art:<26}  {text}")
     return '\n'.join(lines)
 
 
 def write_csv(groups, project_name, outpath):
     with open(outpath, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f, delimiter=';')
-        writer.writerow(['Gruppe', 'Gruppentext', 'Melder_Nr', 'Meldertyp', 'Bus', 'Sec'])
+        writer.writerow(['Gruppe', 'Gruppentext', 'Gruppenart', 'Ausblendbar', 'Melderzahl_unbekannt', 'Melder_Nr', 'Meldertyp', 'Bus', 'Sec'])
         for g in groups:
             gn = g['grpnum'] if g['grpnum'] is not None else ''
+            art = g['category_name'] or ''
+            ausblendbar = 'ja' if g['hideable'] else 'nein'
+            unbekannt = 'ja' if g['detectors_unknown'] else 'nein'
             if not g['detectors']:
-                writer.writerow([gn, g['text'], '', '', '', ''])
+                writer.writerow([gn, g['text'], art, ausblendbar, unbekannt, '', '', '', ''])
             else:
                 for i, d in enumerate(g['detectors'], 1):
-                    writer.writerow([gn, g['text'], i, d['type_name'], d['bus_addr'], d['sec_addr']])
+                    writer.writerow([gn, g['text'], art, ausblendbar, unbekannt, i, d['type_name'], d['bus_addr'], d['sec_addr']])
 
 
 def _groups_to_json(groups):
@@ -1021,6 +1832,9 @@ def _groups_to_json(groups):
             'name': g['text'],
             'melder': melder,
             'unresolved': g['unresolved'],
+            'gruppenart': g['category_name'],
+            'ausblendbar': g['hideable'],
+            'melderzahl_unbekannt': g['detectors_unknown'],
         })
     return out
 

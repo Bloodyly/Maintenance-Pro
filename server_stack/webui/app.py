@@ -51,8 +51,37 @@ DB_PATH = os.environ.get("DB_PATH", "/shared_db/protocols.db")
 # public address/port is what a technician's phone actually connects to (not
 # this WebUI's own internal-LAN address).
 SERVER_CODEWORD = os.environ.get("SERVER_CODEWORD", "77-XJ-900-PLX-22")
+# Env-var fallback only -- in practice this was set to the internal LAN IP in
+# docker-compose.yml (despite the name), so QR codes handed to technicians
+# embedded an address that only works from inside the office network. The
+# actual value used for QR generation is now the admin-configurable setting
+# below (see get_qr_server_config), which starts out empty rather than
+# silently defaulting to a wrong-but-plausible-looking LAN address.
 PUBLIC_SERVER_ADDRESS = os.environ.get("PUBLIC_SERVER_ADDRESS", "http://field-service.corp.internal")
 PUBLIC_SERVER_PORT = os.environ.get("PUBLIC_SERVER_PORT", "3360")
+_QR_SERVER_CONFIG_PATH = os.path.join(os.path.dirname(DB_PATH), "qr_server_config.json")
+
+
+def get_qr_server_config():
+    """External (WAN) address/port embedded in technician QR setup codes --
+    deliberately separate from any internal-LAN-facing address this WebUI
+    itself might be reached at. Falls back to the env vars (themselves often
+    misconfigured with a LAN address) only until an admin explicitly sets
+    this in Einstellungen."""
+    if os.path.exists(_QR_SERVER_CONFIG_PATH):
+        try:
+            with open(_QR_SERVER_CONFIG_PATH, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            if config.get("address") and config.get("port"):
+                return config["address"], str(config["port"])
+        except Exception:
+            pass
+    return PUBLIC_SERVER_ADDRESS, PUBLIC_SERVER_PORT
+
+
+def save_qr_server_config(address, port):
+    with open(_QR_SERVER_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump({"address": address, "port": port}, f, ensure_ascii=False, indent=2)
 # protocol_core has no published port -- reachable only from other containers
 # on the internal_lan Docker network, by service name (see docker-compose.yml).
 PROTOCOL_CORE_URL = os.environ.get("PROTOCOL_CORE_URL", "http://protocol_core:5001")
@@ -1245,9 +1274,10 @@ def generate_technician_qr(t_id):
     conn.commit()
     conn.close()
 
+    qr_address, qr_port = get_qr_server_config()
     qr_content = (
-        f"SECURE_MANDANT;{tech['mandant_id'] or 'standard'};{PUBLIC_SERVER_ADDRESS};"
-        f"{PUBLIC_SERVER_PORT};{tech['username']};{new_password};{SERVER_CODEWORD}"
+        f"SECURE_MANDANT;{tech['mandant_id'] or 'standard'};{qr_address};"
+        f"{qr_port};{tech['username']};{new_password};{SERVER_CODEWORD}"
     )
     img = qrcode.make(qr_content)
     buf = io.BytesIO()
@@ -1266,6 +1296,28 @@ def generate_technician_qr(t_id):
         "password": new_password,
         "message": "Neues Passwort vergeben -- das vorherige ist ab sofort ungültig."
     })
+
+
+@app.route("/api/qr-server-config", methods=["GET"])
+def get_qr_server_config_route():
+    address, port = get_qr_server_config()
+    is_configured = os.path.exists(_QR_SERVER_CONFIG_PATH)
+    return jsonify({"success": True, "address": address, "port": port, "is_configured": is_configured})
+
+
+@app.route("/api/qr-server-config", methods=["POST"])
+def post_qr_server_config():
+    data = request.json or {}
+    address = (data.get("address") or "").strip()
+    port = str(data.get("port") or "").strip()
+    if not address or not port:
+        return jsonify({"success": False, "error": "Bitte Adresse und Port angeben."}), 400
+    if not address.startswith("http://") and not address.startswith("https://"):
+        return jsonify({"success": False, "error": "Adresse muss mit http:// oder https:// beginnen."}), 400
+    if not port.isdigit():
+        return jsonify({"success": False, "error": "Port muss eine Zahl sein."}), 400
+    save_qr_server_config(address, port)
+    return jsonify({"success": True, "message": "Externe Adresse für QR-Codes gespeichert."})
 
 # ----------------- SETTINGS API -----------------
 
@@ -1748,6 +1800,11 @@ def _json_anlage_to_grid(anlage_json):
       gruppe (int), name (str), melder (list of {nr, typ}), unresolved (bool)
     """
     gruppen = anlage_json.get("gruppen", [])
+    # Signalgeber-, TAL- und Koppler-Gruppen gehören nicht zur eigentlichen
+    # Auslöseliste, die ein Techniker prüft (siehe "ausblendbar" in
+    # esser_etb_parser.py / JSON_FORMAT.md) -- werden komplett übersprungen,
+    # statt als irrelevante Zeilen mit übernommen zu werden.
+    gruppen = [g for g in gruppen if not g.get("ausblendbar")]
     grid_groups = []
     types_dict = {}
     n_cols = 0

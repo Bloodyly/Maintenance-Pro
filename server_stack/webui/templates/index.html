@@ -852,7 +852,7 @@
                                 <i data-lucide="clipboard-list" class="w-3.5 h-3.5 shrink-0"></i>
                                 <span>Auslöselisten</span>
                             </button>
-                            <button type="button" @click="settingsSection='allgemein'"
+                            <button type="button" @click="settingsSection='allgemein'; loadQrServerConfig();"
                                 class="text-left px-4 py-2.5 text-xs font-semibold flex items-center gap-2 transition"
                                 :class="settingsSection==='allgemein' ? 'bg-[#003D9B]/10 text-[#003D9B] border-l-2 border-[#003D9B]' : 'text-slate-600 hover:bg-slate-50 border-l-2 border-transparent'">
                                 <i data-lucide="settings-2" class="w-3.5 h-3.5 shrink-0"></i>
@@ -1116,6 +1116,46 @@
                         <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-6">
                             <h3 class="text-base font-bold text-slate-950 mb-2">Allgemeine Einstellungen</h3>
                             <p class="text-xs text-slate-500">System-Konfiguration und globale Standardwerte.</p>
+                        </div>
+
+                        <!-- QR-Server-Konfiguration -->
+                        <div class="bg-white border border-slate-200 rounded-2xl shadow-sm p-6 space-y-4">
+                            <div>
+                                <h4 class="text-sm font-bold text-slate-800">Externe Adresse für Techniker-QR-Codes</h4>
+                                <p class="text-[11px] text-slate-500 mt-0.5">
+                                    Adresse und Port, die beim Einrichten eines Technikers in den QR-Code eincodiert werden.
+                                    Muss von unterwegs erreichbar sein (nicht die interne LAN-Adresse dieses Servers) —
+                                    also die öffentliche/WAN-Adresse von netlink.
+                                </p>
+                            </div>
+                            <template x-if="qrServerConfig && !qrServerConfig.is_configured">
+                                <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                                    Noch nicht konfiguriert — QR-Codes verwenden aktuell den Fallback-Wert
+                                    (<span x-text="qrServerConfig.address + ':' + qrServerConfig.port"></span>), der
+                                    unter Umständen falsch ist.
+                                </div>
+                            </template>
+                            <div class="grid grid-cols-3 gap-3">
+                                <div class="col-span-2">
+                                    <label class="block text-[11px] font-semibold text-slate-500 mb-1">Adresse (inkl. http:// oder https://)</label>
+                                    <input x-model="qrServerConfigForm.address" type="text" placeholder="https://field-service.example.com"
+                                        class="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#003D9B]/30" />
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] font-semibold text-slate-500 mb-1">Port</label>
+                                    <input x-model="qrServerConfigForm.port" type="text" placeholder="3360"
+                                        class="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#003D9B]/30" />
+                                </div>
+                            </div>
+                            <div class="flex justify-end">
+                                <button
+                                    @click="saveQrServerConfig()"
+                                    class="px-4 py-2 bg-[#003D9B] hover:bg-blue-800 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition"
+                                >
+                                    <i data-lucide="save" class="w-3.5 h-3.5"></i>
+                                    <span>Speichern</span>
+                                </button>
+                            </div>
                         </div>
 
                         <!-- Danger Zone -->
@@ -1902,11 +1942,20 @@
                             </thead>
                             <tbody>
                                 <template x-for="(row, i) in etbGroupRows()" :key="i">
-                                    <tr class="border-b border-slate-100 hover:bg-slate-50/70">
+                                    <tr class="border-b border-slate-100 hover:bg-slate-50/70"
+                                        :class="row.needs_manual_entry ? 'bg-amber-50/70' : ''">
                                         <td class="px-3 py-2 font-mono font-bold text-slate-700" x-text="row.grp_num"></td>
-                                        <td class="px-3 py-2 text-slate-800" x-text="row.name || '—'"></td>
+                                        <td class="px-3 py-2 text-slate-800">
+                                            <span x-text="row.name || '—'"></span>
+                                            <span x-show="row.needs_manual_entry"
+                                                  title="Melderzahl konnte aus der ETB-Datei nicht ermittelt werden -- bitte nach dem Import manuell eintragen."
+                                                  class="ml-1.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700 border border-amber-200">
+                                                <i data-lucide="alert-triangle" class="w-2.5 h-2.5"></i>
+                                                <span>manuell eintragen</span>
+                                            </span>
+                                        </td>
                                         <td class="px-3 py-2 text-right font-mono text-slate-500"
-                                            :class="row.det_count > 0 ? 'text-slate-700' : 'text-slate-300'"
+                                            :class="row.det_count > 0 ? 'text-slate-700' : 'text-amber-600 font-bold'"
                                             x-text="row.det_count > 0 ? row.det_count : '—'"></td>
                                         <td class="px-3 py-2 text-slate-400 text-[10px]" x-text="row.type_str || '—'"></td>
                                     </tr>
@@ -2023,6 +2072,10 @@
                 // App-Updates (sideloaded Android app self-update distribution)
                 appUpdateInfo: null,
                 appUpdateForm: { version_name: '', version_code: null, release_notes: '', min_supported_version_code: 0, file: null },
+
+                // External (WAN) address/port embedded in technician QR setup codes
+                qrServerConfig: null,
+                qrServerConfigForm: { address: '', port: '' },
 
                 activeSystemTypes: [],
                 activeFilterTab: 'offen',
@@ -2256,6 +2309,30 @@
                         }
                     })
                     .catch(() => this.triggerToast('Release konnte nicht hochgeladen werden.', 'error'));
+                },
+
+                loadQrServerConfig() {
+                    fetch('/api/qr-server-config')
+                    .then(r => r.json())
+                    .then(data => {
+                        if (!data.success) return;
+                        this.qrServerConfig = data;
+                        this.qrServerConfigForm = { address: data.address, port: data.port };
+                    });
+                },
+
+                saveQrServerConfig() {
+                    fetch('/api/qr-server-config', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(this.qrServerConfigForm)
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        this.triggerToast(data.message || (data.success ? 'Gespeichert.' : data.error), data.success ? 'success' : 'error');
+                        if (data.success) this.loadQrServerConfig();
+                    })
+                    .catch(() => this.triggerToast('Speichern fehlgeschlagen.', 'error'));
                 },
 
                 loadArchiveConfig() {
@@ -3371,7 +3448,10 @@
                         }
                         const det_count = Object.values(counts).reduce((s, n) => s + n, 0);
                         const type_str = Object.entries(counts).map(([t, n]) => `${n}× ${t}`).join(', ');
-                        return { grp_num, name, det_count, type_str };
+                        // Melderzahl konnte aus der ETB-Datei nicht sicher ermittelt werden
+                        // (z.B. konventionelle Grenzwertgruppen) -- muss manuell nachgetragen werden.
+                        const needs_manual_entry = det_count === 0;
+                        return { grp_num, name, det_count, type_str, needs_manual_entry };
                     });
                 },
                 etbTotalStats() {
