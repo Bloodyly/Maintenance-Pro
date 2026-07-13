@@ -170,6 +170,61 @@ def build_device_rows_payload(cursor, protocol_id):
     return rows_data, max_cols
 
 
+def build_device_hardware_payload(cursor, protocol_id):
+    """One entry per device that has a '__hardware__' inventory blob (Zentrale +
+    Ringkarten, optional per Gerät). Deliberately separate from
+    build_device_rows_payload -- Hardware is scoped to the whole device, not a
+    single Melder-Gruppe, so it can't be expressed as one more 'row' there
+    without smuggling a fake Melder-Gruppe through the wire protocol. Devices
+    without a Hardware table simply don't appear in the result."""
+    cursor.execute("SELECT * FROM protocol_groups WHERE protocol_id = ?", (protocol_id,))
+    devices = cursor.fetchall()
+
+    hardware_data = []
+    for dev in devices:
+        cursor.execute(
+            "SELECT value, updated_at FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = '__hardware__'",
+            (protocol_id, dev["group_id"])
+        )
+        hw_cell = cursor.fetchone()
+        if not hw_cell:
+            continue
+        try:
+            hw_json = json.loads(hw_cell["value"])
+        except Exception:
+            continue
+        hardware_data.append({
+            "group_id": dev["group_id"],
+            "updated_at": hw_cell["updated_at"] or 0,
+            "rows": hw_json.get("rows", [])
+        })
+    return hardware_data
+
+
+def apply_wire_hardware_to_device(cursor, protocol_id, device_group_id, hw_rows, updated_at=None):
+    """Writes/overwrites one device's '__hardware__' inventory blob. Whole-blob
+    last-write-wins (compares against the stored updated_at), mirroring the
+    per-cell LWW check in sync_upload_cells -- hardware edits are infrequent
+    and small enough that field-level merging isn't worth the complexity."""
+    now = int(datetime.now(timezone.utc).timestamp() * 1000)
+    ts = updated_at if updated_at else now
+    cursor.execute(
+        "SELECT updated_at FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = '__hardware__'",
+        (protocol_id, device_group_id)
+    )
+    existing = cursor.fetchone()
+    if existing is not None and (existing["updated_at"] or 0) > ts:
+        return False  # a newer value already stored -- last-write-wins keeps it
+    value = json.dumps({"v": 1, "rows": hw_rows})
+    cursor.execute(
+        "INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at) "
+        "VALUES (?, ?, '__hardware__', '-', ?, ?) "
+        "ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+        (protocol_id, device_group_id, value, ts)
+    )
+    return True
+
+
 def apply_wire_row_to_device(cursor, protocol_id, wire_group_id, cells, group_name=None):
     """
     Writes an uploaded wire-row's cells back into the owning device's unified storage.
@@ -619,6 +674,7 @@ def protocol_download(id):
     # Every device (Gerät) expands into one wire-row per Melder-Gruppe; storage is
     # unified regardless of source (TAIFUN/ETB/manual) -- see build_device_rows_payload.
     rows_data, max_cols = build_device_rows_payload(cursor, id)
+    hardware_data = build_device_hardware_payload(cursor, id)
     conn.commit()  # persist any lazy migration performed while reading
     conn.close()
 
@@ -643,7 +699,8 @@ def protocol_download(id):
             "applicable_values": [{"value": v, "label": v, "is_defect": v == "Def."} for v in json.loads(p["applicable_values"])],
             "detector_types": json.loads(p["detector_types"])
         },
-        "rows": rows_data
+        "rows": rows_data,
+        "hardware": hardware_data
     }
     
     # Compile ZIP
@@ -681,6 +738,7 @@ def protocol_upload(id):
         return jsonify({"error": "DECRYPTION_FAILED", "message": f"Upload konnte nicht entschlüsselt werden: {str(e)}"}), 400
         
     rows = uploaded_data.get("rows", [])
+    hardware = uploaded_data.get("hardware", [])
     finished_at = uploaded_data.get("finished_at", datetime.utcnow().isoformat())
     
     conn = get_db_connection()
@@ -719,6 +777,18 @@ def protocol_upload(id):
                 # than silently fragmenting a new top-level device out of a malformed upload.
                 continue
             touched_devices.add(str(wire_group_id).split("::", 1)[0])
+
+        # Hardware is device-scoped (not a Melder-Gruppe), so it's a sibling
+        # array to 'rows' rather than another namespaced row -- see
+        # build_device_hardware_payload / apply_wire_hardware_to_device.
+        for hw_entry in hardware:
+            device_group_id = hw_entry.get("group_id")
+            if not device_group_id:
+                continue
+            apply_wire_hardware_to_device(
+                cursor, id, device_group_id, hw_entry.get("rows", []), hw_entry.get("updated_at")
+            )
+            touched_devices.add(device_group_id)
 
         for device_group_id in touched_devices:
             record_device_edit(cursor, id, device_group_id, auth_details["name"])
@@ -816,6 +886,16 @@ def protocols_live_sync(id):
         if cells_to_apply:
             apply_wire_row_to_device(cursor, id, g_id, cells_to_apply, group_name=row.get("group_name"))
 
+    # 2b. Merge Hardware blobs on-the-fly -- device-scoped, not Melder-Gruppe-scoped,
+    # so it's a sibling of 'rows' rather than another namespaced row within it.
+    for hw_entry in client_payload.get("hardware", []):
+        device_group_id = hw_entry.get("group_id")
+        if not device_group_id:
+            continue
+        apply_wire_hardware_to_device(
+            cursor, id, device_group_id, hw_entry.get("rows", []), hw_entry.get("updated_at")
+        )
+
     conn.commit()
 
     # 3. Pull newest fresh state out of DBMS
@@ -823,10 +903,11 @@ def protocols_live_sync(id):
     p = cursor.fetchone()
 
     rows_data, _ = build_device_rows_payload(cursor, id)
+    hardware_data = build_device_hardware_payload(cursor, id)
     conn.commit()  # persist any lazy migration performed while rebuilding
 
     conn.close()
-    
+
     response_json = {
         "protocol_id": p["id"],
         "client_name": p["name"],
@@ -838,7 +919,8 @@ def protocols_live_sync(id):
             "applicable_values": [{"value": v, "label": v, "is_defect": v == "Def."} for v in json.loads(p["applicable_values"])],
             "detector_types": json.loads(p["detector_types"])
         },
-        "rows": rows_data
+        "rows": rows_data,
+        "hardware": hardware_data
     }
     
     response_payload = {
@@ -859,6 +941,7 @@ def _build_protocol_sync_payload(cursor, p):
     # unified regardless of source (TAIFUN/ETB/manual) -- see build_device_rows_payload.
     # (May lazily migrate legacy storage in place -- caller must conn.commit() afterward.)
     rows_data, sync_n_cols = build_device_rows_payload(cursor, p_id)
+    hardware_data = build_device_hardware_payload(cursor, p_id)
 
     try:
         if sync_n_cols > 0:
@@ -883,6 +966,7 @@ def _build_protocol_sync_payload(cursor, p):
         "mandant_id": (p["mandant_id"] if "mandant_id" in p.keys() else "") or "standard",
         "definition": {"columns": cols, "applicable_values": app_vals, "detector_types": det_types},
         "rows": rows_data,
+        "hardware": hardware_data,
     }
 
 
@@ -956,6 +1040,11 @@ def sync_delta():
             if changed_cells:
                 rows_data.append({**row, "cells": changed_cells})
 
+        hardware_data = [
+            hw for hw in build_device_hardware_payload(cursor, p_id)
+            if (hw.get("updated_at") or 0) > since
+        ]
+
         result.append({
             "id": p["id"], "name": p["name"], "address": p["address"],
             "contract_number": p["contract_number"], "interval": p["interval"],
@@ -963,6 +1052,7 @@ def sync_delta():
             "updated_at": (p["updated_at"] if "updated_at" in p.keys() else 0) or 0,
             "mandant_id": (p["mandant_id"] if "mandant_id" in p.keys() else "") or "standard",
             "rows": rows_data,
+            "hardware": hardware_data,
         })
 
     conn.commit()  # persist any lazy migration performed while reading
@@ -982,6 +1072,7 @@ def sync_upload_cells():
         encrypted_body = request.data.decode("utf-8").strip()
         body_json = json.loads(decrypt_payload(encrypted_body, SERVER_CODEWORD))
         changes = body_json.get("changes", [])
+        hardware_changes = body_json.get("hardware_changes", [])
     except Exception as e:
         return jsonify({"error": "DECRYPTION_FAILED", "message": str(e)}), 400
 
@@ -1021,6 +1112,19 @@ def sync_upload_cells():
             cursor, p_id, g_id, [{"slot_key": slot, "detector_type": det_type, "value": val, "updated_at": ts}]
         )
         updated_devices.add((p_id, device_group_id))
+
+    # Hardware changes are whole-device-blob, not per-cell -- own LWW check
+    # inside apply_wire_hardware_to_device (compares against the stored
+    # updated_at), same semantics as the per-cell loop above.
+    for hw_change in hardware_changes:
+        p_id = hw_change.get("protocol_id")
+        device_group_id = hw_change.get("group_id")
+        if not p_id or not device_group_id:
+            continue
+        ts = int(hw_change.get("updated_at", now))
+        if apply_wire_hardware_to_device(cursor, p_id, device_group_id, hw_change.get("rows", []), ts):
+            applied += 1
+            updated_devices.add((p_id, device_group_id))
 
     formatted_date = datetime.now().strftime("%d.%m.%Y")
     cq = current_quarter()

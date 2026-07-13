@@ -168,10 +168,12 @@ def list_devices(cursor, protocol_id):
 
 
 def expand_device(cursor, protocol_id, group_id):
-    """Returns (rows, max_cols, last_changed_at) for ONE Gerät: one row per
-    Melder-Gruppe, cells keyed by column index. last_changed_at is the newest
-    updated_at across the device's cells (incl. the '__rows__' registry cell
-    itself, so structural edits like renames also count as a change)."""
+    """Returns (rows, max_cols, hw_rows, last_changed_at) for ONE Gerät: one row
+    per Melder-Gruppe, cells keyed by column index, plus the optional Hardware-
+    table rows (Zentrale/Ringkarten-Inventar, independent of the Melderliste).
+    last_changed_at is the newest updated_at across the device's cells (incl.
+    the '__rows__' registry cell and the '__hardware__' blob, so structural
+    edits like renames also count as a change)."""
     cursor.execute(
         "SELECT slot_key, detector_type, value, updated_at FROM group_cells WHERE protocol_id = ? AND group_id = ?",
         (protocol_id, group_id)
@@ -180,16 +182,26 @@ def expand_device(cursor, protocol_id, group_id):
 
     registry_cell = next((c for c in cells if c["slot_key"] == "__rows__"), None)
     if not registry_cell:
-        return [], 0, 0
+        return [], 0, [], 0
     try:
         registry = json.loads(registry_cell["value"])
     except Exception:
-        return [], 0, 0
+        return [], 0, [], 0
 
     last_changed_at = registry_cell["updated_at"] or 0
+
+    hw_rows = []
+    hw_cell = next((c for c in cells if c["slot_key"] == "__hardware__"), None)
+    if hw_cell:
+        try:
+            hw_rows = json.loads(hw_cell["value"]).get("rows", [])
+        except Exception:
+            hw_rows = []
+        last_changed_at = max(last_changed_at, hw_cell["updated_at"] or 0)
+
     cells_by_grp = {}
     for c in cells:
-        if c["slot_key"] == "__rows__" or "_" not in c["slot_key"]:
+        if c["slot_key"] in ("__rows__", "__hardware__") or "_" not in c["slot_key"]:
             continue
         grp_num, melder_nr = c["slot_key"].split("_", 1)
         cells_by_grp.setdefault(grp_num, {})[melder_nr] = c
@@ -213,7 +225,7 @@ def expand_device(cursor, protocol_id, group_id):
 
         rows.append({"group_id": grp_num, "group_name": grp_name, "cells_by_col": by_col_idx})
 
-    return rows, max_cols, last_changed_at
+    return rows, max_cols, hw_rows, last_changed_at
 
 
 class FooterCanvas(pdfcanvas.Canvas):
@@ -266,6 +278,10 @@ def build_styles():
                                         textColor=ACCENT, alignment=TA_CENTER),
         "section_title": ParagraphStyle("SectionTitle", fontName="Helvetica-Bold", fontSize=8.5,
                                          textColor=INK, leading=11),
+        "hw_text": ParagraphStyle("HwText", fontName="Helvetica", fontSize=7.5,
+                                   textColor=INK, leading=9.5),
+        "hw_label": ParagraphStyle("HwLabel", fontName="Helvetica-Bold", fontSize=7.5,
+                                    textColor=INK, leading=9.5),
     }
 
 
@@ -431,7 +447,73 @@ def build_matrix_table(rows_data, max_cols, bezeichnung_width, melder_col_width,
     return t
 
 
-def build_summary(styles, rows_data):
+def build_hardware_table(hw_rows, styles, is_blank):
+    """Zentrale/Ringkarten-Inventar, optional per Gerät -- independent second
+    table below the Melderliste. Columns 1-3 and 6 (Hardware/Bezeichnung/Typ/
+    Software Stand) are free text; 4-5 (Störung/Unterbrechung) are Auslösefelder
+    using the exact color convention as the Melderliste's status cells."""
+    header = ["Hardware", "Bezeichnung", "Typ", "Störung", "Unterbrechung", "Software Stand"]
+    table_data = [header]
+    cell_styles = []
+
+    for r_idx, row in enumerate(hw_rows, start=1):
+        line = [
+            Paragraph(row.get("hardware", "") or "", styles["hw_label"]),
+            Paragraph(row.get("bezeichnung", "") or "", styles["hw_text"]),
+            Paragraph(row.get("typ", "") or "", styles["hw_text"]),
+        ]
+        for col_idx, field in ((3, "stoerung"), (4, "unterbrechung")):
+            val = row.get(field, "") or ""
+            if is_blank:
+                line.append("")
+            elif val in ("Def.", "Fehler"):
+                line.append("Def.")
+                cell_styles.append(("bg", r_idx, col_idx, ACCENT, True))
+                cell_styles.append(("fg", r_idx, col_idx, colors.white, True))
+            elif val == "":
+                line.append("–")
+                cell_styles.append(("fg", r_idx, col_idx, MUTED, False))
+            else:
+                line.append(val)
+                cell_styles.append(("bg", r_idx, col_idx, OK_GREEN_BG, False))
+                cell_styles.append(("fg", r_idx, col_idx, OK_GREEN, False))
+        line.append(Paragraph((row.get("sw_stand", "") or "") if not is_blank else "", styles["hw_text"]))
+        table_data.append(line)
+
+    col_widths = [26 * mm, 42 * mm, 26 * mm, 24 * mm, 26 * mm, 26 * mm]
+    t = Table(table_data, colWidths=col_widths, repeatRows=1)
+
+    style = [
+        ("BACKGROUND", (0, 0), (-1, 0), INK),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Courier-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 7),
+        ("ALIGN", (0, 0), (2, -1), "LEFT"),
+        ("ALIGN", (3, 0), (4, -1), "CENTER"),
+        ("ALIGN", (5, 0), (5, -1), "LEFT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.4, LINE),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, ROW_ALT]),
+        ("FONTNAME", (3, 1), (4, -1), "Courier"),
+        ("FONTSIZE", (3, 1), (4, -1), 7.5),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+    ]
+    for kind, r_idx, c_idx, color, bold in cell_styles:
+        if kind == "bg":
+            style.append(("BACKGROUND", (c_idx, r_idx), (c_idx, r_idx), color))
+        else:
+            style.append(("TEXTCOLOR", (c_idx, r_idx), (c_idx, r_idx), color))
+            if bold:
+                style.append(("FONTNAME", (c_idx, r_idx), (c_idx, r_idx), "Courier-Bold"))
+
+    t.setStyle(TableStyle(style))
+    return t
+
+
+def build_summary(styles, rows_data, hw_rows=None):
     total_groups = len(rows_data)
     active = triggered = defective = 0
     for row in rows_data:
@@ -445,6 +527,13 @@ def build_summary(styles, rows_data):
                 defective += 1
             else:
                 triggered += 1
+
+    # A Def. at the Zentrale or a Ringkarte is a defect just like a Def. melder --
+    # counts toward the same "Defekt(e) festgestellt" figure, not tracked separately.
+    for hw_row in (hw_rows or []):
+        for field in ("stoerung", "unterbrechung"):
+            if hw_row.get(field) in ("Def.", "Fehler"):
+                defective += 1
 
     quota = f"{(triggered / active * 100):.1f}%" if active else "–"
     summary_text = (
@@ -526,7 +615,7 @@ def build_pruefer_section(styles, pruefer_rows):
     return t
 
 
-def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False, company_name=None, pruefer_rows=None):
+def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False, company_name=None, pruefer_rows=None, hw_rows=None):
     """Builds one Gerät's protocol PDF (filled or blank) and writes it to the
     active path, archiving whatever was there before."""
     if not is_blank:
@@ -566,10 +655,16 @@ def generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, m
     story.append(Spacer(1, 4 * mm))
 
     if not is_blank:
-        summary_box, defective_count = build_summary(styles, rows_data)
+        summary_box, defective_count = build_summary(styles, rows_data, hw_rows)
         story.append(summary_box)
     else:
         defective_count = 0
+
+    if hw_rows:
+        story.append(Spacer(1, 6 * mm))
+        story.append(Paragraph("Hardware", styles["section_title"]))
+        story.append(Spacer(1, 2 * mm))
+        story.append(build_hardware_table(hw_rows, styles, is_blank))
 
     if not is_blank and pruefer_rows:
         story.append(Spacer(1, 6 * mm))
@@ -608,7 +703,7 @@ def generate_blank_now(protocol_id, group_id):
     try:
         cursor = conn.cursor()
         ensure_schema(cursor)
-        rows_data, max_cols, _ = expand_device(cursor, protocol_id, group_id)
+        rows_data, max_cols, hw_rows, _ = expand_device(cursor, protocol_id, group_id)
         if not rows_data:
             return jsonify({"success": False, "error": "Keine Auslöseliste für dieses Gerät gefunden."}), 404
 
@@ -629,7 +724,7 @@ def generate_blank_now(protocol_id, group_id):
         mandant_folder = sanitize_filename(mandant_row["name"]) if mandant_row else "Standard"
         company_name = (mandant_row["company_name"] if mandant_row and mandant_row["company_name"] else None) or COMPANY_NAME
 
-        pdf_bytes = generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=True, company_name=company_name)
+        pdf_bytes = generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=True, company_name=company_name, hw_rows=hw_rows)
 
         now_ms = int(time.time() * 1000)
         cursor.execute(
@@ -674,7 +769,7 @@ def run_worker_cycle():
             p_id = cand["protocol_id"]
             group_id = cand["group_id"]
             try:
-                rows_data, max_cols, last_changed_at = expand_device(cursor, p_id, group_id)
+                rows_data, max_cols, hw_rows, last_changed_at = expand_device(cursor, p_id, group_id)
                 if not rows_data:
                     continue
 
@@ -705,14 +800,14 @@ def run_worker_cycle():
 
                 if needs_regen:
                     pruefer_rows = get_pruefer_rows(cursor, p_id, group_id, p_info["interval"])
-                    generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False, company_name=company_name, pruefer_rows=pruefer_rows)
+                    generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=False, company_name=company_name, pruefer_rows=pruefer_rows, hw_rows=hw_rows)
                     cursor.execute(
                         "UPDATE protocol_groups SET pdf_generated_at = ? WHERE protocol_id = ? AND group_id = ?",
                         (now_ms, p_id, group_id)
                     )
 
                 if needs_blank:
-                    generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=True, company_name=company_name)
+                    generate_device_pdf(mandant_folder, p_info, dev_name, dev_type, rows_data, max_cols, is_blank=True, company_name=company_name, hw_rows=hw_rows)
                     cursor.execute(
                         "UPDATE protocol_groups SET blank_generated_at = ?, blank_pdf_requested_at = 0 "
                         "WHERE protocol_id = ? AND group_id = ?",

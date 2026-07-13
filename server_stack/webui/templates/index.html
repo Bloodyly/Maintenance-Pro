@@ -1817,6 +1817,104 @@
                     </div>
                 </div>
             </template>
+
+            <!-- HARDWARE TABLE (Zentrale/Ringkarten-Inventar) -- optional per Gerät, below the Melderliste -->
+            <div x-show="!cellsEditorLoading" class="border-t border-slate-200 mt-2 px-4 py-4">
+                <div class="flex items-center justify-between mb-3">
+                    <h4 class="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                        <i data-lucide="cpu" class="w-3.5 h-3.5 text-slate-400"></i>
+                        <span>Hardware</span>
+                    </h4>
+                    <label x-show="!cellsEditorReadOnly" class="flex items-center gap-1.5 text-[11px] text-slate-500 cursor-pointer">
+                        <input type="checkbox" x-model="hardwareEnabled" class="rounded border-slate-300">
+                        <span>Hardware-Tabelle für dieses Gerät aktivieren</span>
+                    </label>
+                </div>
+
+                <template x-if="hardwareEnabled || cellsEditorHardwareRows.length > 0">
+                    <div class="rounded-xl border border-slate-200 overflow-hidden">
+                        <table class="w-full text-xs">
+                            <thead class="bg-slate-50">
+                                <tr>
+                                    <th class="px-3 py-2 text-left font-semibold text-slate-500 border-b border-slate-200">Hardware</th>
+                                    <th class="px-3 py-2 text-left font-semibold text-slate-500 border-b border-slate-200">Bezeichnung</th>
+                                    <th class="px-3 py-2 text-left font-semibold text-slate-500 border-b border-slate-200">Typ</th>
+                                    <th class="px-3 py-2 text-left font-semibold text-slate-500 border-b border-slate-200 w-28">Störung</th>
+                                    <th class="px-3 py-2 text-left font-semibold text-slate-500 border-b border-slate-200 w-28">Unterbrechung</th>
+                                    <th class="px-3 py-2 text-left font-semibold text-slate-500 border-b border-slate-200">Software Stand</th>
+                                    <th x-show="!cellsEditorReadOnly" class="w-8"></th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                <template x-for="(row, idx) in cellsEditorHardwareRows" :key="idx">
+                                    <tr class="hover:bg-slate-50/50">
+                                        <td class="px-3 py-2">
+                                            <template x-if="cellsEditorReadOnly"><span x-text="row.hardware || '—'"></span></template>
+                                            <template x-if="!cellsEditorReadOnly">
+                                                <input x-model="row.hardware" type="text" class="border border-slate-200 rounded px-2 py-1 text-xs w-full bg-slate-50" />
+                                            </template>
+                                        </td>
+                                        <td class="px-3 py-2">
+                                            <template x-if="cellsEditorReadOnly"><span x-text="row.bezeichnung || '—'"></span></template>
+                                            <template x-if="!cellsEditorReadOnly">
+                                                <input x-model="row.bezeichnung" type="text" class="border border-slate-200 rounded px-2 py-1 text-xs w-full bg-slate-50" />
+                                            </template>
+                                        </td>
+                                        <td class="px-3 py-2">
+                                            <template x-if="cellsEditorReadOnly"><span x-text="row.typ || '—'"></span></template>
+                                            <template x-if="!cellsEditorReadOnly">
+                                                <input x-model="row.typ" type="text" class="border border-slate-200 rounded px-2 py-1 text-xs w-full bg-slate-50" />
+                                            </template>
+                                        </td>
+                                        <td class="px-3 py-2">
+                                            <template x-if="cellsEditorReadOnly"><span x-text="row.stoerung || '—'"></span></template>
+                                            <template x-if="!cellsEditorReadOnly">
+                                                <select x-model="row.stoerung" class="border border-slate-200 rounded px-2 py-1 text-xs w-full bg-slate-50">
+                                                    <option value="">—</option>
+                                                    <template x-for="v in (cellsEditorDef?.values || ['CHECK','Def.'])" :key="v">
+                                                        <option :value="v" x-text="v"></option>
+                                                    </template>
+                                                </select>
+                                            </template>
+                                        </td>
+                                        <td class="px-3 py-2">
+                                            <template x-if="cellsEditorReadOnly"><span x-text="row.unterbrechung || '—'"></span></template>
+                                            <template x-if="!cellsEditorReadOnly">
+                                                <select x-model="row.unterbrechung" class="border border-slate-200 rounded px-2 py-1 text-xs w-full bg-slate-50">
+                                                    <option value="">—</option>
+                                                    <template x-for="v in (cellsEditorDef?.values || ['CHECK','Def.'])" :key="v">
+                                                        <option :value="v" x-text="v"></option>
+                                                    </template>
+                                                </select>
+                                            </template>
+                                        </td>
+                                        <td class="px-3 py-2">
+                                            <template x-if="cellsEditorReadOnly"><span x-text="row.sw_stand || '—'"></span></template>
+                                            <template x-if="!cellsEditorReadOnly">
+                                                <input x-model="row.sw_stand" type="text" class="border border-slate-200 rounded px-2 py-1 text-xs w-full bg-slate-50" />
+                                            </template>
+                                        </td>
+                                        <td x-show="!cellsEditorReadOnly" class="px-3 py-2 text-center">
+                                            <button type="button" @click="removeHardwareRow(idx)" class="text-slate-300 hover:text-red-500 transition">
+                                                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                </template>
+                                <tr x-show="cellsEditorHardwareRows.length === 0">
+                                    <td colspan="7" class="px-4 py-6 text-center text-slate-400">Noch keine Hardware-Einträge. Zeile hinzufügen, oder per ETB-Import automatisch befüllen lassen.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div x-show="!cellsEditorReadOnly" class="px-3 py-2 bg-slate-50 border-t border-slate-100">
+                            <button type="button" @click="addHardwareRow()" class="text-[11px] font-semibold text-[#003D9B] hover:text-blue-800 flex items-center gap-1">
+                                <i data-lucide="plus" class="w-3 h-3"></i>
+                                <span>Zeile hinzufügen</span>
+                            </button>
+                        </div>
+                    </div>
+                </template>
+            </div>
         </div>
 
         <!-- Footer -->
@@ -2094,6 +2192,10 @@
                 cellsEditorDef: null,
                 cellsEditorLoading: false,
                 activeEditorSubIndex: 0,
+
+                // Hardware table (Zentrale/Ringkarten-Inventar), optional per Gerät
+                hardwareEnabled: false,
+                cellsEditorHardwareRows: [],
 
                 // Grid editor state
                 gridFormat: 'flat',
@@ -3322,6 +3424,8 @@
                     this.gridCells = {};
                     this.gridGroups = [];
                     this.cellsEditorDef = null;
+                    this.cellsEditorHardwareRows = [];
+                    this.hardwareEnabled = false;
                     this.cellsEditorLoading = true;
                     this.isCellsEditorOpen = true;
                     fetch(`/api/cells/${protocol_id}/${dev.id}`)
@@ -3329,6 +3433,8 @@
                     .then(data => {
                         if (data.success) {
                             this.cellsEditorDef = data.meldepunkt_definitionen;
+                            this.cellsEditorHardwareRows = data.hardware || [];
+                            this.hardwareEnabled = this.cellsEditorHardwareRows.length > 0 || !!data.hardware_enabled_default;
                             if (data.format === 'grid') {
                                 this.gridFormat = 'grid';
                                 this.gridFromJson(data.grid);
@@ -3364,13 +3470,22 @@
                     this.cellsEditorRows.forEach((r, i) => { r.slot_key = (i + 1).toString(); });
                 },
 
+                addHardwareRow() {
+                    this.cellsEditorHardwareRows.push({ hardware: '', bezeichnung: '', typ: '', stoerung: '', unterbrechung: '', sw_stand: '' });
+                },
+
+                removeHardwareRow(idx) {
+                    this.cellsEditorHardwareRows.splice(idx, 1);
+                },
+
                 saveCells() {
-                    let body;
-                    if (this.gridFormat === 'grid') {
-                        body = JSON.stringify({ grid: this.gridToJson() });
-                    } else {
-                        body = JSON.stringify({ cells: this.cellsEditorRows });
-                    }
+                    const payload = this.gridFormat === 'grid'
+                        ? { grid: this.gridToJson() }
+                        : { cells: this.cellsEditorRows };
+                    // Checkbox off -> send [] so a previously-saved Hardware table gets
+                    // removed too; checkbox on -> send whatever rows are currently in the editor.
+                    payload.hardware = this.hardwareEnabled ? this.cellsEditorHardwareRows : [];
+                    const body = JSON.stringify(payload);
                     fetch(`/api/cells/${this.cellsEditorProtocolId}/${this.cellsEditorDevice.id}`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -3415,7 +3530,8 @@
                             this.etbPreviewAnlagen = [{
                                 name: data.grid ? (file.name.replace(/\.etb$/i, '')) : 'Anlage',
                                 group_count: data.grid ? data.grid.n_groups : 0,
-                                grid: data.grid
+                                grid: data.grid,
+                                hardware: data.hardware || []
                             }];
                         }
                         this.etbPreviewIdx = 0;
@@ -3432,6 +3548,12 @@
                     if (!opt || !opt.grid) return;
                     this.gridFormat = 'grid';
                     this.gridFromJson(opt.grid);
+                    // ETB liefert Zentrale + Ringkarten als Hardware-Zeilen mit -- Tabelle
+                    // wird beim Import automatisch aktiviert, kein manueller Schritt nötig.
+                    if (opt.hardware && opt.hardware.length > 0) {
+                        this.cellsEditorHardwareRows = opt.hardware;
+                        this.hardwareEnabled = true;
+                    }
                     this.etbPreviewOpen = false;
                     this.triggerToast('Anlage "' + opt.name + '" übernommen', 'success');
                 },

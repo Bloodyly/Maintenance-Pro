@@ -311,7 +311,10 @@ DEFAULT_ANLAGENTYPEN = [
             "values": ["CHECK", "H1", "H2", "Def."],
             "columns": ["1","2","3","4","5","6","7","8"]
         },
-        "zusatz_tabelle": None
+        # Hardware-Tabelle (Zentrale/Ringkarten-Inventar) ist bei BMA per Default
+        # aktiv -- nur ein Default für die Editor-Checkbox, keine harte Kopplung
+        # (siehe get_cells' hardware_enabled_default).
+        "zusatz_tabelle": {"typ": "hardware"}
     },
     {
         "type_id": "EMA", "type_name": "Einbruchmeldeanlage",
@@ -506,7 +509,7 @@ def get_protocols():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    defect_subq = "EXISTS(SELECT 1 FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.slot_key NOT IN ('__grid__', '__rows__') AND (gc.value = 'Def.' OR gc.value = 'Fehler'))"
+    defect_subq = "EXISTS(SELECT 1 FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.slot_key NOT IN ('__grid__', '__rows__', '__hardware__') AND (gc.value = 'Def.' OR gc.value = 'Fehler'))"
 
     # Build active-type SQL placeholders (parameterised)
     if active_types:
@@ -575,8 +578,8 @@ def get_protocols():
             p.last_edited_by, p.last_edited_at,
             CASE WHEN {defect_subq} THEN 1 ELSE 0 END AS has_defect,
             {device_summary_subq} AS device_summary,
-            (SELECT COUNT(*) FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.slot_key NOT IN ('__grid__', '__rows__') AND gc.value != '' AND gc.value IS NOT NULL) AS filled_cells,
-            (SELECT COUNT(*) FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.slot_key NOT IN ('__grid__', '__rows__')) AS total_cells
+            (SELECT COUNT(*) FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.slot_key NOT IN ('__grid__', '__rows__', '__hardware__') AND gc.value != '' AND gc.value IS NOT NULL) AS filled_cells,
+            (SELECT COUNT(*) FROM group_cells gc WHERE gc.protocol_id = p.id AND gc.slot_key NOT IN ('__grid__', '__rows__', '__hardware__')) AS total_cells
         FROM protocols p
         {main_where}
         ORDER BY p.name COLLATE NOCASE
@@ -666,8 +669,8 @@ def get_protocol_detail(p_id):
         cells = cursor.fetchall()
         cells_list = []
         for c in cells:
-            if c["slot_key"] in ("__grid__", "__rows__"):
-                continue  # Matrix/registry metadata belongs in the cells editor, not the structure editor
+            if c["slot_key"] in ("__grid__", "__rows__", "__hardware__"):
+                continue  # Matrix/registry/hardware metadata belongs in the cells editor, not the structure editor
             cells_list.append({
                 "slotKey": c["slot_key"],
                 "detectorType": c["detector_type"],
@@ -727,7 +730,7 @@ def get_protocol_detail(p_id):
         "SELECT group_id, COUNT(*) as total, "
         "SUM(CASE WHEN value != '' AND value IS NOT NULL THEN 1 ELSE 0 END) as filled, "
         "SUM(CASE WHEN value IN ('Def.', 'Fehler') THEN 1 ELSE 0 END) as defects "
-        "FROM group_cells WHERE protocol_id = ? AND slot_key NOT IN ('__grid__', '__rows__') GROUP BY group_id",
+        "FROM group_cells WHERE protocol_id = ? AND slot_key NOT IN ('__grid__', '__rows__', '__hardware__') GROUP BY group_id",
         (p_id,)
     )
     cell_stats_by_group = {row["group_id"]: dict(row) for row in cursor.fetchall()}
@@ -978,15 +981,28 @@ def reset_protocol(p_id):
     # 2. Reset status back to 'ready_to_download' and measurements back to ''.
     # slot_key '__rows__' is the device's group-structure registry, not a
     # measurement -- clearing it would destroy the Melder-Gruppen layout, so
-    # it's excluded. updated_at is bumped so protocol_core's change-detection
-    # notices and regenerates a fresh (empty) PDF for the new cycle.
+    # it's excluded. '__hardware__' is excluded too but handled separately
+    # below -- unlike a Melder cell it mixes structural fields (Hardware/
+    # Bezeichnung/Typ/Software-Stand, which should survive a reset like
+    # '__rows__' does) with per-period check results (Störung/Unterbrechung,
+    # which should clear like every other measurement). updated_at is bumped
+    # so protocol_core's change-detection notices and regenerates a fresh
+    # (empty) PDF for the new cycle.
     try:
         now_ms = int(time.time() * 1000)
         cursor.execute("UPDATE protocols SET status = 'ready_to_download' WHERE id = ?", (p_id,))
         cursor.execute(
-            "UPDATE group_cells SET value = '', updated_at = ? WHERE protocol_id = ? AND slot_key NOT IN ('__rows__', '__grid__')",
+            "UPDATE group_cells SET value = '', updated_at = ? WHERE protocol_id = ? AND slot_key NOT IN ('__rows__', '__grid__', '__hardware__')",
             (now_ms, p_id)
         )
+        for dev in devices:
+            hw_rows = _device_hardware_to_rows(cursor, p_id, dev["group_id"])
+            if not hw_rows:
+                continue
+            for row in hw_rows:
+                row["stoerung"] = ""
+                row["unterbrechung"] = ""
+            _hardware_rows_to_device(cursor, p_id, dev["group_id"], hw_rows)
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -1700,7 +1716,12 @@ def _grid_to_device_registry(cursor, protocol_id, group_id, grid):
 
     registry = [[str(g[0]) if g else str(i), str(g[1]) if len(g) > 1 else ""] for i, g in enumerate(groups_list, 1)]
 
-    cursor.execute("DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ?", (protocol_id, group_id))
+    # '__hardware__' is a separate, independently-saved table (see
+    # _hardware_rows_to_device) -- must survive a Melderliste save untouched.
+    cursor.execute(
+        "DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key != '__hardware__'",
+        (protocol_id, group_id)
+    )
     cursor.execute(
         "INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at) "
         "VALUES (?, ?, '__rows__', '-', ?, ?)",
@@ -1722,6 +1743,43 @@ def _grid_to_device_registry(cursor, protocol_id, group_id, grid):
     return len(registry)
 
 
+def _device_hardware_to_rows(cursor, protocol_id, group_id):
+    """Reads the optional '__hardware__' sentinel cell for one device --
+    Zentrale/Ringkarten-Inventar, independent of the Melderliste. Returns []
+    if the device has no Hardware table (it's optional per Gerät)."""
+    cursor.execute(
+        "SELECT value FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = '__hardware__'",
+        (protocol_id, group_id)
+    )
+    cell = cursor.fetchone()
+    if not cell:
+        return []
+    try:
+        return json.loads(cell["value"]).get("rows", [])
+    except Exception:
+        return []
+
+
+def _hardware_rows_to_device(cursor, protocol_id, group_id, hw_rows):
+    """Persists the Hardware table for one device as a single JSON blob under the
+    '__hardware__' sentinel slot_key -- independent of the Melderliste's cells
+    (see _grid_to_device_registry's exclusion), so saving one never touches the
+    other. Passing an empty list removes the table entirely."""
+    now = int(datetime.now().timestamp())
+    if not hw_rows:
+        cursor.execute(
+            "DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = '__hardware__'",
+            (protocol_id, group_id)
+        )
+        return
+    cursor.execute(
+        "INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at) "
+        "VALUES (?, ?, '__hardware__', '-', ?, ?) "
+        "ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+        (protocol_id, group_id, json.dumps({"v": 1, "rows": hw_rows}), now)
+    )
+
+
 @app.route("/api/cells/<protocol_id>/<group_id>", methods=["GET"])
 def get_cells(protocol_id, group_id):
     conn = get_db_connection()
@@ -1738,20 +1796,24 @@ def get_cells(protocol_id, group_id):
     registry, cells = _device_registry(cursor, protocol_id, group_id)
     conn.commit()  # persist any lazy migration performed while reading
     grid_data = _device_registry_to_grid(registry, cells)
+    hardware_rows = _device_hardware_to_rows(cursor, protocol_id, group_id)
     conn.close()
 
     anlage_type = dev["anlage_type"] or "BMA"
     settings = load_settings()
     anlagentypen = settings.get("anlagentypen", DEFAULT_ANLAGENTYPEN)
     mp_def = None
+    zusatz_tabelle = None
     for at in anlagentypen:
         if at["type_id"] == anlage_type:
             mp_def = at.get("meldepunkt_definitionen")
+            zusatz_tabelle = at.get("zusatz_tabelle")
             break
     if mp_def is None:
         for at in DEFAULT_ANLAGENTYPEN:
             if at["type_id"] == anlage_type:
                 mp_def = at.get("meldepunkt_definitionen")
+                zusatz_tabelle = at.get("zusatz_tabelle")
                 break
 
     return jsonify({
@@ -1761,7 +1823,12 @@ def get_cells(protocol_id, group_id):
         "group_name": dev["group_name"],
         "anlage_type": anlage_type,
         "anlage_interval": dev["anlage_interval"] or "Halbjährlich",
-        "meldepunkt_definitionen": mp_def
+        "meldepunkt_definitionen": mp_def,
+        "hardware": hardware_rows,
+        # Only used to pre-check the "Hardware-Tabelle aktivieren" box for a
+        # device that has none yet -- an existing hardware_rows list (even a
+        # manually-emptied one) always wins over this Anlagentyp-level default.
+        "hardware_enabled_default": bool(zusatz_tabelle)
     })
 
 
@@ -1784,6 +1851,14 @@ def save_cells(protocol_id, group_id):
                 "values": {f"1_{c['slot_key']}": c.get("value", "") for c in cells if c.get("value")},
             }
             count = _grid_to_device_registry(cursor, protocol_id, group_id, grid)
+
+        # Only touch the Hardware table if the client actually sent something for
+        # it -- its absence means "editor didn't show/change this section", not
+        # "delete the Hardware table". An explicit empty list (checkbox switched
+        # off) does delete it, via _hardware_rows_to_device.
+        if "hardware" in data:
+            _hardware_rows_to_device(cursor, protocol_id, group_id, data["hardware"])
+
         conn.commit()
         conn.close()
         return jsonify({"success": True, "count": count})
@@ -1826,6 +1901,38 @@ def _json_anlage_to_grid(anlage_json):
         "types": types_dict,
         "values": {}
     }
+
+
+def _json_anlage_to_hardware(anlage_json):
+    """Builds the Hardware table (Zentrale + Ringkarten) from an esser_etb_parser
+    Anlage object's 'serie'/'version'/'ringkarten' fields -- independent of
+    'gruppen' (the Melderliste). Returns [] if none of these fields are present
+    (older parser output, or an Anlage with no resolvable hardware inventory)."""
+    serie = anlage_json.get("serie")
+    version = anlage_json.get("version")
+    ringkarten = anlage_json.get("ringkarten") or []
+    anlage_name = anlage_json.get("anlage") or ""
+
+    rows = []
+    if serie or version or ringkarten:
+        rows.append({
+            "hardware": "Zentrale",
+            "bezeichnung": anlage_name,
+            "typ": serie or "",
+            "stoerung": "",
+            "unterbrechung": "",
+            "sw_stand": version or "",
+        })
+    for rk in ringkarten:
+        rows.append({
+            "hardware": f"Ringkarte {rk.get('ringnummer', '')}".strip(),
+            "bezeichnung": rk.get("bezeichnung") or "",
+            "typ": "",
+            "stoerung": "",
+            "unterbrechung": "",
+            "sw_stand": "",
+        })
+    return rows
 
 
 @app.route("/api/cells/<protocol_id>/<group_id>/import-etb", methods=["POST"])
@@ -1889,13 +1996,15 @@ def import_etb_cells(protocol_id, group_id):
 
             if len(anlagen_json) == 1:
                 grid = _json_anlage_to_grid(anlagen_json[0])
-                return jsonify({"success": True, "grid": grid, "anlage_count": 1})
+                hardware = _json_anlage_to_hardware(anlagen_json[0])
+                return jsonify({"success": True, "grid": grid, "hardware": hardware, "anlage_count": 1})
 
             options = [
                 {
                     "name": a.get("anlage", f"Anlage {i + 1}"),
                     "group_count": len(a.get("gruppen", [])),
-                    "grid": _json_anlage_to_grid(a)
+                    "grid": _json_anlage_to_grid(a),
+                    "hardware": _json_anlage_to_hardware(a)
                 }
                 for i, a in enumerate(anlagen_json)
             ]
