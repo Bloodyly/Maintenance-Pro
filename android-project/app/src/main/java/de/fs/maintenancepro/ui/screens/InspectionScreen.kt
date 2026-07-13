@@ -11,10 +11,9 @@ import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -41,7 +40,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
@@ -466,10 +467,28 @@ fun InspectionScreen(
                 }
             }
 
+            // BoxWithConstraints captures exactly the height the grid used to get from weight(1f)
+            // (before Hardware existed), then hands that to the grid as a fixed .height() instead
+            // of weight -- pixel-identical sizing, zero change to the grid's internal scroll/drag-
+            // select math. The Column below is what's actually scrollable: it wraps the
+            // now-fixed-height grid plus Hardware, so the Melderliste keeps looking/behaving
+            // exactly as before, and scrolling past its last row reveals Hardware at the end --
+            // instead of Hardware always occupying its own slice of screen space.
+            BoxWithConstraints(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+            val gridHeight = maxHeight
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
             // Scrollable Grid Box container restricting scaling artifacts from bleeding
             Row(
                 modifier = Modifier
-                    .weight(1f)
+                    .height(gridHeight)
                     .fillMaxWidth()
                     .clipToBounds()
                     .transformable(state = transformState)
@@ -776,25 +795,22 @@ fun InspectionScreen(
                 }
             }
 
-            // Hardware-Inventar (Zentrale/Ringkarten) — optional pro Gerät, unterhalb der
-            // Melderliste (spiegelt die PDF-Reihenfolge). Jedes Gerät wird über den
-            // "{device}::{grp_num}"-Präfix seiner Meldergruppen identifiziert, da die App
-            // kein eigenes "Gerät"-Entity kennt.
+            // Hardware-Inventar (Zentrale/Ringkarten) — optional pro Gerät, direkt unterhalb der
+            // Melderliste (spiegelt die PDF-Reihenfolge), mit minimalem Abstand. Jedes Gerät wird
+            // über den "{device}::{grp_num}"-Präfix seiner Meldergruppen identifiziert, da die App
+            // kein eigenes "Gerät"-Entity kennt. Non-weighted (wrap content) inside the bounded
+            // wrapper Column above, so it never starves or overlaps the Melderliste's grid.
             val deviceIds = remember(rowsList) { rowsList.map { it.groupId.substringBefore("::") }.distinct() }
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-            ) {
-                deviceIds.forEach { deviceId ->
-                    HardwareSection(
-                        viewModel = viewModel,
-                        protocolId = protocolId,
-                        deviceGroupId = deviceId,
-                        periodValues = periodValues,
-                        isArchived = protocolEntity.isArchived
-                    )
-                }
+            deviceIds.forEach { deviceId ->
+                HardwareSection(
+                    viewModel = viewModel,
+                    protocolId = protocolId,
+                    deviceGroupId = deviceId,
+                    activeSelectVal = activeSelectVal,
+                    isArchived = protocolEntity.isArchived
+                )
+            }
+            }
             }
         }
     }
@@ -817,15 +833,25 @@ data class HardwareRowModel(
 )
 
 // ---------------- Hardware-Tabelle (Zentrale/Ringkarten-Inventar), optional pro Gerät ----------------
+// Kompakte, echte Tabellenzeilen (wie die Melderliste) statt Karten -- fixe Spaltenbreiten,
+// niedrige Zeilenhöhe. Störung/Unterbrechung verhalten sich wie ein Melder-Slot: Antippen trägt
+// den gerade im schwebenden Button gewählten Wert ein (statt einen eigenen Dialog zu öffnen).
+
+private val hwColHardware = 84.dp
+private val hwColBezeichnung = 110.dp
+private val hwColTyp = 76.dp
+private val hwColValue = 60.dp
+private val hwRowHeight = 34.dp
 
 @Composable
 private fun HardwareSection(
     viewModel: MainViewModel,
     protocolId: String,
     deviceGroupId: String,
-    periodValues: List<ValueModel>,
+    activeSelectVal: String,
     isArchived: Boolean
 ) {
+    val context = LocalContext.current
     val hwEntity by viewModel.getHardwareTableFlow(protocolId, deviceGroupId).collectAsState(initial = null)
     val hwRows = remember(hwEntity?.rowsJson) {
         val json = hwEntity?.rowsJson
@@ -853,123 +879,71 @@ private fun HardwareSection(
     }
     if (hwRows.isEmpty()) return
 
-    // (rowIndex, field) of the row/column currently being edited via the value picker dialog.
-    var pickerTarget by remember { mutableStateOf<Pair<Int, String>?>(null) }
-
-    pickerTarget?.let { (rowIdx, field) ->
-        val row = hwRows.getOrNull(rowIdx)
-        if (row != null) {
-            val currentVal = if (field == "stoerung") row.stoerung else row.unterbrechung
-            val choices = listOf(ValueModel("", "— (kein Eintrag)", false)) + periodValues
-            AlertDialog(
-                onDismissRequest = { pickerTarget = null },
-                title = {
-                    Text(
-                        if (field == "stoerung") "Störung — ${row.hardware}" else "Unterbrechung — ${row.hardware}",
-                        fontWeight = FontWeight.Bold
-                    )
-                },
-                text = {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 240.dp)
-                    ) {
-                        items(choices) { choice ->
-                            val isCurrent = currentVal == choice.value
-                            Surface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        viewModel.editHardwareField(protocolId, deviceGroupId, rowIdx, field, choice.value)
-                                        pickerTarget = null
-                                    },
-                                color = if (isCurrent) IndustrialPrimaryContainer else Color.Transparent,
-                                shape = RoundedCornerShape(4.dp)
-                            ) {
-                                Text(
-                                    text = choice.label,
-                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (isCurrent) IndustrialPrimary else IndustrialOnSurface,
-                                    fontSize = 14.sp,
-                                    modifier = Modifier.padding(vertical = 10.dp, horizontal = 14.dp)
-                                )
-                            }
-                        }
-                    }
-                },
-                confirmButton = {},
-                dismissButton = {
-                    TextButton(onClick = { pickerTarget = null }) {
-                        Text("Abbrechen", color = IndustrialOutline)
-                    }
-                }
-            )
+    fun onValueTap(rowIdx: Int, field: String, currentVal: String) {
+        if (currentVal.isEmpty()) {
+            viewModel.editHardwareField(protocolId, deviceGroupId, rowIdx, field, activeSelectVal)
+        } else if (currentVal == activeSelectVal) {
+            viewModel.editHardwareField(protocolId, deviceGroupId, rowIdx, field, "")
+        } else {
+            Toast.makeText(context, "Feld geschützt geprüft ($currentVal).", Toast.LENGTH_SHORT).show()
         }
     }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White)
+            .padding(top = 4.dp)
             .border(1.dp, IndustrialOutlineVariant)
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Text("Hardware", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = IndustrialOnSurface)
+        Text(
+            "Hardware",
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = 11.sp,
+            color = IndustrialOutline,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(LightSurfaceHigh)
+                .padding(horizontal = 8.dp, vertical = 2.dp)
+        )
+
+        // Header row
+        Row(modifier = Modifier.fillMaxWidth().height(hwRowHeight).background(LightSurfaceHigh)) {
+            HwHeaderCell("Hardware", Modifier.width(hwColHardware))
+            HwHeaderCell("Bezeichnung", Modifier.width(hwColBezeichnung))
+            HwHeaderCell("Typ", Modifier.width(hwColTyp))
+            HwHeaderCell("Störung", Modifier.width(hwColValue))
+            HwHeaderCell("Unterbr.", Modifier.width(hwColValue))
+            HwHeaderCell("SW-Stand", Modifier.weight(1f))
+        }
 
         hwRows.forEach { row ->
-            Column(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(LightSurfaceLow, RoundedCornerShape(6.dp))
-                    .padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                    .height(hwRowHeight)
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = row.hardware.ifBlank { "—" },
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
-                        color = IndustrialPrimary,
-                        modifier = Modifier.weight(1f)
-                    )
-                    if (row.typ.isNotBlank()) {
-                        Text(row.typ, fontSize = 11.sp, color = IndustrialOutline)
-                    }
-                }
-                if (row.bezeichnung.isNotBlank()) {
-                    Text(row.bezeichnung, fontSize = 12.sp, color = IndustrialOnSurface)
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    HardwareValueChip(
-                        label = "Störung",
-                        value = row.stoerung,
-                        enabled = !isArchived,
-                        onClick = { pickerTarget = row.index to "stoerung" }
-                    )
-                    HardwareValueChip(
-                        label = "Unterbrechung",
-                        value = row.unterbrechung,
-                        enabled = !isArchived,
-                        onClick = { pickerTarget = row.index to "unterbrechung" }
-                    )
-                }
-
-                // Keyed on the persisted value (not on updatedAt) so the field doesn't reset
-                // mid-typing -- same pattern as MatrixEditScreen's grpNameInput.
-                var swStandInput by remember(row.swStand) { mutableStateOf(row.swStand) }
-                OutlinedTextField(
-                    value = swStandInput,
-                    onValueChange = { newVal ->
-                        swStandInput = newVal
-                        viewModel.editHardwareField(protocolId, deviceGroupId, row.index, "sw_stand", newVal)
-                    },
-                    label = { Text("Software Stand") },
-                    singleLine = true,
+                HwTextCell(row.hardware, Modifier.width(hwColHardware))
+                HwTextCell(row.bezeichnung, Modifier.width(hwColBezeichnung))
+                HwTextCell(row.typ, Modifier.width(hwColTyp))
+                HwValueCell(
+                    value = row.stoerung,
                     enabled = !isArchived,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.width(hwColValue),
+                    onClick = { onValueTap(row.index, "stoerung", row.stoerung) }
+                )
+                HwValueCell(
+                    value = row.unterbrechung,
+                    enabled = !isArchived,
+                    modifier = Modifier.width(hwColValue),
+                    onClick = { onValueTap(row.index, "unterbrechung", row.unterbrechung) }
+                )
+                HwSwStandCell(
+                    row = row,
+                    protocolId = protocolId,
+                    deviceGroupId = deviceGroupId,
+                    viewModel = viewModel,
+                    enabled = !isArchived,
+                    modifier = Modifier.weight(1f)
                 )
             }
         }
@@ -977,44 +951,107 @@ private fun HardwareSection(
 }
 
 @Composable
-private fun HardwareValueChip(
-    label: String,
+private fun HwHeaderCell(label: String, modifier: Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .border(0.5.dp, IndustrialOutlineVariant)
+            .padding(horizontal = 6.dp),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Text(label, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = IndustrialOutline, maxLines = 1)
+    }
+}
+
+@Composable
+private fun HwTextCell(text: String, modifier: Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .border(0.5.dp, IndustrialOutlineVariant)
+            .padding(horizontal = 6.dp),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Text(
+            text = text.ifBlank { "—" },
+            fontSize = 11.sp,
+            color = IndustrialOnSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun HwValueCell(
     value: String,
     enabled: Boolean,
+    modifier: Modifier,
     onClick: () -> Unit
 ) {
     val isDefect = value == "Def." || value.lowercase().contains("def")
-    val isFilled = value.isNotEmpty()
     Box(
-        modifier = Modifier
+        modifier = modifier
+            .fillMaxHeight()
             .background(
-                color = when {
+                when {
                     isDefect -> IndustrialErrorContainer
-                    isFilled -> IndustrialPrimaryContainer.copy(alpha = 0.12f)
+                    value.isNotEmpty() -> IndustrialPrimaryContainer.copy(alpha = 0.12f)
                     else -> Color.White
-                },
-                shape = RoundedCornerShape(6.dp)
-            )
-            .border(0.5.dp, IndustrialOutlineVariant, RoundedCornerShape(6.dp))
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 6.dp)
-    ) {
-        Column {
-            Text(label, fontSize = 9.sp, color = IndustrialOutline, fontWeight = FontWeight.Light)
-            if (isDefect) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Icon(Icons.Default.Warning, contentDescription = null, tint = IndustrialError, modifier = Modifier.size(11.dp))
-                    Text("DEF.", color = IndustrialError, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp)
                 }
-            } else {
-                Text(
-                    text = value.ifEmpty { "—" },
-                    color = if (isFilled) IndustrialPrimary else IndustrialOutline.copy(alpha = 0.7f),
-                    fontWeight = if (isFilled) FontWeight.Bold else FontWeight.Normal,
-                    fontSize = 11.sp
-                )
-            }
+            )
+            .border(0.5.dp, IndustrialOutlineVariant)
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                enabled = enabled,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        if (isDefect) {
+            Text("DEF.", color = IndustrialError, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp)
+        } else {
+            Text(
+                text = value.ifEmpty { "-" },
+                color = if (value.isNotEmpty()) IndustrialPrimary else IndustrialOutline.copy(alpha = 0.5f),
+                fontWeight = if (value.isNotEmpty()) FontWeight.Bold else FontWeight.Normal,
+                fontSize = 11.sp
+            )
         }
+    }
+}
+
+@Composable
+private fun HwSwStandCell(
+    row: HardwareRowModel,
+    protocolId: String,
+    deviceGroupId: String,
+    viewModel: MainViewModel,
+    enabled: Boolean,
+    modifier: Modifier
+) {
+    // Keyed on the persisted value (not on updatedAt) so the field doesn't reset
+    // mid-typing -- same pattern as MatrixEditScreen's grpNameInput.
+    var value by remember(row.swStand) { mutableStateOf(row.swStand) }
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .border(0.5.dp, IndustrialOutlineVariant)
+            .padding(horizontal = 6.dp),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        BasicTextField(
+            value = value,
+            onValueChange = { newVal ->
+                value = newVal
+                viewModel.editHardwareField(protocolId, deviceGroupId, row.index, "sw_stand", newVal)
+            },
+            enabled = enabled,
+            singleLine = true,
+            textStyle = TextStyle(fontSize = 11.sp, color = IndustrialOnSurface),
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 }
 
