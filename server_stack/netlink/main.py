@@ -409,6 +409,13 @@ def init_db():
         cursor.execute("ALTER TABLE protocols ADD COLUMN synchronized_quarter VARCHAR(20) DEFAULT ''")
     except sqlite3.OperationalError:
         pass
+    try:
+        # Anchors a TAIFUN <WtVt> contract across renumbering -- written by webui's
+        # import_taifun(), read here only so the column exists regardless of which
+        # service bootstraps the DB first.
+        cursor.execute("ALTER TABLE protocols ADD COLUMN contract_guid VARCHAR(64) DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
 
     # Mandant = organizational sub-unit of the same company (e.g. "Esser-Team" vs
     # "Notifier-Team"), NOT a security boundary -- every technician still syncs

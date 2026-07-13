@@ -3389,7 +3389,21 @@
                     }
                     this.gridGroups = this.gridGroups.slice(0, n_groups);
                 },
-                gridFromJson(data) {
+                // preserveValues merges a freshly-imported grid (e.g. a re-applied ETB)
+                // onto the currently-loaded one instead of a plain full load, so already-
+                // entered Messwerte survive. Grid cell keys are POSITIONAL
+                // ("{row_idx}_{col}", matching _json_anlage_to_grid/_device_registry_to_grid),
+                // not tied to the physical grp_num -- so the merge remaps old cells by
+                // matching grp_num LABEL between the old and new group lists, not by raw
+                // key, otherwise a reordered/changed group list would silently attach a
+                // stale value to the wrong physical Meldergruppe.
+                gridFromJson(data, opts = {}) {
+                    const preserve = !!opts.preserveValues;
+                    const oldRowIdxByLabel = preserve
+                        ? new Map(this.gridGroups.map((g, i) => [g.grp_num, i + 1]))
+                        : null;
+                    const oldCells = preserve ? this.gridCells : null;
+
                     this.gridConfig = { n_groups: data.n_groups, n_cols: data.n_cols };
                     this.gridGroups = (data.groups || []).map(([grp_num, name]) => ({ grp_num, name }));
                     this.gridCells = {};
@@ -3398,6 +3412,25 @@
                     const allKeys = new Set([...Object.keys(types), ...Object.keys(values)]);
                     for (const k of allKeys) {
                         this.gridCells[k] = { type: types[k] || '-', value: values[k] || '' };
+                    }
+
+                    if (preserve && oldRowIdxByLabel && oldCells) {
+                        this.gridGroups.forEach((g, idx) => {
+                            const newRowIdx = idx + 1;
+                            const oldRowIdx = oldRowIdxByLabel.get(g.grp_num);
+                            if (oldRowIdx == null) return; // genuinely new group -- nothing to carry over
+                            for (let col = 1; col <= this.gridConfig.n_cols; col++) {
+                                const oldCell = oldCells[`${oldRowIdx}_${col}`];
+                                if (!oldCell) continue;
+                                const newKey = `${newRowIdx}_${col}`;
+                                const fresh = this.gridCells[newKey] || { type: '-', value: '' };
+                                this.gridCells[newKey] = {
+                                    // structure/type comes from the new import; value is preserved
+                                    type: (fresh.type && fresh.type !== '-') ? fresh.type : oldCell.type,
+                                    value: oldCell.value || fresh.value,
+                                };
+                            }
+                        });
                     }
                 },
                 gridToJson() {
@@ -3550,11 +3583,26 @@
                     const opt = this.etbPreviewAnlagen[this.etbPreviewIdx];
                     if (!opt || !opt.grid) return;
                     this.gridFormat = 'grid';
-                    this.gridFromJson(opt.grid);
+                    // preserveValues: this may be a re-import onto an already-populated
+                    // Auslöseliste -- ETB structurally never carries Messwerte, so a plain
+                    // load would silently wipe every value already entered.
+                    this.gridFromJson(opt.grid, { preserveValues: true });
                     // ETB liefert Zentrale + Ringkarten als Hardware-Zeilen mit -- Tabelle
                     // wird beim Import automatisch aktiviert, kein manueller Schritt nötig.
+                    // Merge by the "hardware" label (e.g. "Ring 131") -- it's derived
+                    // directly from the physical ring number, so it stays stable across
+                    // re-exports and is a safe match key -- preserves technician-entered
+                    // Störung/Unterbrechung/Software-Stand; rows no longer present in the
+                    // new import are dropped (a removed Ringkarte shouldn't linger as a
+                    // phantom entry).
                     if (opt.hardware && opt.hardware.length > 0) {
-                        this.cellsEditorHardwareRows = opt.hardware;
+                        const oldByLabel = new Map(this.cellsEditorHardwareRows.map(r => [r.hardware, r]));
+                        this.cellsEditorHardwareRows = opt.hardware.map(nr => {
+                            const old = oldByLabel.get(nr.hardware);
+                            return old
+                                ? { ...nr, stoerung: old.stoerung, unterbrechung: old.unterbrechung, sw_stand: old.sw_stand || nr.sw_stand }
+                                : nr;
+                        });
                         this.hardwareEnabled = true;
                     }
                     this.etbPreviewOpen = false;

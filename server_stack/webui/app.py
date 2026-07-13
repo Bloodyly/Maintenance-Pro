@@ -121,6 +121,12 @@ def get_db_connection():
                 cursor.execute("ALTER TABLE protocols ADD COLUMN synchronized_quarter VARCHAR(20) DEFAULT ''")
             except sqlite3.OperationalError:
                 pass
+            try:
+                # Anchors a TAIFUN <WtVt> contract across renumbering (<Nr> changes) --
+                # see import_taifun()'s contract_guid lookup-then-fallback.
+                cursor.execute("ALTER TABLE protocols ADD COLUMN contract_guid VARCHAR(64) DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
 
             # Mandant = organizational sub-unit of the same company, not a security
             # boundary -- see server_stack/protocol_core/worker.py and netlink/main.py
@@ -862,48 +868,96 @@ def save_protocol():
             get_active_mandant_id()
         ))
         
-        # Transactional clean and save groups & cells
-        cursor.execute("DELETE FROM group_cells WHERE protocol_id = ?", (p_id,))
-        cursor.execute("DELETE FROM protocol_groups WHERE protocol_id = ?", (p_id,))
-        
+        # Upsert-merge groups & cells instead of the old blanket delete-then-rebuild --
+        # this editor lets a technician paint real values directly (paintTool ==
+        # 'trigger'), so a submitted cell's value is trusted when non-empty (genuine
+        # edit), but an empty submitted value never clobbers an existing non-empty
+        # one -- guards against saving a stale/partial editor snapshot (e.g. opened
+        # before a concurrent sync wrote a fresh Messwert) over newer real data.
+        # Groups/cells genuinely absent from the submission are still removed, same
+        # end state the old delete-then-rebuild produced for intentional removals.
         if sub_systems:
             for sub in sub_systems:
                 a_id = sub.get("id") or f"sub-{int(datetime.now().timestamp())}"
                 a_name = sub.get("name") or "Anlage"
                 a_type = sub.get("system_type") or sub.get("systemType") or system_type or "BMA"
                 a_address = sub.get("address") or ""
-                
+
+                seen_group_ids = [r["groupId"] for r in sub.get("rows", [])]
                 for r in sub.get("rows", []):
                     g_id = r["groupId"]
                     g_name = r["groupName"]
-                    
+
                     cursor.execute("""
                         INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type, anlage_id, anlage_name, anlage_type, anlage_address)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(protocol_id, group_id) DO UPDATE SET
+                            group_name=EXCLUDED.group_name, group_type=EXCLUDED.group_type,
+                            anlage_id=EXCLUDED.anlage_id, anlage_name=EXCLUDED.anlage_name,
+                            anlage_type=EXCLUDED.anlage_type, anlage_address=EXCLUDED.anlage_address
                     """, (p_id, g_id, g_name, a_type, a_id, a_name, a_type, a_address))
-                    
+
+                    seen_slot_keys = [c["slotKey"] for c in r.get("cells", [])]
                     for c in r.get("cells", []):
                         cursor.execute("""
                             INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
                             VALUES (?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET
+                                detector_type=EXCLUDED.detector_type,
+                                value=CASE WHEN EXCLUDED.value != '' THEN EXCLUDED.value ELSE group_cells.value END,
+                                updated_at=CASE WHEN EXCLUDED.value != '' THEN EXCLUDED.updated_at ELSE group_cells.updated_at END
                         """, (p_id, g_id, c["slotKey"], c["detectorType"], c.get("value", ""), int(datetime.now().timestamp())))
+                    if seen_slot_keys:
+                        placeholders = ",".join("?" * len(seen_slot_keys))
+                        cursor.execute(
+                            f"DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key NOT IN ({placeholders})",
+                            (p_id, g_id, *seen_slot_keys)
+                        )
+                if seen_group_ids:
+                    placeholders = ",".join("?" * len(seen_group_ids))
+                    cursor.execute(
+                        f"DELETE FROM protocol_groups WHERE protocol_id = ? AND anlage_id = ? AND group_id NOT IN ({placeholders})",
+                        (p_id, a_id, *seen_group_ids)
+                    )
         else:
+            seen_group_ids = [r["groupId"] for r in rows]
             for r in rows:
                 g_id = r["groupId"]
                 g_name = r["groupName"]
                 g_type = r.get("groupType", system_type)
-                
+
                 cursor.execute("""
                     INSERT INTO protocol_groups (protocol_id, group_id, group_name, group_type, anlage_id, anlage_name, anlage_type, anlage_address)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(protocol_id, group_id) DO UPDATE SET
+                        group_name=EXCLUDED.group_name, group_type=EXCLUDED.group_type,
+                        anlage_id=EXCLUDED.anlage_id, anlage_name=EXCLUDED.anlage_name,
+                        anlage_type=EXCLUDED.anlage_type, anlage_address=EXCLUDED.anlage_address
                 """, (p_id, g_id, g_name, g_type, "default", f"Hauptanlage ({g_type})", g_type, ""))
-                
+
+                seen_slot_keys = [c["slotKey"] for c in r.get("cells", [])]
                 for c in r.get("cells", []):
                     cursor.execute("""
                         INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at)
                         VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET
+                            detector_type=EXCLUDED.detector_type,
+                            value=CASE WHEN EXCLUDED.value != '' THEN EXCLUDED.value ELSE group_cells.value END,
+                            updated_at=CASE WHEN EXCLUDED.value != '' THEN EXCLUDED.updated_at ELSE group_cells.updated_at END
                     """, (p_id, g_id, c["slotKey"], c["detectorType"], c.get("value", ""), int(datetime.now().timestamp())))
-                    
+                if seen_slot_keys:
+                    placeholders = ",".join("?" * len(seen_slot_keys))
+                    cursor.execute(
+                        f"DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key NOT IN ({placeholders})",
+                        (p_id, g_id, *seen_slot_keys)
+                    )
+            if seen_group_ids:
+                placeholders = ",".join("?" * len(seen_group_ids))
+                cursor.execute(
+                    f"DELETE FROM protocol_groups WHERE protocol_id = ? AND group_id NOT IN ({placeholders})",
+                    (p_id, *seen_group_ids)
+                )
+
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -2181,18 +2235,32 @@ def import_taifun():
                 interval = "Halbjährlich"
                 default_system_type = "BMA"
                 p_id = ""
+                contract_guid = ""  # only ever populated for the WtVt (new) format
                 
                 sub_systems_to_import = []
                 
                 if is_taifun_format:
                     contract_number = get_tag_value(block, "Nr")
                     info = get_tag_value(block, "Info")
+                    # Vertrags-GUID -- get_tag_value's first-match regex correctly grabs
+                    # this one since <WtVt><GUID> textually precedes any nested
+                    # <WtVL><GUID>/<WtGrt><GUID> inside the same block.
+                    contract_guid = get_tag_value(block, "GUID") or ""
 
                     if not contract_number:
                         continue
 
                     name = info or f"Vertrag {contract_number}"
                     p_id = f"PRO-{contract_number}"
+                    # Anchor by contract_guid when we've seen it before, so a later
+                    # renumbering (<Nr> changes) updates the same protocol row instead
+                    # of creating an orphaned duplicate that loses all its Messwerte.
+                    if contract_guid:
+                        existing = cursor.execute(
+                            "SELECT id FROM protocols WHERE contract_guid = ?", (contract_guid,)
+                        ).fetchone()
+                        if existing:
+                            p_id = existing["id"]
 
                     # Parse WtAgList
                     wtag_list_block = extract_tag_content(block, "WtAgList")
@@ -2256,6 +2324,7 @@ def import_taifun():
                                 "anlage_type": dev_type,
                                 "anlage_address": customer,
                                 "anlage_interval": ag_interval,
+                                "has_guid": bool(dev_guid),
                             })
 
                     # Derive primary contract metadata from first real device
@@ -2276,6 +2345,7 @@ def import_taifun():
                             "anlage_type": "BMA",
                             "anlage_address": "",
                             "anlage_interval": "Halbjährlich",
+                            "has_guid": False,
                         })
 
                 else:
@@ -2352,19 +2422,42 @@ def import_taifun():
                 det_types = json.dumps(default_detector_types.get(default_system_type, ["-", "Normal"]))
 
                 cursor.execute("""
-                    INSERT INTO protocols (id, name, address, contract_number, interval, system_type, status, columns, applicable_values, detector_types, mandant_id)
-                    VALUES (?, ?, ?, ?, ?, ?, 'ready_to_download', ?, ?, ?, ?)
+                    INSERT INTO protocols (id, name, address, contract_number, interval, system_type, status, columns, applicable_values, detector_types, mandant_id, contract_guid)
+                    VALUES (?, ?, ?, ?, ?, ?, 'ready_to_download', ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         name=EXCLUDED.name,
                         address=EXCLUDED.address,
                         interval=EXCLUDED.interval,
                         system_type=EXCLUDED.system_type,
-                        contract_number=EXCLUDED.contract_number
-                """, (p_id, name, address, contract_number, interval, default_system_type, cols, app_vals, det_types, active_mandant_id))
+                        contract_number=EXCLUDED.contract_number,
+                        contract_guid=CASE WHEN EXCLUDED.contract_guid != '' THEN EXCLUDED.contract_guid ELSE protocols.contract_guid END
+                """, (p_id, name, address, contract_number, interval, default_system_type, cols, app_vals, det_types, active_mandant_id, contract_guid))
 
                 if is_taifun_format:
                     # One protocol_group row per WtGrt — no cells created
                     for dev in devices_to_import:
+                        # Vertragswechsel: this device's GUID-derived group_id already
+                        # exists under a DIFFERENT contract -- migrate it (and its
+                        # group_cells/Messwerte) in place instead of letting the
+                        # upsert below insert a duplicate and orphan the old row.
+                        # Only trusted for a real GUID -- synthetic positional
+                        # fallback ids (no GUID in the source) aren't globally unique
+                        # across contracts and would risk a false-positive match.
+                        if dev["has_guid"]:
+                            other = cursor.execute(
+                                "SELECT protocol_id FROM protocol_groups WHERE group_id = ? AND protocol_id != ?",
+                                (dev["group_id"], p_id)
+                            ).fetchone()
+                            if other:
+                                old_pid = other["protocol_id"]
+                                cursor.execute(
+                                    "UPDATE protocol_groups SET protocol_id = ? WHERE protocol_id = ? AND group_id = ?",
+                                    (p_id, old_pid, dev["group_id"])
+                                )
+                                cursor.execute(
+                                    "UPDATE group_cells SET protocol_id = ? WHERE protocol_id = ? AND group_id = ?",
+                                    (p_id, old_pid, dev["group_id"])
+                                )
                         cursor.execute("""
                             INSERT INTO protocol_groups
                                 (protocol_id, group_id, group_name, group_type,
@@ -2382,10 +2475,16 @@ def import_taifun():
                               dev["anlage_id"], dev["anlage_name"], dev["anlage_type"],
                               dev["anlage_address"], dev["anlage_interval"]))
                 else:
-                    # Legacy format: build groups + cells from sub_systems_to_import
-                    # Delete existing data before re-importing (safe for legacy format; TAIFUN uses ON CONFLICT DO UPDATE)
-                    cursor.execute("DELETE FROM group_cells WHERE protocol_id = ?", (p_id,))
-                    cursor.execute("DELETE FROM protocol_groups WHERE protocol_id = ?", (p_id,))
+                    # Legacy format: build groups + cells from sub_systems_to_import.
+                    # No GUID exists in this XML schema at all -- the <Gruppe> free-text
+                    # value is the only available stable identity, so it's used as
+                    # group_id (unchanged from before). Upsert-merge instead of the old
+                    # blanket delete-then-rebuild: structural fields (name/type/detector
+                    # type) are refreshed, but an existing group_cells.value is never
+                    # overwritten, and only groups/slots genuinely absent from this
+                    # import get removed -- a renamed <Gruppe> is indistinguishable from
+                    # delete+recreate in this format and still loses its history, but
+                    # every unchanged group now keeps its Messwerte.
                     for sub in sub_systems_to_import:
                         groups_map = {}
                         for dev in sub["devices"]:
@@ -2405,23 +2504,50 @@ def import_taifun():
                                 groups_map[gruppe]["cells"].append({
                                     "slotKey": str(start_idx + i),
                                     "detectorType": melder_typ,
-                                    "value": ""
                                 })
 
+                        seen_group_ids = list(groups_map.keys())
                         for group_id, g_data in groups_map.items():
                             cursor.execute("""
                                 INSERT INTO protocol_groups
                                     (protocol_id, group_id, group_name, group_type,
                                      anlage_id, anlage_name, anlage_type, anlage_address)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                ON CONFLICT(protocol_id, group_id) DO UPDATE SET
+                                    group_name=EXCLUDED.group_name,
+                                    group_type=EXCLUDED.group_type,
+                                    anlage_id=EXCLUDED.anlage_id,
+                                    anlage_name=EXCLUDED.anlage_name,
+                                    anlage_type=EXCLUDED.anlage_type,
+                                    anlage_address=EXCLUDED.anlage_address
                             """, (p_id, group_id, g_data["name"], g_data["type"],
                                   sub["id"], sub["name"], sub["system_type"], sub["address"] or ""))
 
+                            seen_slot_keys = [cell["slotKey"] for cell in g_data["cells"]]
                             for cell in g_data["cells"]:
                                 cursor.execute("""
                                     INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value)
-                                    VALUES (?, ?, ?, ?, ?)
-                                """, (p_id, group_id, cell["slotKey"], cell["detectorType"], cell["value"]))
+                                    VALUES (?, ?, ?, ?, '')
+                                    ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET
+                                        detector_type=EXCLUDED.detector_type
+                                """, (p_id, group_id, cell["slotKey"], cell["detectorType"]))
+                            if seen_slot_keys:
+                                placeholders = ",".join("?" * len(seen_slot_keys))
+                                cursor.execute(
+                                    f"DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key NOT IN ({placeholders})",
+                                    (p_id, group_id, *seen_slot_keys)
+                                )
+                        if seen_group_ids:
+                            placeholders = ",".join("?" * len(seen_group_ids))
+                            cursor.execute(
+                                f"DELETE FROM protocol_groups WHERE protocol_id = ? AND anlage_id = ? AND group_id NOT IN ({placeholders})",
+                                (p_id, sub["id"], *seen_group_ids)
+                            )
+                            cursor.execute(
+                                f"DELETE FROM group_cells WHERE protocol_id = ? AND group_id NOT IN "
+                                f"(SELECT group_id FROM protocol_groups WHERE protocol_id = ?)",
+                                (p_id, p_id)
+                            )
                 imported_count += 1
             conn.commit()
         except Exception as tx_err:

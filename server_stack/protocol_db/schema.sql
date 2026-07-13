@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS protocols (
     last_edited_at VARCHAR(100),
     columns TEXT NOT NULL, -- JSON array of column labels e.g. ["1","2","3","4"]
     applicable_values TEXT NOT NULL, -- JSON array e.g. ["CHECK","Def."]
-    detector_types TEXT NOT NULL -- JSON array e.g. ["ZD","DB","RAS"]
+    detector_types TEXT NOT NULL, -- JSON array e.g. ["ZD","DB","RAS"]
+    contract_guid VARCHAR(64) DEFAULT '' -- TAIFUN <WtVt> Vertrags-GUID; anchors identity across <Nr> renumbering
 );
 
 -- 3. Groups in a Protocol
