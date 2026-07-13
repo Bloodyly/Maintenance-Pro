@@ -147,3 +147,25 @@ val MIGRATION_6_7 = object : Migration(6, 7) {
         db.execSQL("ALTER TABLE server_config ADD COLUMN myMandantId TEXT NOT NULL DEFAULT 'standard'")
     }
 }
+
+/**
+ * v7 -> v8: new hardware_tables entity for the optional per-device Hardware
+ * inventory (Zentrale/Ringkarten), mirroring the server's group_cells
+ * '__hardware__' sentinel blob. Independent of protocol_groups/group_cells,
+ * so a plain CREATE TABLE is enough -- nothing to backfill from existing data.
+ */
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS hardware_tables (
+                protocolId TEXT NOT NULL,
+                deviceGroupId TEXT NOT NULL,
+                rowsJson TEXT NOT NULL DEFAULT '[]',
+                updatedAt INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(protocolId, deviceGroupId)
+            )
+            """.trimIndent()
+        )
+    }
+}

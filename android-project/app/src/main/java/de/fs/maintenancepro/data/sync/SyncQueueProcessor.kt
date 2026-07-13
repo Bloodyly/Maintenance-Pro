@@ -3,6 +3,8 @@ package de.fs.maintenancepro.data.sync
 import de.fs.maintenancepro.data.local.ProtocolDao
 import de.fs.maintenancepro.data.local.SyncQueueDao
 import de.fs.maintenancepro.data.remote.ApiService
+import de.fs.maintenancepro.data.remote.HardwareRowDto
+import de.fs.maintenancepro.data.remote.HardwareTableDto
 import de.fs.maintenancepro.data.remote.ProtocolCellDto
 import de.fs.maintenancepro.data.remote.ProtocolGroupDto
 import de.fs.maintenancepro.data.remote.UploadProtocolDto
@@ -58,11 +60,39 @@ class SyncQueueProcessor @Inject constructor(
                         )
                     )
                 }
+                val hardwareArr = root.optJSONArray("hardware") ?: JSONArray()
+                val hardware = mutableListOf<HardwareTableDto>()
+                for (i in 0 until hardwareArr.length()) {
+                    val hwO = hardwareArr.getJSONObject(i)
+                    val hwRowsArr = hwO.optJSONArray("rows") ?: JSONArray()
+                    val hwRows = mutableListOf<HardwareRowDto>()
+                    for (j in 0 until hwRowsArr.length()) {
+                        val r = hwRowsArr.getJSONObject(j)
+                        hwRows.add(
+                            HardwareRowDto(
+                                hardware = r.optString("hardware", ""),
+                                bezeichnung = r.optString("bezeichnung", ""),
+                                typ = r.optString("typ", ""),
+                                stoerung = r.optString("stoerung", ""),
+                                unterbrechung = r.optString("unterbrechung", ""),
+                                sw_stand = r.optString("sw_stand", "")
+                            )
+                        )
+                    }
+                    hardware.add(
+                        HardwareTableDto(
+                            group_id = hwO.getString("group_id"),
+                            updated_at = hwO.optLong("updated_at", 0L),
+                            rows = hwRows
+                        )
+                    )
+                }
                 val dto = UploadProtocolDto(
                     protocol_id = item.protocolId,
                     finished_at = root.optString("finished_at", ""),
                     technician_id = root.optString("technician_id", "99283-FS"),
-                    rows = rows
+                    rows = rows,
+                    hardware = hardware
                 )
                 val response = apiService.uploadProtocol(item.protocolId, dto)
                 if (response.isSuccessful) {

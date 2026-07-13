@@ -56,6 +56,7 @@ import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import org.json.JSONArray
+import org.json.JSONObject
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -774,6 +775,27 @@ fun InspectionScreen(
                     }
                 }
             }
+
+            // Hardware-Inventar (Zentrale/Ringkarten) — optional pro Gerät, unterhalb der
+            // Melderliste (spiegelt die PDF-Reihenfolge). Jedes Gerät wird über den
+            // "{device}::{grp_num}"-Präfix seiner Meldergruppen identifiziert, da die App
+            // kein eigenes "Gerät"-Entity kennt.
+            val deviceIds = remember(rowsList) { rowsList.map { it.groupId.substringBefore("::") }.distinct() }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                deviceIds.forEach { deviceId ->
+                    HardwareSection(
+                        viewModel = viewModel,
+                        protocolId = protocolId,
+                        deviceGroupId = deviceId,
+                        periodValues = periodValues,
+                        isArchived = protocolEntity.isArchived
+                    )
+                }
+            }
         }
     }
 }
@@ -784,6 +806,217 @@ data class ColumnModel(val key: String, val label: String)
 data class CellModel(val slotKey: String, val detectorType: String, val value: String)
 data class RowModel(val groupId: String, val groupName: String, val cells: List<CellModel>)
 data class ValueModel(val value: String, val label: String, val isDefect: Boolean)
+data class HardwareRowModel(
+    val index: Int,
+    val hardware: String,
+    val bezeichnung: String,
+    val typ: String,
+    val stoerung: String,
+    val unterbrechung: String,
+    val swStand: String
+)
+
+// ---------------- Hardware-Tabelle (Zentrale/Ringkarten-Inventar), optional pro Gerät ----------------
+
+@Composable
+private fun HardwareSection(
+    viewModel: MainViewModel,
+    protocolId: String,
+    deviceGroupId: String,
+    periodValues: List<ValueModel>,
+    isArchived: Boolean
+) {
+    val hwEntity by viewModel.getHardwareTableFlow(protocolId, deviceGroupId).collectAsState(initial = null)
+    val hwRows = remember(hwEntity?.rowsJson) {
+        val json = hwEntity?.rowsJson
+        if (json == null) {
+            emptyList()
+        } else {
+            try {
+                val arr = JSONArray(json)
+                List(arr.length()) { i ->
+                    val o = arr.getJSONObject(i)
+                    HardwareRowModel(
+                        index = i,
+                        hardware = o.optString("hardware", ""),
+                        bezeichnung = o.optString("bezeichnung", ""),
+                        typ = o.optString("typ", ""),
+                        stoerung = o.optString("stoerung", ""),
+                        unterbrechung = o.optString("unterbrechung", ""),
+                        swStand = o.optString("sw_stand", "")
+                    )
+                }
+            } catch (e: Exception) {
+                emptyList()
+            }
+        }
+    }
+    if (hwRows.isEmpty()) return
+
+    // (rowIndex, field) of the row/column currently being edited via the value picker dialog.
+    var pickerTarget by remember { mutableStateOf<Pair<Int, String>?>(null) }
+
+    pickerTarget?.let { (rowIdx, field) ->
+        val row = hwRows.getOrNull(rowIdx)
+        if (row != null) {
+            val currentVal = if (field == "stoerung") row.stoerung else row.unterbrechung
+            val choices = listOf(ValueModel("", "— (kein Eintrag)", false)) + periodValues
+            AlertDialog(
+                onDismissRequest = { pickerTarget = null },
+                title = {
+                    Text(
+                        if (field == "stoerung") "Störung — ${row.hardware}" else "Unterbrechung — ${row.hardware}",
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 240.dp)
+                    ) {
+                        items(choices) { choice ->
+                            val isCurrent = currentVal == choice.value
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        viewModel.editHardwareField(protocolId, deviceGroupId, rowIdx, field, choice.value)
+                                        pickerTarget = null
+                                    },
+                                color = if (isCurrent) IndustrialPrimaryContainer else Color.Transparent,
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = choice.label,
+                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isCurrent) IndustrialPrimary else IndustrialOnSurface,
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.padding(vertical = 10.dp, horizontal = 14.dp)
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { pickerTarget = null }) {
+                        Text("Abbrechen", color = IndustrialOutline)
+                    }
+                }
+            )
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White)
+            .border(1.dp, IndustrialOutlineVariant)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text("Hardware", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = IndustrialOnSurface)
+
+        hwRows.forEach { row ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(LightSurfaceLow, RoundedCornerShape(6.dp))
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = row.hardware.ifBlank { "—" },
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = IndustrialPrimary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (row.typ.isNotBlank()) {
+                        Text(row.typ, fontSize = 11.sp, color = IndustrialOutline)
+                    }
+                }
+                if (row.bezeichnung.isNotBlank()) {
+                    Text(row.bezeichnung, fontSize = 12.sp, color = IndustrialOnSurface)
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    HardwareValueChip(
+                        label = "Störung",
+                        value = row.stoerung,
+                        enabled = !isArchived,
+                        onClick = { pickerTarget = row.index to "stoerung" }
+                    )
+                    HardwareValueChip(
+                        label = "Unterbrechung",
+                        value = row.unterbrechung,
+                        enabled = !isArchived,
+                        onClick = { pickerTarget = row.index to "unterbrechung" }
+                    )
+                }
+
+                // Keyed on the persisted value (not on updatedAt) so the field doesn't reset
+                // mid-typing -- same pattern as MatrixEditScreen's grpNameInput.
+                var swStandInput by remember(row.swStand) { mutableStateOf(row.swStand) }
+                OutlinedTextField(
+                    value = swStandInput,
+                    onValueChange = { newVal ->
+                        swStandInput = newVal
+                        viewModel.editHardwareField(protocolId, deviceGroupId, row.index, "sw_stand", newVal)
+                    },
+                    label = { Text("Software Stand") },
+                    singleLine = true,
+                    enabled = !isArchived,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HardwareValueChip(
+    label: String,
+    value: String,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val isDefect = value == "Def." || value.lowercase().contains("def")
+    val isFilled = value.isNotEmpty()
+    Box(
+        modifier = Modifier
+            .background(
+                color = when {
+                    isDefect -> IndustrialErrorContainer
+                    isFilled -> IndustrialPrimaryContainer.copy(alpha = 0.12f)
+                    else -> Color.White
+                },
+                shape = RoundedCornerShape(6.dp)
+            )
+            .border(0.5.dp, IndustrialOutlineVariant, RoundedCornerShape(6.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+    ) {
+        Column {
+            Text(label, fontSize = 9.sp, color = IndustrialOutline, fontWeight = FontWeight.Light)
+            if (isDefect) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Icon(Icons.Default.Warning, contentDescription = null, tint = IndustrialError, modifier = Modifier.size(11.dp))
+                    Text("DEF.", color = IndustrialError, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp)
+                }
+            } else {
+                Text(
+                    text = value.ifEmpty { "—" },
+                    color = if (isFilled) IndustrialPrimary else IndustrialOutline.copy(alpha = 0.7f),
+                    fontWeight = if (isFilled) FontWeight.Bold else FontWeight.Normal,
+                    fontSize = 11.sp
+                )
+            }
+        }
+    }
+}
 
 // ---------------- Isolated Composable Elements avoiding whole-screen recompositions ----------------
 

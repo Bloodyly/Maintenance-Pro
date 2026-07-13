@@ -101,7 +101,25 @@ data class UploadProtocolDto(
     val protocol_id: String,
     val finished_at: String,
     val technician_id: String,
-    val rows: List<ProtocolGroupDto>
+    val rows: List<ProtocolGroupDto>,
+    val hardware: List<HardwareTableDto> = emptyList()
+)
+
+// Hardware (Zentrale/Ringkarten-Inventar) is device-scoped, not Melder-Gruppe-scoped,
+// so it's a sibling of ProtocolGroupDto/rows rather than another namespaced row within it.
+data class HardwareTableDto(
+    val group_id: String,
+    val updated_at: Long = 0L,
+    val rows: List<HardwareRowDto> = emptyList()
+)
+
+data class HardwareRowDto(
+    val hardware: String = "",
+    val bezeichnung: String = "",
+    val typ: String = "",
+    val stoerung: String = "",
+    val unterbrechung: String = "",
+    val sw_stand: String = ""
 )
 
 data class ProtocolDefinitionDto(
@@ -162,7 +180,8 @@ data class SyncProtocolDto(
     val updated_at: Long = 0L,
     val mandant_id: String = "standard",
     val definition: SyncDefinitionDto? = null,
-    val rows: List<SyncRowDto> = emptyList()
+    val rows: List<SyncRowDto> = emptyList(),
+    val hardware: List<HardwareTableDto> = emptyList()
 )
 
 data class SyncDefinitionDto(

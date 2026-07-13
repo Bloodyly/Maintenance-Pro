@@ -120,6 +120,26 @@ interface GroupCellDao {
     suspend fun getDefective(protocolId: String): List<GroupCellEntity>
 }
 
+/** Optional per-device Hardware inventory (Zentrale/Ringkarten) -- one row per
+ * (protocolId, deviceGroupId), independent of the Melderliste tables. */
+@Dao
+interface HardwareTableDao {
+    @Query("SELECT * FROM hardware_tables WHERE protocolId = :protocolId AND deviceGroupId = :deviceGroupId LIMIT 1")
+    fun getForDeviceFlow(protocolId: String, deviceGroupId: String): Flow<HardwareTableEntity?>
+
+    @Query("SELECT * FROM hardware_tables WHERE protocolId = :protocolId")
+    suspend fun getAllForProtocol(protocolId: String): List<HardwareTableEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(table: HardwareTableEntity)
+
+    @Query("DELETE FROM hardware_tables WHERE protocolId = :protocolId AND deviceGroupId = :deviceGroupId")
+    suspend fun deleteForDevice(protocolId: String, deviceGroupId: String)
+
+    @Query("DELETE FROM hardware_tables WHERE protocolId = :protocolId")
+    suspend fun deleteAllForProtocol(protocolId: String)
+}
+
 @Dao
 interface SyncQueueDao {
     @Query("SELECT * FROM sync_queue ORDER BY addedAt ASC")

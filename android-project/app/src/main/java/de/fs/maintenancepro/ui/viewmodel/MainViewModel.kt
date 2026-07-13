@@ -17,6 +17,8 @@ import de.fs.maintenancepro.data.remote.SyncDeltaRequestDto
 import de.fs.maintenancepro.data.remote.SyncUploadCellsDto
 import de.fs.maintenancepro.data.remote.SyncCellChangeDto
 import de.fs.maintenancepro.data.remote.SyncProtocolDto
+import de.fs.maintenancepro.data.remote.HardwareTableDto
+import de.fs.maintenancepro.data.remote.HardwareRowDto
 import kotlinx.coroutines.flow.first
 import de.fs.maintenancepro.BuildConfig
 import de.fs.maintenancepro.data.crypto.CryptoManager
@@ -45,6 +47,7 @@ class MainViewModel @Inject constructor(
     private val protocolDao: ProtocolDao,
     private val protocolGroupDao: ProtocolGroupDao,
     private val groupCellDao: GroupCellDao,
+    private val hardwareTableDao: HardwareTableDao,
     private val syncQueueDao: SyncQueueDao,
     private val serverConfigDao: ServerConfigDao,
     private val apiService: ApiService,
@@ -532,6 +535,17 @@ class MainViewModel @Inject constructor(
                     })
                 }
             })
+            // Hardware (Zentrale/Ringkarten) is device-scoped, not Melder-Gruppe-scoped,
+            // so it's a sibling of 'rows' rather than another namespaced row within it.
+            put("hardware", JSONArray().also { arr ->
+                hardwareTableDao.getAllForProtocol(protocolId).forEach { hw ->
+                    arr.put(JSONObject().apply {
+                        put("group_id", hw.deviceGroupId)
+                        put("updated_at", hw.updatedAt)
+                        put("rows", safeJsonArray(hw.rowsJson))
+                    })
+                }
+            })
         }.toString()
     }
 
@@ -539,6 +553,7 @@ class MainViewModel @Inject constructor(
     private suspend fun applyWireJsonToLocal(protocolId: String, json: String) {
         try {
             val root = JSONObject(json)
+            applyWireHardwareToLocal(protocolId, root.optJSONArray("hardware"))
             val rows = root.optJSONArray("rows") ?: return
             val now = System.currentTimeMillis()
 
@@ -585,6 +600,28 @@ class MainViewModel @Inject constructor(
     }
 
     private fun safeJsonArray(raw: String): JSONArray = try { JSONArray(raw) } catch (e: Exception) { JSONArray() }
+
+    /** Shared by every download/sync path (live-sync, full download, delta) --
+     * Hardware entries are `{group_id, updated_at, rows: [...]}`, last-write-wins
+     * against whatever's already stored locally for that device. */
+    private suspend fun applyWireHardwareToLocal(protocolId: String, hardwareArr: JSONArray?) {
+        if (hardwareArr == null) return
+        val existingByDevice = hardwareTableDao.getAllForProtocol(protocolId).associateBy { it.deviceGroupId }
+        for (i in 0 until hardwareArr.length()) {
+            val hwO = hardwareArr.optJSONObject(i) ?: continue
+            val deviceGroupId = hwO.optString("group_id", null) ?: continue
+            val updatedAt = hwO.optLong("updated_at", 0L)
+            val rows = hwO.optJSONArray("rows") ?: JSONArray()
+            val existing = existingByDevice[deviceGroupId]
+            if (existing != null && existing.updatedAt > updatedAt) continue
+            hardwareTableDao.upsert(
+                HardwareTableEntity(
+                    protocolId = protocolId, deviceGroupId = deviceGroupId,
+                    rowsJson = rows.toString(), updatedAt = updatedAt
+                )
+            )
+        }
+    }
 
     fun updateSearchQuery(query: String) {
         _searchQuery.value = query
@@ -648,6 +685,23 @@ class MainViewModel @Inject constructor(
             protocolGroupDao.deleteAllForProtocol(item.id)
             groupCellDao.deleteAllForProtocol(item.id)
 
+            // Hardware (Zentrale/Ringkarten) is device-scoped, a sibling of 'rows' --
+            // full download replaces it entirely, same as groups/cells above.
+            hardwareTableDao.deleteAllForProtocol(item.id)
+            root.optJSONArray("hardware")?.let { hardwareArr ->
+                for (i in 0 until hardwareArr.length()) {
+                    val hwO = hardwareArr.optJSONObject(i) ?: continue
+                    val deviceGroupId = hwO.optString("group_id", null) ?: continue
+                    hardwareTableDao.upsert(
+                        HardwareTableEntity(
+                            protocolId = item.id, deviceGroupId = deviceGroupId,
+                            rowsJson = (hwO.optJSONArray("rows") ?: JSONArray()).toString(),
+                            updatedAt = hwO.optLong("updated_at", 0L)
+                        )
+                    )
+                }
+            }
+
             val rows = root.optJSONArray("rows") ?: return@withTransaction
             val groups = mutableListOf<ProtocolGroupEntity>()
             val cells = mutableListOf<GroupCellEntity>()
@@ -694,6 +748,26 @@ class MainViewModel @Inject constructor(
             if (current.value == writeValue) return@launch
             val now = System.currentTimeMillis()
             groupCellDao.updateValue(protocolId, groupId, slotKey, writeValue, now)
+            protocolDao.updateStatusAndEditedAt(protocolId, "upload_pending", now)
+        }
+    }
+
+    fun getHardwareTableFlow(protocolId: String, deviceGroupId: String) =
+        hardwareTableDao.getForDeviceFlow(protocolId, deviceGroupId)
+
+    /** Edits one field of one Hardware row (Störung/Unterbrechung/Software-Stand) --
+     * read-modify-write on the whole blob, same as the server side does. The row
+     * count is always small (Zentrale + a handful of Ringkarten), so this is cheap. */
+    fun editHardwareField(protocolId: String, deviceGroupId: String, rowIndex: Int, field: String, newValue: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val existing = hardwareTableDao.getAllForProtocol(protocolId).find { it.deviceGroupId == deviceGroupId } ?: return@launch
+            val rows = safeJsonArray(existing.rowsJson)
+            if (rowIndex !in 0 until rows.length()) return@launch
+            val row = rows.getJSONObject(rowIndex)
+            if (row.optString(field, "") == newValue) return@launch
+            row.put(field, newValue)
+            val now = System.currentTimeMillis()
+            hardwareTableDao.upsert(existing.copy(rowsJson = rows.toString(), updatedAt = now))
             protocolDao.updateStatusAndEditedAt(protocolId, "upload_pending", now)
         }
     }
@@ -876,8 +950,30 @@ class MainViewModel @Inject constructor(
                         ProtocolCellDto(slot_key = c.slotKey, detector_type = c.detectorType, value = c.value, updated_at = c.updatedAt)
                     }
                 )
+            },
+            hardware = hardwareTableDao.getAllForProtocol(protocolId).map { hw ->
+                HardwareTableDto(
+                    group_id = hw.deviceGroupId,
+                    updated_at = hw.updatedAt,
+                    rows = jsonToHardwareRows(hw.rowsJson)
+                )
             }
         )
+    }
+
+    private fun jsonToHardwareRows(rowsJson: String): List<HardwareRowDto> {
+        val arr = safeJsonArray(rowsJson)
+        return (0 until arr.length()).map { i ->
+            val r = arr.getJSONObject(i)
+            HardwareRowDto(
+                hardware = r.optString("hardware", ""),
+                bezeichnung = r.optString("bezeichnung", ""),
+                typ = r.optString("typ", ""),
+                stoerung = r.optString("stoerung", ""),
+                unterbrechung = r.optString("unterbrechung", ""),
+                sw_stand = r.optString("sw_stand", "")
+            )
+        }
     }
 
     private suspend fun enqueueSync(protocolId: String, dto: UploadProtocolDto) {
@@ -900,6 +996,15 @@ class MainViewModel @Inject constructor(
                                 })
                             }
                         })
+                    })
+                }
+            })
+            put("hardware", JSONArray().also { arr ->
+                dto.hardware.forEach { hw ->
+                    arr.put(JSONObject().apply {
+                        put("group_id", hw.group_id)
+                        put("updated_at", hw.updated_at)
+                        put("rows", JSONArray(hardwareRowsToJson(hw.rows)))
                     })
                 }
             })
@@ -1138,6 +1243,16 @@ class MainViewModel @Inject constructor(
 
     private fun detectorTypesToJson(types: List<String>): String = JSONArray(types).toString()
 
+    private fun hardwareRowsToJson(rows: List<HardwareRowDto>): String =
+        JSONArray().apply {
+            rows.forEach {
+                put(JSONObject().apply {
+                    put("hardware", it.hardware); put("bezeichnung", it.bezeichnung); put("typ", it.typ)
+                    put("stoerung", it.stoerung); put("unterbrechung", it.unterbrechung); put("sw_stand", it.sw_stand)
+                })
+            }
+        }.toString()
+
     /** Stores a brand-new protocol from a full/delta sync DTO directly into normalized tables. */
     private suspend fun storeProtocolFromSyncDto(proto: SyncProtocolDto) {
         database.withTransaction {
@@ -1153,6 +1268,16 @@ class MainViewModel @Inject constructor(
             ))
             protocolGroupDao.deleteAllForProtocol(proto.id)
             groupCellDao.deleteAllForProtocol(proto.id)
+
+            hardwareTableDao.deleteAllForProtocol(proto.id)
+            proto.hardware.forEach { hw ->
+                hardwareTableDao.upsert(
+                    HardwareTableEntity(
+                        protocolId = proto.id, deviceGroupId = hw.group_id,
+                        rowsJson = hardwareRowsToJson(hw.rows), updatedAt = hw.updated_at
+                    )
+                )
+            }
 
             val groups = proto.rows.mapIndexed { i, row ->
                 ProtocolGroupEntity(
@@ -1190,6 +1315,20 @@ class MainViewModel @Inject constructor(
                 lastEditedAt = proto.updated_at,
                 mandantId = proto.mandant_id
             ))
+
+            val existingHardware = hardwareTableDao.getAllForProtocol(proto.id).associateBy { it.deviceGroupId }
+            proto.hardware.forEach { hw ->
+                val existing = existingHardware[hw.group_id]
+                // Server wins only if its data is newer -- protects un-uploaded local pending edits.
+                if (existing == null || hw.updated_at > existing.updatedAt) {
+                    hardwareTableDao.upsert(
+                        HardwareTableEntity(
+                            protocolId = proto.id, deviceGroupId = hw.group_id,
+                            rowsJson = hardwareRowsToJson(hw.rows), updatedAt = hw.updated_at
+                        )
+                    )
+                }
+            }
 
             val existingGroups = protocolGroupDao.getGroupsOnce(proto.id).associateBy { it.groupId }
             val existingCells = groupCellDao.getCellsOnce(proto.id).associateBy { "${it.groupId}::${it.slotKey}" }

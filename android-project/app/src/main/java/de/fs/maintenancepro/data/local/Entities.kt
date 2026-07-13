@@ -78,6 +78,24 @@ data class GroupCellEntity(
 )
 
 /**
+ * Optional per-device Hardware inventory table (Zentrale/Ringkarten), separate
+ * from the Melderliste (protocol_groups/group_cells). One JSON blob per device
+ * mirrors the server's storage exactly (a single '__hardware__' sentinel cell
+ * in group_cells) -- no per-row entity, since the row count is always small
+ * (Zentrale + a handful of Ringkarten) and edits are read-modify-write on the
+ * whole blob anyway. `deviceGroupId` is the bare device id (NOT namespaced
+ * with "::grp_num" like GroupCellEntity.groupId), since Hardware is scoped to
+ * the whole device, not a single Melder-Gruppe.
+ */
+@Entity(tableName = "hardware_tables", primaryKeys = ["protocolId", "deviceGroupId"])
+data class HardwareTableEntity(
+    val protocolId: String,
+    val deviceGroupId: String,
+    val rowsJson: String = "[]",
+    val updatedAt: Long = 0L
+)
+
+/**
  * Persists failed uploads in a queue to guarantee sync on reconnection.
  */
 @Entity(tableName = "sync_queue")
