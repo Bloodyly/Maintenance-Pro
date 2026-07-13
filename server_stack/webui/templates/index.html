@@ -1694,8 +1694,11 @@
             </div>
 
             <!-- GRID MODE -->
+            <!-- No independent overflow/max-height here -- the outer ".flex-1.overflow-auto" body
+                 is the only scroll container, so scrolling the Auslöseliste continues seamlessly
+                 into the Hardware section below instead of stopping at a nested scrollbox. -->
             <template x-if="!cellsEditorLoading && gridFormat === 'grid'">
-                <div class="p-0 select-none" style="overflow: auto; max-height: calc(100vh - 140px);">
+                <div class="p-0 select-none bg-white">
                     <table class="border-collapse text-xs" style="table-layout: fixed; min-width: max-content;">
                         <colgroup>
                             <col style="width:52px; min-width:52px;">
@@ -1819,7 +1822,7 @@
             </template>
 
             <!-- HARDWARE TABLE (Zentrale/Ringkarten-Inventar) -- optional per Gerät, below the Melderliste -->
-            <div x-show="!cellsEditorLoading" class="border-t border-slate-200 mt-2 px-4 py-4">
+            <div x-show="!cellsEditorLoading" class="border-t border-slate-200 mt-2 px-4 py-4 bg-white">
                 <div class="flex items-center justify-between mb-3">
                     <h4 class="text-xs font-bold text-slate-700 flex items-center gap-1.5">
                         <i data-lucide="cpu" class="w-3.5 h-3.5 text-slate-400"></i>

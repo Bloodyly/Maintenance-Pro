@@ -1752,6 +1752,26 @@ def parse_etb_all(filepath):
                 data, root['sep'], sep_positions[idx_r + 1], f1_set, all_resolved_grpnums)
             anlage['topology'] = topology
 
+    # Ring (Esserbus) cards. For a single-panel file they belong to the one
+    # Anlage and get their full ring number; for a multi-panel EsserNet file
+    # the per-panel assignment and the EsserNet prefix are not derivable, so
+    # the cards are kept as separate mainboard groups with the 2-digit number.
+    ring_panels = find_ring_cards(data)
+    if len(result) == 1:
+        cards = [c for pan in ring_panels for c in pan['cards']]
+        result[0]['serie'] = ring_panels[0]['series'] if ring_panels else None
+        result[0]['ringkarten'] = [
+            {'ringnummer': c['ring'], 'bezeichnung': c['name']}
+            for c in sorted(cards, key=lambda c: c['ring'] or 0)
+        ]
+    elif result:
+        result[0]['_ring_groups'] = [
+            {'serie': pan['series'],
+             'ringkarten': [{'ringnummer': c['ms'], 'bezeichnung': c['name']}
+                            for c in pan['cards']]}
+            for pan in ring_panels
+        ]
+
     return result
 
 
@@ -1839,19 +1859,122 @@ def _groups_to_json(groups):
     return out
 
 
+# Object class of an analog loop (ring) card. Verified across IQ8, FlexES
+# and 8000 files. The card's own OID slot carries:
+#   +4   : OID of the loop's designation text object (0 = none)
+#   +20  : this class (0x0079)
+#   +38  : Mainboard/Backbone-card * 10 + slot (the last two ring-number digits)
+#   +56  : OID of the mainboard/backbone object this card sits on
+RING_CARD_CLASS = 0x0079
+
+# Mainboard/backbone object class → panel series. Determined by matching the
+# card's +56 reference across the fleet; refine with ground truth as needed.
+MAINBOARD_SERIES = {
+    0x01a9: 'FlexES',
+    0x0154: 'IQ8/8000',
+    0x0155: 'IQ8/8000',
+}
+
+
+def _read_text_at_slot(data, oid, span=200):
+    """Read the first text record inside object `oid`'s slot region."""
+    n = len(data)
+    mp = oid * OID_SLOT + OID_BASE
+    if not (0 <= mp < n - 4):
+        return None
+    for off in range(0, span, 2):
+        pos = mp + off
+        if pos + 2 <= n and data[pos:pos+2] == b'\xfd\x00':
+            lv = struct.unpack_from('<H', data, pos-2)[0] if pos >= 2 else 0
+            if 4 <= lv <= 200:
+                te = pos + 2 + (lv - 4)
+                if te + 2 <= n and data[te:te+2] == b'\x00\xff':
+                    try:
+                        return data[pos+2:te].decode('utf-16-le').rstrip('\x00')
+                    except UnicodeDecodeError:
+                        return None
+    return None
+
+
+def find_ring_cards(data):
+    """
+    Enumerate the analog loop (ring / Esserbus) cards of a file.
+
+    Ring number = EsserNet-Adresse · 100 + Mainboardkarte · 10 + Slot.
+    The last two digits (Mainboard·10 + Slot) are stored at +38; the EsserNet
+    prefix is per panel. For a single-panel file it is 1; for a multi-panel
+    (EsserNet) file each mainboard object is one panel and cards are grouped
+    by it. Cards with the placeholder value 0 at +38 (base/CPU objects) are
+    skipped.
+
+    Returns list of dicts, one per mainboard (panel):
+      {'mainboard_oid': int, 'series': str|None, 'cards':
+          [{'ring': int, 'name': str|None, 'ms': int}, ...]}
+    """
+    n = len(data)
+    by_mb = {}
+    for oid in range(1, (n - OID_BASE) // OID_SLOT):
+        mp = oid * OID_SLOT + OID_BASE
+        if mp + 64 > n:
+            break
+        if struct.unpack_from('<I', data, mp)[0] != oid:
+            continue
+        if struct.unpack_from('<H', data, mp + 20)[0] != RING_CARD_CLASS:
+            continue
+        ms = struct.unpack_from('<H', data, mp + 38)[0]
+        if ms == 0:
+            continue
+        text_ptr = struct.unpack_from('<I', data, mp + 4)[0]
+        mb = struct.unpack_from('<I', data, mp + 56)[0]
+        name = _read_text_at_slot(data, text_ptr) if text_ptr else None
+        by_mb.setdefault(mb, []).append({'ms': ms, 'name': name})
+
+    # Ring number is reported as the two-digit Mainboardkarte*10 + Slot value
+    # (stored at +38). The full Tools 8000 number also has a leading EsserNet
+    # address (1 for single panels), but per user request that prefix is
+    # always omitted — 'ring' == 'ms'.
+    panels = []
+    for mb, cards in sorted(by_mb.items()):
+        mbmp = mb * OID_SLOT + OID_BASE
+        series = None
+        if 0 <= mbmp < n - 22:
+            series = MAINBOARD_SERIES.get(struct.unpack_from('<H', data, mbmp + 20)[0])
+        for c in cards:
+            c['ring'] = c['ms']
+        panels.append({'mainboard_oid': mb, 'series': series,
+                       'cards': sorted(cards, key=lambda c: c['ms'])})
+    return panels
+
+
 def to_json(all_anlagen):
-    """Serialize parse_etb_all result to a JSON-serialisable dict."""
+    """
+    Serialize parse_etb_all result to a JSON-serialisable dict.
+
+    Key order is deliberate: hardware first (Anlagentyp, Ringkarten,
+    Software-Version, Module), then the Meldegruppen/Melder list — so a
+    consumer reads the panel's makeup before the detector groups.
+    """
     def _a(a):
-        d = {'anlage': a['name'], 'gruppen': _groups_to_json(a['groups'])}
+        d = {'anlage': a['name']}
+        if 'serie' in a:
+            d['serie'] = a['serie']
+        if 'ringkarten' in a:
+            d['ringkarten'] = a['ringkarten']
         t = a.get('topology')
         if t:
             d['version'] = t.get('version')
             d['module'] = t.get('modules', [])
+        d['gruppen'] = _groups_to_json(a['groups'])
         return d
 
     if len(all_anlagen) == 1:
         return _a(all_anlagen[0])
-    return {'anlagen': [_a(a) for a in all_anlagen]}
+    out = {}
+    groups = all_anlagen[0].get('_ring_groups') if all_anlagen else None
+    if groups:
+        out['ringkarten_gruppen'] = groups
+    out['anlagen'] = [_a(a) for a in all_anlagen]
+    return out
 
 
 def main():
@@ -1862,7 +1985,18 @@ def main():
     parser.add_argument('--json', action='store_true', help='Print JSON to stdout')
     parser.add_argument('--json-out', help='Write JSON to file')
     parser.add_argument('--list', action='store_true', help='Print summary to stdout')
+    parser.add_argument('--rings', action='store_true', help='List analog loop (ring) cards')
     args = parser.parse_args()
+
+    if args.rings:
+        data = open(args.etb, 'rb').read()
+        panels = find_ring_cards(data)
+        for pan in panels:
+            print(f"Mainboard OID {pan['mainboard_oid']}  Serie: {pan['series'] or '?'}"
+                  f"  ({len(pan['cards'])} Ringkarten)")
+            for c in pan['cards']:
+                print(f"   Ring {c['ring']:>2}  {c['name'] or ''}")
+        return
 
     try:
         all_anlagen = parse_etb_all(args.etb)
@@ -1870,17 +2004,20 @@ def main():
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    if args.json or args.json_out:
+    # JSON is the default output (used by the web UI, which passes no flags);
+    # --list / --out request the text or CSV views explicitly.
+    want_json = args.json or args.json_out or not (args.list or args.out)
+    if want_json:
         payload = to_json(all_anlagen)
         json_str = json.dumps(payload, ensure_ascii=False, indent=2)
-        if args.json:
-            print(json_str)
         if args.json_out:
             with open(args.json_out, 'w', encoding='utf-8') as f:
                 f.write(json_str)
             print(f"JSON written to {args.json_out}", file=sys.stderr)
+        else:
+            print(json_str)
 
-    if args.out or args.list or not (args.json or args.json_out):
+    if args.out or args.list:
         # For text/CSV output: use single Anlage (--name selects, else pick largest)
         if args.name:
             selected = next((a for a in all_anlagen if a['name'] == args.name), None)
