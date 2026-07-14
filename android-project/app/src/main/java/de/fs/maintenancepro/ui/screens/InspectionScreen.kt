@@ -1,7 +1,6 @@
 package de.fs.maintenancepro.ui.screens
 
 import android.widget.Toast
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -16,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Warning
@@ -210,7 +210,6 @@ fun InspectionScreen(
 
     // Active Selection Choice — preselected to the current period (Q3 in Jul-Sep, H2 in Jul-Dec, etc.)
     var activeSelectVal by remember(defaultPeriod) { mutableStateOf(defaultPeriod) }
-    var expandedFabMenu by remember { mutableStateOf(false) }
 
     // Pinch-to-zoom factor support (replaces XML library Zoom behavior natively on GPU layers)
     var zoomScale by remember { mutableStateOf(1.0f) }
@@ -245,94 +244,106 @@ fun InspectionScreen(
     val horizontalScrollState = rememberScrollState()
     val verticalScrollState = rememberScrollState()
 
+    // Confirmation dialog state for the header's Abschließen icon (moved up from the old
+    // Context Info Strip, which this compact header now replaces entirely).
+    var showAbschliessenDialog by remember { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text(clientName, fontWeight = FontWeight.Bold, color = IndustrialPrimary, fontSize = 20.sp) },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White),
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
+            // Single compact header replacing the old TopAppBar + duplicate Context Info
+            // Strip (both used to show the client name/type/interval separately). Line 1 is
+            // the name; line 2 carries the system-type badge, interval and fill progress --
+            // info that used to occupy an entire second row.
+            Surface(color = Color.White, shadowElevation = 1.dp) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    IconButton(onClick = onNavigateBack, modifier = Modifier.padding(top = 4.dp)) {
                         Icon(Icons.Default.Close, contentDescription = null, tint = IndustrialPrimary)
                     }
-                },
-                actions = {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(top = 10.dp, end = 8.dp)
+                    ) {
+                        Text(
+                            text = clientName,
+                            fontWeight = FontWeight.Bold,
+                            color = IndustrialPrimary,
+                            fontSize = 16.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.padding(top = 3.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .background(IndustrialSecondaryContainer, RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(text = systemType, color = IndustrialOnSecondaryContainer, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Text(
+                                text = "$intervalText · ${(fillProgress * 100).toInt()}%",
+                                color = IndustrialOutline,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
                     if (!protocolEntity.isArchived) {
-                        IconButton(onClick = { onNavigateToEditMatrix(protocolId) }) {
+                        IconButton(onClick = { onNavigateToEditMatrix(protocolId) }, modifier = Modifier.padding(top = 2.dp)) {
                             Icon(Icons.Default.Edit, contentDescription = "Editor Modus", tint = IndustrialPrimary)
+                        }
+                        IconButton(onClick = { showAbschliessenDialog = true }, modifier = Modifier.padding(top = 2.dp)) {
+                            Icon(Icons.Default.Check, contentDescription = "Abschließen", tint = Color(0xFF15803D))
                         }
                     }
                 }
-            )
+            }
         },
-        floatingActionButton = {
+        bottomBar = {
+            // Docked segmented Aktion-selector, replacing the floating bubble-menu FAB --
+            // always visible, never overlaps the Melderliste or Hardware-Tabelle content.
             if (!protocolEntity.isArchived) {
-                Column(
-                    horizontalAlignment = Alignment.End,
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(bottom = 16.dp, end = 8.dp)
-                ) {
-                    // Modern selection bubbles overlay
-                    if (expandedFabMenu) {
-                        Card(
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color.White),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-                            border = BorderStroke(1.dp, IndustrialOutlineVariant),
-                            modifier = Modifier.padding(bottom = 4.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(8.dp),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                periodValues.forEach { valModel ->
-                                    val isSelected = activeSelectVal == valModel.value
-
-                                    Box(
-                                        modifier = Modifier
-                                            .background(
-                                                color = if (isSelected) {
-                                                    if (valModel.isDefect) IndustrialError else IndustrialPrimary
-                                                } else {
-                                                    if (valModel.isDefect) IndustrialErrorContainer.copy(alpha = 0.4f) else LightSurfaceLow
-                                                },
-                                                shape = RoundedCornerShape(20.dp)
-                                            )
-                                            .border(
-                                                width = 1.dp,
-                                                color = if (isSelected) Color.Transparent else IndustrialOutlineVariant,
-                                                shape = RoundedCornerShape(20.dp)
-                                            )
-                                            .clickable {
-                                                activeSelectVal = valModel.value
-                                                expandedFabMenu = false
-                                            }
-                                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            text = valModel.label,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 12.sp,
-                                            color = if (isSelected) Color.White else {
-                                                if (valModel.isDefect) IndustrialError else IndustrialOnSurface
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Main Active Choice Floating Action Button displaying status
-                    ExtendedFloatingActionButton(
-                        onClick = { expandedFabMenu = !expandedFabMenu },
-                        containerColor = if (activeSelectVal == "Def.") IndustrialError else IndustrialPrimary,
-                        contentColor = Color.White,
-                        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp)
+                Column(modifier = Modifier.fillMaxWidth().background(Color.White)) {
+                    HorizontalDivider(color = IndustrialOutlineVariant)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 6.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            val activeLabel = periodValues.find { it.value == activeSelectVal }?.label ?: activeSelectVal
-                            Text(text = "Aktion: $activeLabel", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        periodValues.forEach { valModel ->
+                            val isSelected = activeSelectVal == valModel.value
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        when {
+                                            isSelected && valModel.isDefect -> IndustrialError
+                                            isSelected -> IndustrialPrimary
+                                            valModel.isDefect -> IndustrialErrorContainer.copy(alpha = 0.4f)
+                                            else -> LightSurfaceLow
+                                        }
+                                    )
+                                    .clickable { activeSelectVal = valModel.value }
+                                    .padding(vertical = 10.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = valModel.label,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = if (isSelected) Color.White else if (valModel.isDefect) IndustrialError else IndustrialOnSurface
+                                )
+                            }
                         }
                     }
                 }
@@ -340,66 +351,33 @@ fun InspectionScreen(
         },
         containerColor = IndustrialBackground
     ) { innerPadding ->
+        if (showAbschliessenDialog) {
+            AlertDialog(
+                onDismissRequest = { showAbschliessenDialog = false },
+                title = { Text("Protokoll abschließen?") },
+                text = { Text("Alle Einträge werden zum Server übertragen und das Protokoll als erledigt markiert.") },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showAbschliessenDialog = false
+                            viewModel.synchronizeProtocol(protocolId)
+                            onNavigateBack()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF15803D))
+                    ) { Text("Abschließen") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showAbschliessenDialog = false }) {
+                        Text("Abbrechen")
+                    }
+                }
+            )
+        }
         Column(
             modifier = Modifier
                 .padding(innerPadding)
                 .fillMaxSize()
         ) {
-            // Context Info Strip
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(LightSurfaceLow)
-                    .padding(14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(text = clientName, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                        Box(modifier = Modifier.background(IndustrialSecondaryContainer, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp)) {
-                            Text(text = systemType, color = IndustrialOnSecondaryContainer, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                    Text(text = "Intervall: $intervalText", color = IndustrialOutline, fontSize = 12.sp)
-                }
-
-                if (!protocolEntity.isArchived) {
-                    var showAbschliessenDialog by remember { mutableStateOf(false) }
-
-                    Button(
-                        onClick = { showAbschliessenDialog = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF15803D), contentColor = Color.White),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("Abschließen", fontWeight = FontWeight.Bold)
-                    }
-
-                    if (showAbschliessenDialog) {
-                        AlertDialog(
-                            onDismissRequest = { showAbschliessenDialog = false },
-                            title = { Text("Protokoll abschließen?") },
-                            text = { Text("Alle Einträge werden zum Server übertragen und das Protokoll als erledigt markiert.") },
-                            confirmButton = {
-                                Button(
-                                    onClick = {
-                                        showAbschliessenDialog = false
-                                        viewModel.synchronizeProtocol(protocolId)
-                                        onNavigateBack()
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF15803D))
-                                ) { Text("Abschließen") }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = { showAbschliessenDialog = false }) {
-                                    Text("Abbrechen")
-                                }
-                            }
-                        )
-                    }
-                }
-            }
-
             // Fill-progress bar (left) + Zoom & Reset controls (right)
             Row(
                 modifier = Modifier
@@ -421,12 +399,7 @@ fun InspectionScreen(
                         color = IndustrialPrimary,
                         trackColor = LightSurfaceHigh
                     )
-                    Text(
-                        text = "${(fillProgress * 100).toInt()}%",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = IndustrialOnSurface
-                    )
+                    // Fill % already shown in the compact header's subtitle line -- no need to repeat it here.
                 }
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
