@@ -157,6 +157,43 @@ def _read_text_record(data, lv_pos):
     return data[lv_pos+4:te].decode('utf-16-le', errors='replace').rstrip('\x00') if tb > 0 else ''
 
 
+def _zone_embedded_text(data, mpos, span=220):
+    """
+    First non-empty text record (len | fd 00 | UTF-16 | 00 ff) inside the
+    object region starting at mpos, e.g. at mpos+192 in Type A zone objects.
+    Empty text records (a zero-length field can precede the designation) are
+    skipped. Scanned rather than hardcoded so layout shifts between
+    generations self-calibrate like the record offsets do.
+    """
+    n = len(data)
+    for off in range(0, span, 2):
+        pos = mpos + off
+        if pos + 4 > n:
+            break
+        if data[pos+2:pos+4] == b'\xfd\x00':
+            txt = _read_text_record(data, pos)
+            if txt:
+                return txt
+    return ''
+
+
+def _zone_text(data, mpos, base):
+    """
+    Designation text of a zone that has no detector record (conventional /
+    Störung zones). It sits either embedded in the zone object itself or —
+    when the zone's object pointer at mpos+4 is set — in the pointed object
+    (seen on class 0x01af conventional zones).
+    """
+    txt = _zone_embedded_text(data, mpos)
+    if txt:
+        return txt
+    if mpos + ZONE_PTR_OFF + 4 <= len(data):
+        ptr = struct.unpack_from('<I', data, mpos + ZONE_PTR_OFF)[0]
+        if ptr:
+            return _zone_embedded_text(data, ptr * OID_SLOT + base)
+    return ''
+
+
 def find_all_group_records_no_marker(data):
     """
     Scan for GROUP records in ETB files that do NOT use RECORD_MARKER (Type C).
@@ -1124,7 +1161,7 @@ def resolve_zones(data, root_entries, records):
     analog detector list by nature and are returned with record=None.
 
     `records` maps a record's lookup position to its parsed record.
-    Returns list of dicts: {grpnum, cls, variant, record_pos or None}.
+    Returns list of dicts: {grpnum, cls, variant, record_pos or None, mpos}.
     """
     base = _find_oid_base(data, root_entries)
     zones = enumerate_zones(data, root_entries, base)
@@ -1171,7 +1208,8 @@ def resolve_zones(data, root_entries, records):
             if cand in records:
                 rp = cand
         out.append({'grpnum': z['grpnum'], 'cls': z['cls'],
-                    'variant': z['variant'], 'record_pos': rp})
+                    'variant': z['variant'], 'record_pos': rp,
+                    'mpos': z['mpos']})
     return out
 
 
@@ -1490,6 +1528,13 @@ def extract_detectors(data, group_rec):
 
 
 def _build_group_dict(grpnum, text, detectors, unresolved=False, category=None, detectors_unknown=False):
+    # A conventional (Grenzwert) group has no addressable detectors — the
+    # whole group triggers as one. Represent it as exactly 1 Melder so
+    # Auslöselisten always carry a count for it.
+    if category == CATEGORY_KONVENTIONELL and not detectors:
+        detectors = [{'bus_addr': None, 'sec_addr': None,
+                      'type_code': None, 'type_name': 'Konventionell'}]
+        detectors_unknown = False
     return {
         'grpnum': grpnum,
         'text': text,
@@ -1558,11 +1603,12 @@ def parse_etb_all(filepath):
             # seq==f3 validation); fall back to the classic C layout.
             zones_c = resolve_zones(data, root['entries'], all_group_recs)
             if zones_c:
+                base_c = _find_oid_base(data, root['entries'])
                 type_c = {}
                 for z in zones_c:
                     rec = all_group_recs.get(z['record_pos']) if z['record_pos'] else None
                     type_c[z['grpnum']] = {
-                        'text': rec['text'] if rec else '',
+                        'text': rec['text'] if rec else _zone_text(data, z['mpos'], base_c),
                         'subs': rec['subs'] if rec else None,
                         'konventionell': z['cls'] in _CONVENTIONAL,
                         'stoerung': z['cls'] == ZONE_CLS_STOERUNG,
@@ -1605,6 +1651,7 @@ def parse_etb_all(filepath):
             # only fall back to the old anchor heuristics if it finds nothing.
             zones = resolve_zones(data, root['entries'], group_records)
             if zones:
+                base_b = _find_oid_base(data, root['entries'])
                 categories = find_group_categories(
                     data, all_f1_set, {f1: f3 for f1, f3 in root['entries']})
                 groups = []
@@ -1613,7 +1660,9 @@ def parse_etb_all(filepath):
                     cat = zone_category(z['cls'], categories.get(z['grpnum'], (None,))[0])
                     rp = z['record_pos']
                     if rp is None:
-                        groups.append(_build_group_dict(z['grpnum'], '', [], category=cat,
+                        groups.append(_build_group_dict(z['grpnum'],
+                                                        _zone_text(data, z['mpos'], base_b),
+                                                        [], category=cat,
                                                         detectors_unknown=True))
                     else:
                         rec = group_records[rp]
@@ -1713,13 +1762,16 @@ def parse_etb_all(filepath):
             # Every zone listed in the panel's root table must appear, even
             # when it has no analog detector list (conventional / Störung
             # zones) — the group number itself is what the Auslöseliste needs.
-            zones_a = enumerate_zones(data, root['entries'])
+            base_a = _find_oid_base(data, root['entries'])
+            zones_a = enumerate_zones(data, root['entries'], base_a)
             emitted = set(grpnum_to_gpos)
             for z in zones_a:
                 if z['grpnum'] in emitted:
                     continue
                 cat = zone_category(z['cls'], categories.get(z['grpnum'], (None,))[0])
-                groups.append(_build_group_dict(z['grpnum'], '', [], category=cat,
+                groups.append(_build_group_dict(z['grpnum'],
+                                                _zone_text(data, z['mpos'], base_a),
+                                                [], category=cat,
                                                 detectors_unknown=True))
                 emitted.add(z['grpnum'])
 
