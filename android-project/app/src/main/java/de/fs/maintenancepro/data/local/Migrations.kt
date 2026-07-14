@@ -169,3 +169,15 @@ val MIGRATION_7_8 = object : Migration(7, 8) {
         )
     }
 }
+
+/**
+ * v8 -> v9: detectorDefsJson on `protocols` -- Meldertypen + Zellfarben je
+ * Anlagentyp aus den WebUI-Einstellungen, mitgeliefert von netlink in Download-
+ * und Sync-Payloads. '{}' bis zum nächsten Sync; Editor/Prüfliste fallen dann
+ * auf detectorTypesJson und die eingebaute Farbtabelle zurück.
+ */
+val MIGRATION_8_9 = object : Migration(8, 9) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE protocols ADD COLUMN detectorDefsJson TEXT NOT NULL DEFAULT '{}'")
+    }
+}

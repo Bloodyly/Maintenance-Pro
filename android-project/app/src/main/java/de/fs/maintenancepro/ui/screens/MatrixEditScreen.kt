@@ -57,33 +57,54 @@ import org.json.JSONArray
 // Grp/Bezeichnung text fields. Painting preserves already-entered Messwerte.
 // ---------------------------------------------------------------------------
 
-/** Detector-type colors, mirroring the WebUI's gridTypeColor/-Pale maps. */
-private fun typeSolidColor(type: String): Color = when (type) {
-    "ZD" -> Color(0xFF3B82F6); "Normal" -> Color(0xFF10B981); "ZB" -> Color(0xFFEAB308)
-    "TDIFF" -> Color(0xFFFB923C); "TMAX" -> Color(0xFFEF4444); "RAS" -> Color(0xFFA855F7)
-    "LINEAR" -> Color(0xFFEC4899); "-" -> Color(0xFFF1F5F9)
-    else -> Color(0xFF94A3B8)
+/**
+ * Detector-type color, mirroring the WebUI's gridTypeHex: a configured color from the
+ * Anlagentyp's Meldepunkt-Definitionen (global cache, see MainViewModel.getMeldepunktMeta)
+ * wins if present; otherwise the same built-in fallback map the WebUI uses when nothing's
+ * configured. One hex per type is now the single source of truth -- pale cell backgrounds
+ * and the in-cell abbreviation text both derive from it, not separately configured shades.
+ */
+private fun typeSolidColor(type: String, configuredColors: Map<String, String> = emptyMap()): Color {
+    if (type == "-") return Color(0xFFF1F5F9)
+    configuredColors[type]?.let { hex -> parseHexColor(hex)?.let { return it } }
+    return when (type) {
+        "ZD" -> Color(0xFF3B82F6); "Normal", "AM" -> Color(0xFF10B981); "ZB" -> Color(0xFFEAB308)
+        "TDIFF", "TDiff" -> Color(0xFFFB923C); "TMAX", "Tmax" -> Color(0xFFEF4444); "RAS" -> Color(0xFFA855F7)
+        "LINEAR", "Linear" -> Color(0xFFEC4899); "DKM" -> Color(0xFFF43F5E); "Konventionell" -> Color(0xFF64748B)
+        "BWM" -> Color(0xFF3B82F6); "ZK" -> Color(0xFFEAB308); "RSK" -> Color(0xFFA855F7)
+        else -> Color(0xFF94A3B8)
+    }
 }
 
-private fun typePaleColor(type: String): Color = when (type) {
-    "ZD" -> Color(0xFFDBEAFE); "Normal" -> Color(0xFFD1FAE5); "ZB" -> Color(0xFFFEF9C3)
-    "TDIFF" -> Color(0xFFFFEDD5); "TMAX" -> Color(0xFFFEE2E2); "RAS" -> Color(0xFFF3E8FF)
-    "LINEAR" -> Color(0xFFFCE7F3)
-    else -> Color(0xFFF1F5F9)
+/** Pale cell background: same hue as [typeSolidColor], low alpha -- matches the WebUI's
+ * `gridTypeHex(type) + '26'` (~15% alpha) approach of deriving one shade from the other. */
+private fun typePaleColor(type: String, configuredColors: Map<String, String> = emptyMap()): Color =
+    if (type == "-") Color(0xFFF1F5F9) else typeSolidColor(type, configuredColors).copy(alpha = 0.15f)
+
+private fun parseHexColor(hex: String): Color? = try {
+    val clean = hex.removePrefix("#")
+    when (clean.length) {
+        6 -> Color((0xFF000000L or clean.toLong(16)).toInt())
+        8 -> Color(clean.toLong(16).toInt())
+        else -> null
+    }
+} catch (e: Exception) {
+    null
 }
 
-private fun typePaleTextColor(type: String): Color = when (type) {
-    "ZD" -> Color(0xFF60A5FA); "Normal" -> Color(0xFF34D399); "ZB" -> Color(0xFFCA8A04)
-    "TDIFF" -> Color(0xFFFB923C); "TMAX" -> Color(0xFFF87171); "RAS" -> Color(0xFFC084FC)
-    "LINEAR" -> Color(0xFFF472B6)
-    else -> Color(0xFF94A3B8)
-}
-
-/** Short in-cell label, mirroring the WebUI's gridTypeText map. */
-private fun typeAbbrev(type: String): String = when (type) {
-    "ZD" -> "ZD"; "Normal" -> "N"; "ZB" -> "ZB"; "TDIFF" -> "TD"
-    "TMAX" -> "TM"; "RAS" -> "RS"; "LINEAR" -> "LN"; "-" -> ""
-    else -> type
+/** Short in-cell label -- a configured Kurzzeichen from the Anlagentypen-Editor wins if
+ * present, mirroring the WebUI's gridTypeText(); otherwise the same built-in fallback map. */
+private fun typeAbbrev(type: String, configuredKurzzeichen: Map<String, String> = emptyMap()): String {
+    if (type == "-") return ""
+    configuredKurzzeichen[type]?.let { return it }
+    val map = mapOf(
+        "ZD" to "ZD", "Normal" to "N", "AM" to "AM", "ZB" to "ZB",
+        "TDIFF" to "TD", "TDiff" to "TD", "TMAX" to "TM", "Tmax" to "TM",
+        "RAS" to "RS", "LINEAR" to "LN", "Linear" to "LN",
+        "DKM" to "DK", "Konventionell" to "KV", "IO" to "IO", "Steu" to "ST",
+        "MASI" to "MS", "Koppler" to "KO"
+    )
+    return map[type] ?: if (type.length > 3) type.take(2) else type
 }
 
 /** One Gerät (device) section of the editor: its groups plus a numeric slot lookup. */
@@ -125,6 +146,16 @@ fun MatrixEditScreen(
 
     val groupsState by viewModel.getGroupsFlow(protocolId).collectAsState(initial = emptyList())
     val cellsState by viewModel.getCellsFlow(protocolId).collectAsState(initial = emptyList())
+
+    // WebUI-configured Zellfarben/Kurzzeichen for this protocol's Anlagentyp -- read from the
+    // global, protocol-independent "Anlagentypen neu laden" cache (MainViewModel.getMeldepunktMeta),
+    // NOT anything stored per-protocol. Empty until the button has ever been pressed, falling
+    // back to typeSolidColor/typeAbbrev's built-in maps in that case.
+    val meldepunktMeta = remember(protocolEntity.systemType) {
+        viewModel.getMeldepunktMeta(protocolEntity.systemType)
+    }
+    val configuredColors = meldepunktMeta?.colors ?: emptyMap()
+    val configuredKurzzeichen = meldepunktMeta?.kurzzeichen ?: emptyMap()
 
     // Paint palette choices: detector types from the protocol definition, with the
     // eraser ('-') always available as first entry -- same lineup as the WebUI palette.
@@ -230,7 +261,7 @@ fun MatrixEditScreen(
                             val selected = paintType == dt
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
-                                color = if (selected) typeSolidColor(dt) else Color.White,
+                                color = if (selected) typeSolidColor(dt, configuredColors) else Color.White,
                                 border = androidx.compose.foundation.BorderStroke(
                                     1.dp,
                                     if (selected) Color.Transparent else IndustrialOutlineVariant
@@ -284,6 +315,8 @@ fun MatrixEditScreen(
                             paintType = paintType,
                             pendingPaint = pendingPaint,
                             viewModel = viewModel,
+                            configuredColors = configuredColors,
+                            configuredKurzzeichen = configuredKurzzeichen,
                             onColsChange = { newCols -> colsOverride[device.prefix] = newCols }
                         )
                     }
@@ -301,6 +334,8 @@ private fun DeviceEditorSection(
     paintType: String,
     pendingPaint: MutableMap<String, String>,
     viewModel: MainViewModel,
+    configuredColors: Map<String, String>,
+    configuredKurzzeichen: Map<String, String>,
     onColsChange: (Int) -> Unit
 ) {
     val context = LocalContext.current
@@ -522,6 +557,8 @@ private fun DeviceEditorSection(
                                             value = cell?.value ?: "",
                                             width = colWidth,
                                             height = rowHeight,
+                                            configuredColors = configuredColors,
+                                            configuredKurzzeichen = configuredKurzzeichen,
                                             onClick = {
                                                 val newType = currentPaintType.value
                                                 pendingPaint["${g.groupId}::$c"] = newType
@@ -741,6 +778,8 @@ private fun EditorCell(
     value: String,
     width: androidx.compose.ui.unit.Dp,
     height: androidx.compose.ui.unit.Dp,
+    configuredColors: Map<String, String>,
+    configuredKurzzeichen: Map<String, String>,
     onClick: () -> Unit
 ) {
     val inactive = type == "-" || type.isEmpty()
@@ -748,7 +787,7 @@ private fun EditorCell(
         modifier = Modifier
             .width(width)
             .height(height)
-            .background(if (inactive) Color(0xFFF8FAFC) else typePaleColor(type))
+            .background(if (inactive) Color(0xFFF8FAFC) else typePaleColor(type, configuredColors))
             .border(0.5.dp, IndustrialOutlineVariant)
             .clickable { onClick() },
         contentAlignment = Alignment.Center
@@ -761,10 +800,10 @@ private fun EditorCell(
                 color = if (value == "Def." || value == "Fehler") Color(0xFFB91C1C) else Color(0xFF0F172A)
             )
             !inactive -> Text(
-                text = typeAbbrev(type),
+                text = typeAbbrev(type, configuredKurzzeichen),
                 fontSize = 9.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = typePaleTextColor(type)
+                color = typeSolidColor(type, configuredColors)
             )
         }
     }

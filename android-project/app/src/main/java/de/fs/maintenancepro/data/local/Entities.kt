@@ -30,6 +30,12 @@ data class ProtocolEntity(
     val applicableValuesJson: String = "[]",
     val detectorTypesJson: String = "[]",
 
+    // Meldertypen + Zellfarben je Anlagentyp aus den WebUI-Einstellungen, JSON:
+    // {"BMA": {"detectors": [...], "values": [...], "colors": {"AM": "#10B981", ...}}, ...}
+    // Editor-Palette und Prüfliste ziehen ihre Typen/Farben hieraus; Fallback ist
+    // detectorTypesJson bzw. die eingebaute Farbtabelle.
+    val detectorDefsJson: String = "{}",
+
     val lastEditedAt: Long = 0L,
 
     val lastOpenedAt: Long = 0L,

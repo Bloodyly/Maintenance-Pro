@@ -292,6 +292,90 @@ DB_PATH = os.environ.get(
 )
 SERVER_CODEWORD = os.environ.get("SERVER_CODEWORD", "77-XJ-900-PLX-22")
 
+# ---- Meldepunkt-Definitionen (Meldertypen + Zellfarben je Anlagentyp) ----
+# Gepflegt in der WebUI (settings_{mandant}.json, Anlagentypen-Editor); hier
+# nur gelesen und den App-Payloads beigelegt, damit App-Editor und Prüfliste
+# mit exakt denselben Typen/Farben arbeiten wie die WebUI. Kompakte Kopie der
+# webui-Logik -- die Container teilen sich nur die protocol_db, keinen Code.
+
+KNOWN_DETECTOR_COLORS = {
+    "AM": "#10B981", "Normal": "#10B981", "DKM": "#F43F5E", "Konventionell": "#64748B",
+    "ZD": "#3B82F6", "ZB": "#EAB308", "TDiff": "#FB923C", "TDIFF": "#FB923C",
+    "Tmax": "#EF4444", "TMAX": "#EF4444", "RAS": "#A855F7",
+    "Linear": "#EC4899", "LINEAR": "#EC4899", "BWM": "#3B82F6", "ZK": "#EAB308", "RSK": "#A855F7",
+}
+FALLBACK_COLOR_CYCLE = ["#3B82F6", "#10B981", "#EAB308", "#FB923C", "#A855F7", "#EC4899", "#06B6D4", "#84CC16"]
+
+# Nur wo eine Bedeutung wirklich belegt ist (siehe esser_etb_parser.py's
+# eigener Kommentar zu "AM"); alles andere defaultet auf den Code selbst.
+KNOWN_DETECTOR_LABELS = {
+    "AM": "Automatischer Melder",
+    "Konventionell": "Konventionell",
+}
+
+# 1:1 aus der bisherigen hartcodierten WebUI/Android-Anzeige übernommen.
+KNOWN_DETECTOR_KURZZEICHEN = {
+    "AM": "AM", "Normal": "N", "DKM": "DK", "IO": "IO", "Steu": "ST", "MASI": "MS",
+    "Koppler": "KO", "Konventionell": "KV", "ZD": "ZD", "ZB": "ZB",
+    "TDiff": "TD", "TDIFF": "TD", "Tmax": "TM", "TMAX": "TM", "RAS": "RS",
+    "Linear": "LN", "LINEAR": "LN", "BWM": "BWM", "ZK": "ZK", "RSK": "RSK",
+}
+
+DEFAULT_MELDEPUNKT_DEFS = {
+    "BMA": {"detectors": ["-", "AM", "DKM", "IO", "Steu", "MASI", "Koppler", "Konventionell",
+                          "ZD", "ZB", "TDiff", "Tmax", "RAS", "Linear"],
+            "values": ["CHECK", "H1", "H2", "Def."]},
+    "EMA": {"detectors": ["-", "Normal", "BWM", "ZK", "RSK", "Lichtschranke", "Glasbruch", "Körperschall"],
+            "values": ["CHECK", "Def."]},
+    "ELA": {"detectors": ["-", "Normal", "Innenlautsprecher", "Außenlautsprecher"], "values": ["CHECK", "Def."]},
+    "Lichtruf": {"detectors": ["-", "Normal", "AT", "BT", "ZT", "EM", "PN", "Display"], "values": ["CHECK", "Def."]},
+    "SLA": {"detectors": ["-", "Normal", "SLA"], "values": ["CHECK", "Def."]},
+}
+
+
+def _fill_detector_colors(mp_def):
+    """Ergänzt colors/labels/kurzzeichen für jeden Detector -- Spiegel von
+    webui/app.py's fill_detector_colors (siehe dort für Details)."""
+    colors = dict(mp_def.get("colors") or {})
+    labels = dict(mp_def.get("labels") or {})
+    kurzzeichen = dict(mp_def.get("kurzzeichen") or {})
+    cycle_idx = 0
+    for det in mp_def.get("detectors", []):
+        if det == "-":
+            continue
+        if det not in colors:
+            if det in KNOWN_DETECTOR_COLORS:
+                colors[det] = KNOWN_DETECTOR_COLORS[det]
+            else:
+                colors[det] = FALLBACK_COLOR_CYCLE[cycle_idx % len(FALLBACK_COLOR_CYCLE)]
+                cycle_idx += 1
+        if det not in labels:
+            labels[det] = KNOWN_DETECTOR_LABELS.get(det, det)
+        if det not in kurzzeichen:
+            kurzzeichen[det] = KNOWN_DETECTOR_KURZZEICHEN.get(det, det[:2] if len(det) > 3 else det)
+    mp_def["colors"] = colors
+    mp_def["labels"] = labels
+    mp_def["kurzzeichen"] = kurzzeichen
+    return mp_def
+
+
+def load_meldepunkt_definitionen(mandant_id):
+    """{type_id: meldepunkt_definitionen} für einen Mandanten, Farben/Bezeichnungen/
+    Kurzzeichen aufgefüllt. Auch die Grundlage für /protocols/definitions --
+    liefert exakt das, was settings_{mandant}.json für alle Anlagentypen trägt."""
+    defs = {t: dict(d) for t, d in DEFAULT_MELDEPUNKT_DEFS.items()}
+    settings_path = os.path.join(os.path.dirname(DB_PATH), f"settings_{mandant_id or 'standard'}.json")
+    try:
+        with open(settings_path, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+        for at in settings.get("anlagentypen", []):
+            mp = at.get("meldepunkt_definitionen")
+            if at.get("type_id") and mp:
+                defs[at["type_id"]] = dict(mp)
+    except Exception:
+        pass
+    return {t: _fill_detector_colors(d) for t, d in defs.items()}
+
 # --- LIVE SESSION TRACKING ---
 active_live_sessions = {}
 
@@ -564,6 +648,23 @@ def auth_check():
     except Exception as e:
         return jsonify({"error": "RESPONSE_ENCRYPT_FAILED", "message": str(e)}), 500
 
+@app.route("/protocols/definitions", methods=["POST"])
+def protocols_definitions():
+    """Anlagentypen-Meldepunkt-Definitionen (Detektortypen + Farben/Bezeichnungen/
+    Kurzzeichen) für den Mandanten des Technikers -- die App ruft dies über den
+    'Anlagentypen neu laden'-Button auf, unabhängig von jedem Protokoll-Sync,
+    damit sich Meldertypen/Farben ändern lassen ohne die App neu zu bauen."""
+    success, auth_details = authenticate_request()
+    if not success:
+        return jsonify(auth_details), 401
+
+    try:
+        result = load_meldepunkt_definitionen(auth_details["mandant_id"])
+        encrypted_resp = encrypt_payload(json.dumps(result), SERVER_CODEWORD)
+        return encrypted_resp, 200
+    except Exception as e:
+        return jsonify({"error": "DEFINITIONS_LOAD_FAILED", "message": str(e)}), 500
+
 @app.route("/protocols/search", methods=["POST"])
 def protocols_search():
     success, auth_details = authenticate_request()
@@ -694,18 +795,20 @@ def protocol_download(id):
         except Exception:
             col_keys = []
 
+    p_mandant = (p["mandant_id"] if "mandant_id" in p.keys() else "") or "standard"
     protocol_json = {
         "protocol_id": p["id"],
         "client_name": p["name"],
         "contract_number": p["contract_number"],
         "interval": p["interval"],
         "system_type": p["system_type"],
-        "mandant_id": (p["mandant_id"] if "mandant_id" in p.keys() else "") or "standard",
+        "mandant_id": p_mandant,
         "definition": {
             "columns": [{"key": c, "label": str(c)} for c in col_keys],
             "applicable_values": [{"value": v, "label": v, "is_defect": v == "Def."} for v in json.loads(p["applicable_values"])],
             "detector_types": json.loads(p["detector_types"])
         },
+        "meldepunkt_definitionen": load_meldepunkt_definitionen(p_mandant),
         "rows": rows_data,
         "hardware": hardware_data
     }
@@ -926,6 +1029,9 @@ def protocols_live_sync(id):
             "applicable_values": [{"value": v, "label": v, "is_defect": v == "Def."} for v in json.loads(p["applicable_values"])],
             "detector_types": json.loads(p["detector_types"])
         },
+        "meldepunkt_definitionen": load_meldepunkt_definitionen(
+            (p["mandant_id"] if "mandant_id" in p.keys() else "") or "standard"
+        ),
         "rows": rows_data,
         "hardware": hardware_data
     }
@@ -961,6 +1067,7 @@ def _build_protocol_sync_payload(cursor, p):
     except Exception:
         cols, app_vals, det_types = [], [], []
 
+    p_mandant = (p["mandant_id"] if "mandant_id" in p.keys() else "") or "standard"
     return {
         "id": p["id"],
         "name": p["name"],
@@ -970,8 +1077,9 @@ def _build_protocol_sync_payload(cursor, p):
         "system_type": p["system_type"],
         "status": p["status"],
         "updated_at": (p["updated_at"] if "updated_at" in p.keys() else 0) or 0,
-        "mandant_id": (p["mandant_id"] if "mandant_id" in p.keys() else "") or "standard",
+        "mandant_id": p_mandant,
         "definition": {"columns": cols, "applicable_values": app_vals, "detector_types": det_types},
+        "meldepunkt_definitionen": load_meldepunkt_definitionen(p_mandant),
         "rows": rows_data,
         "hardware": hardware_data,
     }

@@ -1043,16 +1043,42 @@
 
                                         <div>
                                             <label class="block text-[10px] font-semibold text-slate-500 mb-1">Meldertypen</label>
-                                            <div class="flex flex-wrap gap-1.5 mb-1" x-data="{ newDet: '' }">
+                                            <div class="flex items-center gap-1.5 mb-1 px-1">
+                                                <span class="w-14 text-[9px] font-bold text-slate-400 uppercase">Code</span>
+                                                <span class="flex-1 text-[9px] font-bold text-slate-400 uppercase">Bezeichnung</span>
+                                                <span class="w-12 text-[9px] font-bold text-slate-400 uppercase text-center">Kz.</span>
+                                                <span class="w-5"></span>
+                                                <span class="w-3"></span>
+                                            </div>
+                                            <div class="space-y-1 mb-1" x-data="{ newDet: '' }">
                                                 <template x-for="(d, di) in atForm.meldepunkt_definitionen.detectors" :key="di">
-                                                    <span class="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded text-[10px] font-mono font-semibold">
-                                                        <span x-text="d"></span>
-                                                        <button type="button" @click="atForm.meldepunkt_definitionen.detectors.splice(di,1)" class="text-slate-400 hover:text-red-500 ml-0.5">×</button>
-                                                    </span>
+                                                    <div class="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded px-2 py-1">
+                                                        <span class="font-mono font-semibold text-[10px] text-slate-700 w-14 truncate" x-text="d" :title="d"></span>
+                                                        <template x-if="d !== '-'">
+                                                            <input type="text" x-model="atForm.meldepunkt_definitionen.labels[d]"
+                                                                class="flex-1 border border-slate-200 rounded px-1.5 py-0.5 text-[10px] bg-white"
+                                                                placeholder="Bezeichnung">
+                                                        </template>
+                                                        <template x-if="d !== '-'">
+                                                            <input type="text" x-model="atForm.meldepunkt_definitionen.kurzzeichen[d]"
+                                                                class="w-12 border border-slate-200 rounded px-1.5 py-0.5 text-[10px] font-mono bg-white text-center"
+                                                                placeholder="Kz." maxlength="4">
+                                                        </template>
+                                                        <template x-if="d !== '-'">
+                                                            <input type="color" title="Zellfarbe (blass als Zellhintergrund)"
+                                                                class="w-5 h-5 p-0 border border-slate-300 rounded cursor-pointer bg-transparent shrink-0"
+                                                                :value="atForm.meldepunkt_definitionen.colors?.[d] || '#94a3b8'"
+                                                                @input="atForm.meldepunkt_definitionen.colors[d] = $event.target.value">
+                                                        </template>
+                                                        <template x-if="d === '-'">
+                                                            <span class="flex-1 text-[10px] text-slate-400 italic">(Leerfeld / kein Melder)</span>
+                                                        </template>
+                                                        <button type="button" @click="atForm.meldepunkt_definitionen.detectors.splice(di,1)" class="text-slate-400 hover:text-red-500 shrink-0">×</button>
+                                                    </div>
                                                 </template>
                                                 <div class="flex items-center gap-1 mt-1">
                                                     <input type="text" x-model="newDet" @keydown.enter.prevent="atFormAddDet(newDet); newDet=''"
-                                                        class="border border-slate-200 rounded px-2 py-1 text-[10px] font-mono w-28 bg-slate-50" placeholder="+ Typ">
+                                                        class="border border-slate-200 rounded px-2 py-1 text-[10px] font-mono w-28 bg-slate-50" placeholder="+ Typ-Code">
                                                     <button type="button" @click="atFormAddDet(newDet); newDet=''" class="px-2 py-1 bg-[#003D9B] text-white rounded text-[10px] font-bold">+</button>
                                                 </div>
                                             </div>
@@ -1669,8 +1695,9 @@
                                     :title="dt"
                                     class="px-2 py-1 rounded text-[10px] font-bold transition border"
                                     :class="gridPaintType === dt
-                                        ? 'text-white border-transparent shadow ' + gridTypeColor(dt)
+                                        ? 'text-white border-transparent shadow'
                                         : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400'"
+                                    :style="gridPaintType === dt ? 'background-color:' + (dt === '-' ? '#64748b' : gridTypeHex(dt)) : ''"
                                     x-text="dt === '-' ? '✕' : dt">
                                 </button>
                             </template>
@@ -1756,11 +1783,12 @@
                                             @mousedown.prevent="if(!cellsEditorReadOnly) gridStartPaint(rIdx+1, c)"
                                             @mouseenter="if(!cellsEditorReadOnly) gridMovePaint(rIdx+1, c)">
                                             <div class="w-full h-7 flex items-center justify-center text-[9px] font-bold transition"
-                                                :class="(!gridCell(rIdx+1, c).type || gridCell(rIdx+1, c).type === '-')
-                                                    ? 'bg-slate-100'
-                                                    : gridTypeColorPale(gridCell(rIdx+1, c).type)">
+                                                :class="(!gridCell(rIdx+1, c).type || gridCell(rIdx+1, c).type === '-') ? 'bg-slate-100' : ''"
+                                                :style="(!gridCell(rIdx+1, c).type || gridCell(rIdx+1, c).type === '-')
+                                                    ? ''
+                                                    : 'background-color:' + gridTypeHexPale(gridCell(rIdx+1, c).type)">
                                                 <span x-show="(!gridCell(rIdx+1, c).type || gridCell(rIdx+1, c).type === '-') ? false : !gridCell(rIdx+1, c).value"
-                                                      :class="gridTypeTextPale(gridCell(rIdx+1, c).type)"
+                                                      :style="'color:' + gridTypeHex(gridCell(rIdx+1, c).type)"
                                                       class="opacity-60 font-semibold text-[9px]"
                                                       x-text="gridTypeText(gridCell(rIdx+1, c).type)"></span>
                                                 <span x-show="!!gridCell(rIdx+1, c).value"
@@ -2039,7 +2067,7 @@
                             <div class="flex flex-wrap gap-1 ml-1">
                                 <template x-for="t in etbTotalStats().types" :key="t">
                                     <span class="px-1.5 py-0.5 rounded text-[10px] font-bold text-white"
-                                          :class="gridTypeColor(t)"
+                                          :style="'background-color:' + gridTypeHex(t)"
                                           x-text="t"></span>
                                 </template>
                                 <span x-show="etbTotalStats().types.length === 0" class="text-slate-400">—</span>
@@ -2240,7 +2268,7 @@
                         name: "Brandmeldeanlage",
                         color: "bg-red-50 text-red-800 border-red-200",
                         badgeColor: "bg-red-500",
-                        detectors: ["-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR"],
+                        detectors: ["-", "AM", "DKM", "Konventionell", "ZD", "ZB", "TDiff", "Tmax", "RAS", "Linear"],
                         values: ["CHECK", "H1", "H2", "Def."],
                     },
                     "EMA": {
@@ -3118,7 +3146,7 @@
                     this.atForm = {
                         type_id: '', type_name: '', taifun_typ_id: null, active: true,
                         badge: '', badge_color: 'red',
-                        meldepunkt_definitionen: { detectors: ['-', 'Normal'], values: ['CHECK', 'Def.'], columns: ['1','2','3','4'] },
+                        meldepunkt_definitionen: { detectors: ['-', 'Normal'], values: ['CHECK', 'Def.'], columns: ['1','2','3','4'], colors: {}, labels: {}, kurzzeichen: {} },
                         zusatz_tabelle: null,
                         _isNew: true
                     };
@@ -3126,6 +3154,13 @@
 
                 openEditAnlagentyp(t) {
                     this.atForm = JSON.parse(JSON.stringify(t));
+                    // Ältere Settings-Dateien haben noch keine colors-/labels-/
+                    // kurzzeichen-Maps -- ohne sie würden die Editor-Felder ins
+                    // Leere schreiben.
+                    const mp = this.atForm.meldepunkt_definitionen;
+                    if (!mp.colors) mp.colors = {};
+                    if (!mp.labels) mp.labels = {};
+                    if (!mp.kurzzeichen) mp.kurzzeichen = {};
                     this.atForm._isNew = false;
                 },
 
@@ -3199,8 +3234,18 @@
 
                 atFormAddDet(val) {
                     val = val.trim();
-                    if (val && this.atForm && !this.atForm.meldepunkt_definitionen.detectors.includes(val))
+                    if (val && this.atForm && !this.atForm.meldepunkt_definitionen.detectors.includes(val)) {
                         this.atForm.meldepunkt_definitionen.detectors.push(val);
+                        if (val !== '-') {
+                            const mp = this.atForm.meldepunkt_definitionen;
+                            if (!mp.labels) mp.labels = {};
+                            if (!mp.kurzzeichen) mp.kurzzeichen = {};
+                            if (!mp.colors) mp.colors = {};
+                            if (!(val in mp.labels)) mp.labels[val] = val;
+                            if (!(val in mp.kurzzeichen)) mp.kurzzeichen[val] = val.length > 3 ? val.slice(0, 2) : val;
+                            if (!(val in mp.colors)) mp.colors[val] = '#94a3b8';
+                        }
+                    }
                 },
                 atFormAddVal(val) {
                     val = val.trim();
@@ -3281,33 +3326,30 @@
                 // Grid helper functions
                 gridKey(r, c) { return r + '_' + c; },
                 gridCell(r, c) { return this.gridCells[this.gridKey(r, c)] || { type: '-', value: '' }; },
-                gridTypeColor(type) {
+                // Zellfarben kommen aus den Meldepunkt-Definitionen der Einstellungen
+                // (cellsEditorDef.colors, je Anlagentyp konfigurierbar) -- die Map hier
+                // ist nur noch Fallback für Typen ohne konfigurierte Farbe.
+                gridTypeHex(type) {
+                    const configured = this.cellsEditorDef?.colors?.[type];
+                    if (configured) return configured;
                     const map = {
-                        'ZD': 'bg-blue-500', 'Normal': 'bg-emerald-500', 'ZB': 'bg-yellow-500',
-                        'TDIFF': 'bg-orange-400', 'TMAX': 'bg-red-500', 'RAS': 'bg-purple-500',
-                        'LINEAR': 'bg-pink-500', '-': 'bg-slate-100'
+                        'ZD': '#3b82f6', 'Normal': '#10b981', 'AM': '#10b981', 'ZB': '#eab308',
+                        'TDIFF': '#fb923c', 'TDiff': '#fb923c', 'TMAX': '#ef4444', 'Tmax': '#ef4444',
+                        'RAS': '#a855f7', 'LINEAR': '#ec4899', 'Linear': '#ec4899',
+                        'DKM': '#f43f5e', 'Konventionell': '#64748b'
                     };
-                    return map[type] || 'bg-slate-400';
+                    return map[type] || '#94a3b8';
                 },
-                gridTypeColorPale(type) {
-                    const map = {
-                        'ZD': 'bg-blue-100', 'Normal': 'bg-emerald-100', 'ZB': 'bg-yellow-100',
-                        'TDIFF': 'bg-orange-100', 'TMAX': 'bg-red-100', 'RAS': 'bg-purple-100',
-                        'LINEAR': 'bg-pink-100',
-                    };
-                    return map[type] || 'bg-slate-100';
-                },
-                gridTypeTextPale(type) {
-                    const map = {
-                        'ZD': 'text-blue-400', 'Normal': 'text-emerald-400', 'ZB': 'text-yellow-500',
-                        'TDIFF': 'text-orange-400', 'TMAX': 'text-red-400', 'RAS': 'text-purple-400',
-                        'LINEAR': 'text-pink-400',
-                    };
-                    return map[type] || 'text-slate-400';
+                gridTypeHexPale(type) {
+                    return this.gridTypeHex(type) + '26'; // ~15% Alpha als blasser Zellhintergrund
                 },
                 gridTypeText(type) {
-                    const map = { 'ZD': 'ZD', 'Normal': 'N', 'ZB': 'ZB', 'TDIFF': 'TD', 'TMAX': 'TM', 'RAS': 'RS', 'LINEAR': 'LN', '-': '' };
-                    return map[type] || (type || '');
+                    if (!type || type === '-') return '';
+                    const configured = this.cellsEditorDef?.kurzzeichen?.[type];
+                    if (configured) return configured;
+                    const map = { 'Normal': 'N', 'TDIFF': 'TD', 'TDiff': 'TD', 'TMAX': 'TM', 'Tmax': 'TM',
+                        'RAS': 'RS', 'LINEAR': 'LN', 'Linear': 'LN', 'DKM': 'DK', 'Konventionell': 'KV' };
+                    return map[type] || (type.length > 3 ? type.slice(0, 2) : type);
                 },
                 intervalBadgeList(interval) {
                     const iv = (interval || '').toLowerCase();

@@ -313,7 +313,15 @@ DEFAULT_ANLAGENTYPEN = [
         "taifun_typ_id": 31, "active": True,
         "badge": "BMA", "badge_color": "red",
         "meldepunkt_definitionen": {
-            "detectors": ["-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR"],
+            # Vokabular des ETB-Decoders (esser_etb_parser.py TYPE_NAMES) zuerst --
+            # AM/DKM/IO/Steu/MASI/Koppler/Konventionell sind alles, was der Decoder
+            # tatsächlich aus echten Panel-Daten erzeugen kann. Die übrigen Typen
+            # (ZD, ZB, TDiff, Tmax, RAS, Linear) kommen nie vom Decoder (der fasst
+            # z.B. alle automatischen Melder inkl. Wärmemelder in "AM" zusammen) --
+            # sie bleiben nur für ältere manuelle/TAIFUN-Verträge ohne ETB-Import
+            # erhalten, damit deren Bestandsdaten keinen unbekannten Typ zeigen.
+            "detectors": ["-", "AM", "DKM", "IO", "Steu", "MASI", "Koppler", "Konventionell",
+                          "ZD", "ZB", "TDiff", "Tmax", "RAS", "Linear"],
             "values": ["CHECK", "H1", "H2", "Def."],
             "columns": ["1","2","3","4","5","6","7","8"]
         },
@@ -401,6 +409,73 @@ DEFAULT_ANLAGENTYPEN = [
     },
 ]
 
+# Zellfarben je Meldertyp (Hex-Vollton). Bekannte Typen bekommen feste Farben,
+# unbekannte zyklisch eine aus der Fallback-Palette. Die blasse Zellhintergrund-
+# Variante wird client-seitig aus dem Vollton abgeleitet, damit nur EIN Wert
+# konfiguriert werden muss.
+KNOWN_DETECTOR_COLORS = {
+    "AM": "#10B981", "Normal": "#10B981", "DKM": "#F43F5E", "Konventionell": "#64748B",
+    "ZD": "#3B82F6", "ZB": "#EAB308", "TDiff": "#FB923C", "TDIFF": "#FB923C",
+    "Tmax": "#EF4444", "TMAX": "#EF4444", "RAS": "#A855F7",
+    "Linear": "#EC4899", "LINEAR": "#EC4899", "BWM": "#3B82F6", "ZK": "#EAB308", "RSK": "#A855F7",
+}
+FALLBACK_COLOR_CYCLE = ["#3B82F6", "#10B981", "#EAB308", "#FB923C", "#A855F7", "#EC4899", "#06B6D4", "#84CC16"]
+
+# Bekannte Bezeichnungen -- nur wo eine Bedeutung wirklich belegt ist (siehe
+# esser_etb_parser.py's eigener Kommentar zu "AM"); alles andere defaultet auf
+# den Code selbst und ist im Anlagentypen-Editor frei umbenennbar.
+KNOWN_DETECTOR_LABELS = {
+    "AM": "Automatischer Melder",
+    "Konventionell": "Konventionell",
+}
+
+# Kurzzeichen-Defaults 1:1 aus der bisherigen hartcodierten WebUI-Grid-Anzeige
+# (gridTypeText) und Android (typeAbbrev) übernommen -- jetzt Daten statt Code,
+# aber bewusst keine neuen Abkürzungen erfunden.
+KNOWN_DETECTOR_KURZZEICHEN = {
+    "AM": "AM", "Normal": "N", "DKM": "DK", "IO": "IO", "Steu": "ST", "MASI": "MS",
+    "Koppler": "KO", "Konventionell": "KV", "ZD": "ZD", "ZB": "ZB",
+    "TDiff": "TD", "TDIFF": "TD", "Tmax": "TM", "TMAX": "TM", "RAS": "RS",
+    "Linear": "LN", "LINEAR": "LN", "BWM": "BWM", "ZK": "ZK", "RSK": "RSK",
+}
+
+
+def fill_detector_colors(mp_def):
+    """Ergänzt mp_def['colors']/['labels']/['kurzzeichen'] um fehlende Einträge,
+    sodass jeder Detector (außer '-') Farbe, Bezeichnung und Kurzzeichen hat --
+    vorhandene (vom Nutzer im Anlagentypen-Editor gesetzte) bleiben unangetastet."""
+    if not isinstance(mp_def, dict):
+        return mp_def
+    colors = mp_def.get("colors") or {}
+    labels = mp_def.get("labels") or {}
+    kurzzeichen = mp_def.get("kurzzeichen") or {}
+    cycle_idx = 0
+    for det in mp_def.get("detectors", []):
+        if det == "-":
+            continue
+        if det not in colors:
+            if det in KNOWN_DETECTOR_COLORS:
+                colors[det] = KNOWN_DETECTOR_COLORS[det]
+            else:
+                colors[det] = FALLBACK_COLOR_CYCLE[cycle_idx % len(FALLBACK_COLOR_CYCLE)]
+                cycle_idx += 1
+        if det not in labels:
+            labels[det] = KNOWN_DETECTOR_LABELS.get(det, det)
+        if det not in kurzzeichen:
+            kurzzeichen[det] = KNOWN_DETECTOR_KURZZEICHEN.get(det, det[:2] if len(det) > 3 else det)
+    mp_def["colors"] = colors
+    mp_def["labels"] = labels
+    mp_def["kurzzeichen"] = kurzzeichen
+    return mp_def
+
+
+def _fill_settings_colors(settings):
+    for at in settings.get("anlagentypen", []):
+        if at.get("meldepunkt_definitionen"):
+            fill_detector_colors(at["meldepunkt_definitionen"])
+    return settings
+
+
 def _settings_path_for(mandant_id):
     return os.path.join(os.path.dirname(DB_PATH), f"settings_{mandant_id}.json")
 
@@ -435,10 +510,10 @@ def load_settings(mandant_id=None):
                 loaded = json.load(f)
             if "anlagentypen" not in loaded:
                 loaded["anlagentypen"] = DEFAULT_ANLAGENTYPEN
-            return loaded
+            return _fill_settings_colors(loaded)
         except Exception:
             pass
-    return default_settings
+    return _fill_settings_colors(default_settings)
 
 def save_settings(settings, mandant_id=None):
     if mandant_id is None:
@@ -1869,6 +1944,8 @@ def get_cells(protocol_id, group_id):
                 mp_def = at.get("meldepunkt_definitionen")
                 zusatz_tabelle = at.get("zusatz_tabelle")
                 break
+    if mp_def is not None:
+        fill_detector_colors(mp_def)
 
     return jsonify({
         "success": True,

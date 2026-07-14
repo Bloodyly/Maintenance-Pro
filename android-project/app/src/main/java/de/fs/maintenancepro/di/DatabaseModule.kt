@@ -14,6 +14,7 @@ import de.fs.maintenancepro.data.local.MIGRATION_4_5
 import de.fs.maintenancepro.data.local.MIGRATION_5_6
 import de.fs.maintenancepro.data.local.MIGRATION_6_7
 import de.fs.maintenancepro.data.local.MIGRATION_7_8
+import de.fs.maintenancepro.data.local.MIGRATION_8_9
 import de.fs.maintenancepro.data.local.ProtocolDao
 import de.fs.maintenancepro.data.local.ProtocolGroupDao
 import de.fs.maintenancepro.data.local.ServerConfigDao
@@ -34,7 +35,7 @@ object DatabaseModule {
             MaintenanceDatabase::class.java,
             "maintenance_pro.db"
         )
-            .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+            .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
             .fallbackToDestructiveMigration() // last-resort net for any future unhandled version jump
             .build()
     }

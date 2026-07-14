@@ -1468,100 +1468,132 @@ class MainViewModel @Inject constructor(
         return prefs.getString("system_definitions", null)
     }
 
-    suspend fun reloadSystemDefinitionsOnServer(): Boolean {
+    /** Real outcome of a definitions reload -- SettingsScreen shows a different
+     * Toast for each, instead of the previous "always looks successful" fallback. */
+    enum class DefinitionsSyncResult { SERVER_OK, OFFLINE_FALLBACK, ERROR }
+
+    suspend fun reloadSystemDefinitionsOnServer(): DefinitionsSyncResult {
+        // Only seed the hardcoded fallback if nothing is cached yet -- never let an
+        // offline attempt or a server error clobber a previously successful sync
+        // with older baked-in defaults.
+        fun seedFallbackIfEmpty() {
+            if (getSystemDefinitionsString() == null) {
+                prefs.edit().putString("system_definitions", getFallbackDefinitionsJson()).apply()
+            }
+        }
         if (_isOffline.value) {
-            // Offline/Mock simulation fallback
-            val testJson = getFallbackDefinitionsJson()
-            prefs.edit().putString("system_definitions", testJson).apply()
-            return true
+            seedFallbackIfEmpty()
+            return DefinitionsSyncResult.OFFLINE_FALLBACK
         }
         return try {
             val response = apiService.loadSystemDefinitions()
             if (response.isSuccessful && response.body() != null) {
-                val jsonStr = response.body()!!
-                prefs.edit().putString("system_definitions", jsonStr).apply()
-                true
+                prefs.edit().putString("system_definitions", response.body()!!).apply()
+                DefinitionsSyncResult.SERVER_OK
             } else {
-                // Return true even on HTTP failure by using fallback cache so the user experience is smooth
-                val testJson = getFallbackDefinitionsJson()
-                prefs.edit().putString("system_definitions", testJson).apply()
-                true
+                seedFallbackIfEmpty()
+                DefinitionsSyncResult.ERROR
             }
         } catch (e: Exception) {
-            val testJson = getFallbackDefinitionsJson()
-            prefs.edit().putString("system_definitions", testJson).apply()
-            true
+            seedFallbackIfEmpty()
+            DefinitionsSyncResult.ERROR
         }
     }
 
+    /** Same shape as the server's /protocols/definitions response (meldepunkt_definitionen:
+     * detectors/values/columns/colors/labels/kurzzeichen, all flat arrays/maps) -- kept
+     * structurally identical to the real payload so this fallback and a genuine sync are
+     * interchangeable everywhere they're consumed. BMA's detector list mirrors the ETB
+     * decoder's real vocabulary (AM/DKM/IO/Steu/MASI/Koppler/Konventionell) plus the older
+     * manual/TAIFUN-only types (ZD/ZB/TDiff/Tmax/RAS/Linear) that the decoder never emits
+     * but existing contracts may still use -- see server_stack/webui/app.py's
+     * DEFAULT_ANLAGENTYPEN for the authoritative copy this mirrors. */
     fun getFallbackDefinitionsJson(): String {
+        fun typeDef(detectors: List<String>, values: List<String>, columns: List<String>,
+                    colors: Map<String, String> = emptyMap(), labels: Map<String, String> = emptyMap(),
+                    kurzzeichen: Map<String, String> = emptyMap()) = JSONObject().apply {
+            put("detectors", JSONArray(detectors))
+            put("values", JSONArray(values))
+            put("columns", JSONArray(columns))
+            put("colors", JSONObject(colors as Map<*, *>))
+            put("labels", JSONObject(labels as Map<*, *>))
+            put("kurzzeichen", JSONObject(kurzzeichen as Map<*, *>))
+        }
         return JSONObject().apply {
-            put("BMA", JSONObject().apply {
-                put("detector_types", JSONArray(listOf("-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR")))
-                put("columns", JSONArray().apply {
-                    put(JSONObject().apply { put("key", "1"); put("label", "01") })
-                    put(JSONObject().apply { put("key", "2"); put("label", "02") })
-                    put(JSONObject().apply { put("key", "3"); put("label", "03") })
-                    put(JSONObject().apply { put("key", "4"); put("label", "04") })
-                })
-                put("applicable_values", JSONArray().apply {
-                    put(JSONObject().apply { put("value", "H1"); put("label", "Halbjahr 1") })
-                    put(JSONObject().apply { put("value", "H2"); put("label", "Halbjahr 2") })
-                    put(JSONObject().apply { put("value", "Def."); put("label", "Defekt"); put("is_defect", true) })
-                })
-            })
-            put("EMA", JSONObject().apply {
-                put("detector_types", JSONArray(listOf("-", "Normal", "BWM", "ZK", "RSK", "Lichtschranke", "Glasbruch", "Körperschall")))
-                put("columns", JSONArray().apply {
-                    put(JSONObject().apply { put("key", "1"); put("label", "01") })
-                    put(JSONObject().apply { put("key", "2"); put("label", "02") })
-                    put(JSONObject().apply { put("key", "3"); put("label", "03") })
-                    put(JSONObject().apply { put("key", "4"); put("label", "04") })
-                })
-                put("applicable_values", JSONArray().apply {
-                    put(JSONObject().apply { put("value", "CHECK"); put("label", "Fin") })
-                    put(JSONObject().apply { put("value", "Def."); put("label", "Defekt"); put("is_defect", true) })
-                })
-            })
-            put("ELA", JSONObject().apply {
-                put("detector_types", JSONArray(listOf("-", "Normal", "Innenlautsprecher", "Außenlautsprecher")))
-                put("columns", JSONArray().apply {
-                    put(JSONObject().apply { put("key", "1"); put("label", "01") })
-                    put(JSONObject().apply { put("key", "2"); put("label", "02") })
-                    put(JSONObject().apply { put("key", "3"); put("label", "03") })
-                })
-                put("applicable_values", JSONArray().apply {
-                    put(JSONObject().apply { put("value", "CHECK"); put("label", "Fin") })
-                    put(JSONObject().apply { put("value", "Def."); put("label", "Defekt"); put("is_defect", true) })
-                })
-            })
-            put("LIRA", JSONObject().apply {
-                put("detector_types", JSONArray(listOf("-", "Normal", "AT", "BT", "ZT", "EM", "PN", "Display")))
-                put("columns", JSONArray().apply {
-                    put(JSONObject().apply { put("key", "1"); put("label", "01") })
-                    put(JSONObject().apply { put("key", "2"); put("label", "02") })
-                    put(JSONObject().apply { put("key", "3"); put("label", "03") })
-                    put(JSONObject().apply { put("key", "4"); put("label", "04") })
-                })
-                put("applicable_values", JSONArray().apply {
-                    put(JSONObject().apply { put("value", "CHECK"); put("label", "Fin") })
-                    put(JSONObject().apply { put("value", "Def."); put("label", "Defekt"); put("is_defect", true) })
-                })
-            })
-            put("SLA", JSONObject().apply {
-                put("detector_types", JSONArray(listOf("-", "Normal", "ZD", "DB", "RAS", "TDIF")))
-                put("columns", JSONArray().apply {
-                    put(JSONObject().apply { put("key", "1"); put("label", "01") })
-                    put(JSONObject().apply { put("key", "2"); put("label", "02") })
-                    put(JSONObject().apply { put("key", "3"); put("label", "03") })
-                    put(JSONObject().apply { put("key", "4"); put("label", "04") })
-                })
-                put("applicable_values", JSONArray().apply {
-                    put(JSONObject().apply { put("value", "CHECK"); put("label", "Fin") })
-                    put(JSONObject().apply { put("value", "Def."); put("label", "Defekt"); put("is_defect", true) })
-                })
-            })
+            put("BMA", typeDef(
+                detectors = listOf("-", "AM", "DKM", "IO", "Steu", "MASI", "Koppler", "Konventionell",
+                                    "ZD", "ZB", "TDiff", "Tmax", "RAS", "Linear"),
+                values = listOf("CHECK", "H1", "H2", "Def."),
+                columns = listOf("1", "2", "3", "4", "5", "6", "7", "8"),
+                colors = mapOf(
+                    "AM" to "#10B981", "DKM" to "#F43F5E", "IO" to "#3B82F6", "Steu" to "#10B981",
+                    "MASI" to "#EAB308", "Koppler" to "#FB923C", "Konventionell" to "#64748B",
+                    "ZD" to "#3B82F6", "ZB" to "#EAB308", "TDiff" to "#FB923C", "Tmax" to "#EF4444",
+                    "RAS" to "#A855F7", "Linear" to "#EC4899"
+                ),
+                labels = mapOf("AM" to "Automatischer Melder", "Konventionell" to "Konventionell"),
+                kurzzeichen = mapOf(
+                    "AM" to "AM", "DKM" to "DK", "IO" to "IO", "Steu" to "ST", "MASI" to "MS",
+                    "Koppler" to "KO", "Konventionell" to "KV", "ZD" to "ZD", "ZB" to "ZB",
+                    "TDiff" to "TD", "Tmax" to "TM", "RAS" to "RS", "Linear" to "LN"
+                )
+            ))
+            put("EMA", typeDef(
+                detectors = listOf("-", "Normal", "BWM", "ZK", "RSK", "Lichtschranke", "Glasbruch", "Körperschall"),
+                values = listOf("CHECK", "Def."),
+                columns = listOf("1", "2", "3", "4")
+            ))
+            put("ELA", typeDef(
+                detectors = listOf("-", "Normal", "Innenlautsprecher", "Außenlautsprecher"),
+                values = listOf("CHECK", "Def."),
+                columns = listOf("1", "2", "3")
+            ))
+            put("Lichtruf", typeDef(
+                detectors = listOf("-", "Normal", "AT", "BT", "ZT", "EM", "PN", "Display"),
+                values = listOf("CHECK", "Def."),
+                columns = listOf("1", "2", "3", "4")
+            ))
+            put("SLA", typeDef(
+                detectors = listOf("-", "Normal", "ZD", "DB", "RAS", "TDIF"),
+                values = listOf("CHECK", "Def."),
+                columns = listOf("1", "2", "3", "4")
+            ))
         }.toString()
+    }
+
+    /** One Anlagentyp's Meldepunkt-Definitionen, parsed from the global
+     * "system_definitions" cache -- see [getMeldepunktMeta]. */
+    data class MeldepunktMeta(
+        val detectors: List<String>,
+        val colors: Map<String, String>,
+        val labels: Map<String, String>,
+        val kurzzeichen: Map<String, String>
+    )
+
+    /** Single source of truth for detector colors/labels/kurzzeichen in the app --
+     * reads the globally cached, protocol-independent "system_definitions" (refreshed
+     * via the "Anlagentypen neu laden" button, see [reloadSystemDefinitionsOnServer]),
+     * NOT anything stored per-protocol. Returns null if nothing's been synced/cached
+     * yet or the systemType isn't present -- callers should fall back to their own
+     * hardcoded defaults in that case. */
+    fun getMeldepunktMeta(systemType: String): MeldepunktMeta? {
+        val raw = getSystemDefinitionsString() ?: return null
+        return try {
+            val typeDef = JSONObject(raw).optJSONObject(systemType) ?: return null
+            fun mapOf(key: String): Map<String, String> {
+                val obj = typeDef.optJSONObject(key) ?: return emptyMap()
+                return buildMap { obj.keys().forEach { k -> put(k, obj.getString(k)) } }
+            }
+            val detectorsArr = typeDef.optJSONArray("detectors") ?: JSONArray()
+            MeldepunktMeta(
+                detectors = List(detectorsArr.length()) { detectorsArr.getString(it) },
+                colors = mapOf("colors"),
+                labels = mapOf("labels"),
+                kurzzeichen = mapOf("kurzzeichen")
+            )
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun createDefaultDynamicProtocol(item: ProtocolItemDto): String {
@@ -1579,9 +1611,18 @@ class MainViewModel @Inject constructor(
             val definition = JSONObject().apply {
                 if (parsedObj.has(systemTypeStr)) {
                     val specificDefObj = parsedObj.getJSONObject(systemTypeStr)
-                    put("columns", specificDefObj.getJSONArray("columns"))
-                    put("applicable_values", specificDefObj.getJSONArray("applicable_values"))
-                    put("detector_types", specificDefObj.getJSONArray("detector_types"))
+                    // meldepunkt_definitionen.columns is a flat array of column numbers
+                    // ("1", "2", ...) -- ProtocolEntity.columnsJson (read by InspectionScreen's
+                    // ColumnModel) needs {key,label} objects, so convert here.
+                    val flatCols = specificDefObj.optJSONArray("columns") ?: JSONArray()
+                    put("columns", JSONArray().apply {
+                        for (i in 0 until flatCols.length()) {
+                            val colKey = flatCols.getString(i)
+                            put(JSONObject().apply { put("key", colKey); put("label", colKey) })
+                        }
+                    })
+                    put("applicable_values", specificDefObj.optJSONArray("values") ?: JSONArray())
+                    put("detector_types", specificDefObj.optJSONArray("detectors") ?: JSONArray())
                 } else {
                     val cols = JSONArray().apply {
                         put(JSONObject().apply { put("key", "1"); put("label", "01") })

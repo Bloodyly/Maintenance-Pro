@@ -113,6 +113,14 @@ fun InspectionScreen(
     val clientName = protocolEntity.name
     val systemType = protocolEntity.systemType
 
+    // WebUI-configured Zellfarben for this protocol's Anlagentyp -- same global,
+    // protocol-independent cache MatrixEditScreen reads (MainViewModel.getMeldepunktMeta),
+    // refreshed via the "Anlagentypen neu laden" button. Empty (falls back to
+    // DetectorCell's own muted styling) until that button has ever been pressed.
+    val configuredColors = remember(systemType) {
+        viewModel.getMeldepunktMeta(systemType)?.colors ?: emptyMap()
+    }
+
     val intervalText = remember(groupsState, protocolEntity.interval) {
         // TAIFUN imports set anlage_interval on the row (e.g. "Quartalsweise") but leave the
         // contract-level interval at the default "Halbjährlich". Prefer row-level value.
@@ -700,6 +708,7 @@ fun InspectionScreen(
                                                     subFontSize = subFontSize,
                                                     zoomScale = zoomScale,
                                                     enabled = !protocolEntity.isArchived,
+                                                    configuredColors = configuredColors,
                                                     onClick = {
                                                         if (cellVal.isEmpty()) {
                                                             pendingOverrides[overrideKey] = activeSelectVal
@@ -1085,9 +1094,16 @@ private fun DetectorCell(
     subFontSize: TextUnit,
     zoomScale: Float,
     enabled: Boolean,
+    configuredColors: Map<String, String> = emptyMap(),
     onClick: () -> Unit
 ) {
     val isDisabled = detectorType == "-"
+    // Not-yet-checked cells show the Meldepunkttyp in its configured (or built-in fallback)
+    // color, mirroring MatrixEditScreen's paint palette and the WebUI grid -- same source
+    // (MainViewModel.getMeldepunktMeta), same "type color when empty, status color once
+    // checked" convention. Once a Prüfwert is entered, the existing green/red status
+    // styling below stays exactly as it was.
+    val typeColor = remember(detectorType, configuredColors) { detectorTypeColor(detectorType, configuredColors) }
     Box(
         modifier = Modifier
             .width(cellWidth)
@@ -1097,7 +1113,7 @@ private fun DetectorCell(
                 else if (cellVal.isNotEmpty()) {
                     if (cellVal == "Def." || cellVal.lowercase().contains("def")) IndustrialErrorContainer
                     else IndustrialPrimaryContainer.copy(alpha = 0.12f)
-                } else Color.White
+                } else typeColor.copy(alpha = 0.15f)
             )
             .border(0.5.dp, IndustrialOutlineVariant)
             .clickable(
@@ -1148,11 +1164,37 @@ private fun DetectorCell(
         } else {
             Text(
                 text = detectorType,
-                color = IndustrialOutline.copy(alpha = 0.7f),
+                color = typeColor,
                 fontSize = cellFontSize
             )
         }
     }
+}
+
+/** Detector-type color -- a configured color from the Anlagentyp's Meldepunkt-Definitionen
+ * (see MainViewModel.getMeldepunktMeta) wins if present, otherwise the same built-in
+ * fallback map MatrixEditScreen's paint palette uses when nothing's configured. */
+private fun detectorTypeColor(type: String, configuredColors: Map<String, String> = emptyMap()): Color {
+    if (type == "-") return IndustrialOutline
+    configuredColors[type]?.let { hex -> parseHexColor(hex)?.let { return it } }
+    return when (type) {
+        "ZD" -> Color(0xFF3B82F6); "Normal", "AM" -> Color(0xFF10B981); "ZB" -> Color(0xFFEAB308)
+        "TDIFF", "TDiff" -> Color(0xFFFB923C); "TMAX", "Tmax" -> Color(0xFFEF4444); "RAS" -> Color(0xFFA855F7)
+        "LINEAR", "Linear" -> Color(0xFFEC4899); "DKM" -> Color(0xFFF43F5E); "Konventionell" -> Color(0xFF64748B)
+        "BWM" -> Color(0xFF3B82F6); "ZK" -> Color(0xFFEAB308); "RSK" -> Color(0xFFA855F7)
+        else -> Color(0xFF94A3B8)
+    }
+}
+
+private fun parseHexColor(hex: String): Color? = try {
+    val clean = hex.removePrefix("#")
+    when (clean.length) {
+        6 -> Color((0xFF000000L or clean.toLong(16)).toInt())
+        8 -> Color(clean.toLong(16).toInt())
+        else -> null
+    }
+} catch (e: Exception) {
+    null
 }
 
 @Composable

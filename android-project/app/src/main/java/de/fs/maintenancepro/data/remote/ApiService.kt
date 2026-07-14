@@ -180,8 +180,17 @@ data class SyncProtocolDto(
     val updated_at: Long = 0L,
     val mandant_id: String = "standard",
     val definition: SyncDefinitionDto? = null,
+    // Meldertypen + Zellfarben je Anlagentyp aus den WebUI-Einstellungen
+    // (settings_{mandant}.json) -- keyed by type_id ("BMA", "EMA", ...).
+    val meldepunkt_definitionen: Map<String, MeldepunktDefDto>? = null,
     val rows: List<SyncRowDto> = emptyList(),
     val hardware: List<HardwareTableDto> = emptyList()
+)
+
+data class MeldepunktDefDto(
+    val detectors: List<String> = emptyList(),
+    val values: List<String> = emptyList(),
+    val colors: Map<String, String> = emptyMap()
 )
 
 data class SyncDefinitionDto(

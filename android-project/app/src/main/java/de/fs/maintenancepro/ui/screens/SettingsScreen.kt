@@ -433,13 +433,17 @@ fun SettingsScreen(
                         onClick = {
                             isReloadingDefs = true
                             coroutineScope.launch {
-                                val success = viewModel.reloadSystemDefinitionsOnServer()
+                                val result = viewModel.reloadSystemDefinitionsOnServer()
                                 isReloadingDefs = false
-                                if (success) {
-                                    Toast.makeText(context, "Anlagentypen erfolgreich geladen!", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    Toast.makeText(context, "Fehler beim Laden der Anlagentypen vom Server.", Toast.LENGTH_SHORT).show()
+                                val msg = when (result) {
+                                    MainViewModel.DefinitionsSyncResult.SERVER_OK ->
+                                        "Anlagentypen vom Server aktualisiert!"
+                                    MainViewModel.DefinitionsSyncResult.OFFLINE_FALLBACK ->
+                                        "Offline — lokaler Stand wird verwendet."
+                                    MainViewModel.DefinitionsSyncResult.ERROR ->
+                                        "Server nicht erreichbar — vorheriger Stand bleibt aktiv."
                                 }
+                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                             }
                         },
                         enabled = !isReloadingDefs,
