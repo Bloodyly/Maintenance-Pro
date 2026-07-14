@@ -908,6 +908,106 @@ class MainViewModel @Inject constructor(
     }
 
     /**
+     * Grid editor: batch-set detector types ("painting", mirrors the WebUI editor).
+     * Preserves existing Messwerte, creates missing cells on the fly, and pads slot
+     * gaps below the painted column with '-' cells so slots stay contiguous from 1
+     * (the fill view renders cells sequentially by orderIndex — a gap would shift
+     * every following Melder one column to the left there). Bumps updatedAt so
+     * delta-sync picks the type change up.
+     */
+    fun paintCells(protocolId: String, targets: Map<String, List<Int>>, newType: String) {
+        if (targets.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            database.withTransaction {
+                val cellsByGroup = groupCellDao.getCellsOnce(protocolId).groupBy { it.groupId }
+                val upserts = mutableListOf<GroupCellEntity>()
+                targets.forEach { (groupId, cols) ->
+                    if (cols.isEmpty()) return@forEach
+                    val bySlot = cellsByGroup[groupId].orEmpty().associateBy { it.slotKey }
+                    val colSet = cols.toSet()
+                    for (col in 1..cols.max()) {
+                        val slotKey = col.toString()
+                        val existing = bySlot[slotKey]
+                        when {
+                            col in colSet -> {
+                                if (existing == null) {
+                                    upserts.add(GroupCellEntity(
+                                        protocolId = protocolId, groupId = groupId, slotKey = slotKey,
+                                        detectorType = newType, value = "", updatedAt = now, orderIndex = col - 1
+                                    ))
+                                } else if (existing.detectorType != newType) {
+                                    upserts.add(existing.copy(detectorType = newType, updatedAt = now))
+                                }
+                            }
+                            existing == null -> {
+                                upserts.add(GroupCellEntity(
+                                    protocolId = protocolId, groupId = groupId, slotKey = slotKey,
+                                    detectorType = "-", value = "", updatedAt = now, orderIndex = col - 1
+                                ))
+                            }
+                        }
+                    }
+                }
+                if (upserts.isNotEmpty()) {
+                    groupCellDao.insertOrUpdateAll(upserts)
+                    protocolDao.updateStatusAndEditedAt(protocolId, "upload_pending", now)
+                }
+            }
+        }
+    }
+
+    /**
+     * Grid editor: append a new Melder-Gruppe to one device. Group ids are namespaced
+     * "{devicePrefix}::{grp_num}" on the wire; the new group slots in directly after the
+     * device's last group, and orderIndex is rewritten protocol-wide so devices stay
+     * contiguous. No cells are created — the group only becomes part of the Melderliste
+     * once Melder are painted (same semantics as an empty row in the WebUI editor).
+     */
+    fun addGroupToDevice(protocolId: String, devicePrefix: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            database.withTransaction {
+                val groups = protocolGroupDao.getGroupsOnce(protocolId)
+                val isDevice = { g: ProtocolGroupEntity -> g.groupId.substringBeforeLast("::", "") == devicePrefix }
+                val deviceGroups = groups.filter(isDevice)
+                val nextNum = deviceGroups
+                    .mapNotNull { it.groupId.substringAfterLast("::").trim().toIntOrNull() }
+                    .maxOrNull()?.plus(1) ?: (deviceGroups.size + 1)
+                val template = deviceGroups.lastOrNull()
+                val newGroup = ProtocolGroupEntity(
+                    protocolId = protocolId,
+                    groupId = "$devicePrefix::${nextNum.toString().padStart(2, '0')}",
+                    groupName = "",
+                    groupType = template?.groupType ?: "NAM",
+                    anlageId = template?.anlageId,
+                    anlageName = template?.anlageName,
+                    anlageType = template?.anlageType,
+                    anlageInterval = template?.anlageInterval
+                )
+                val insertAt = groups.indexOfLast(isDevice).let { if (it == -1) groups.size else it + 1 }
+                val reordered = groups.toMutableList().apply { add(insertAt, newGroup) }
+                protocolGroupDao.insertOrUpdateAll(reordered.mapIndexed { i, g -> g.copy(orderIndex = i) })
+                protocolDao.updateStatusAndEditedAt(protocolId, "upload_pending", now)
+            }
+        }
+    }
+
+    /** Grid editor: remove one device's last Melder-Gruppe including its cells. */
+    fun removeLastGroupFromDevice(protocolId: String, devicePrefix: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            database.withTransaction {
+                val groups = protocolGroupDao.getGroupsOnce(protocolId)
+                val last = groups.lastOrNull { it.groupId.substringBeforeLast("::", "") == devicePrefix }
+                    ?: return@withTransaction
+                groupCellDao.deleteForGroup(protocolId, last.groupId)
+                protocolGroupDao.deleteGroup(protocolId, last.groupId)
+                protocolDao.updateStatusAndEditedAt(protocolId, "upload_pending", System.currentTimeMillis())
+            }
+        }
+    }
+
+    /**
      * Full synchronize of completed checklists. Places failing attempts safely
      * into the Room local background queue for robust retry.
      */
