@@ -36,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -211,6 +212,11 @@ fun InspectionScreen(
     // Active Selection Choice — preselected to the current period (Q3 in Jul-Sep, H2 in Jul-Dec, etc.)
     var activeSelectVal by remember(defaultPeriod) { mutableStateOf(defaultPeriod) }
 
+    // Wide layout (tablet, or a phone rotated to landscape) has room to keep the Aktion-
+    // Segmente inline in the header; narrow/portrait docks them at the bottom instead --
+    // matches Material's "medium" window-size-class breakpoint.
+    val isWideScreen = LocalConfiguration.current.screenWidthDp >= 600
+
     // Pinch-to-zoom factor support (replaces XML library Zoom behavior natively on GPU layers)
     var zoomScale by remember { mutableStateOf(1.0f) }
     val transformState = rememberTransformableState { zoomChange, _, _ ->
@@ -296,6 +302,18 @@ fun InspectionScreen(
                             )
                         }
                     }
+                    // Wide layouts keep the Aktion-Segmente inline in the header, right next
+                    // to the edit/Abschließen icons -- narrow ones dock them at the bottom
+                    // instead (see bottomBar below).
+                    if (isWideScreen && !protocolEntity.isArchived) {
+                        AktionSegmentBar(
+                            periodValues = periodValues,
+                            activeSelectVal = activeSelectVal,
+                            onSelect = { activeSelectVal = it },
+                            modifier = Modifier.padding(end = 8.dp, top = 3.dp).width(280.dp),
+                            compact = true
+                        )
+                    }
                     if (!protocolEntity.isArchived) {
                         IconButton(onClick = { onNavigateToEditMatrix(protocolId) }, modifier = Modifier.padding(top = 2.dp)) {
                             Icon(Icons.Default.Edit, contentDescription = "Editor Modus", tint = IndustrialPrimary)
@@ -310,42 +328,17 @@ fun InspectionScreen(
         bottomBar = {
             // Docked segmented Aktion-selector, replacing the floating bubble-menu FAB --
             // always visible, never overlaps the Melderliste or Hardware-Tabelle content.
-            if (!protocolEntity.isArchived) {
+            // Only on narrow/portrait layouts; wide ones show it inline in the header instead.
+            if (!isWideScreen && !protocolEntity.isArchived) {
                 Column(modifier = Modifier.fillMaxWidth().background(Color.White)) {
                     HorizontalDivider(color = IndustrialOutlineVariant)
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 6.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        periodValues.forEach { valModel ->
-                            val isSelected = activeSelectVal == valModel.value
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(
-                                        when {
-                                            isSelected && valModel.isDefect -> IndustrialError
-                                            isSelected -> IndustrialPrimary
-                                            valModel.isDefect -> IndustrialErrorContainer.copy(alpha = 0.4f)
-                                            else -> LightSurfaceLow
-                                        }
-                                    )
-                                    .clickable { activeSelectVal = valModel.value }
-                                    .padding(vertical = 10.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = valModel.label,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp,
-                                    color = if (isSelected) Color.White else if (valModel.isDefect) IndustrialError else IndustrialOnSurface
-                                )
-                            }
-                        }
-                    }
+                    AktionSegmentBar(
+                        periodValues = periodValues,
+                        activeSelectVal = activeSelectVal,
+                        onSelect = { activeSelectVal = it },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp),
+                        compact = false
+                    )
                 }
             }
         },
@@ -440,24 +433,35 @@ fun InspectionScreen(
                 }
             }
 
-            // BoxWithConstraints captures exactly the height the grid used to get from weight(1f)
-            // (before Hardware existed), then hands that to the grid as a fixed .height() instead
-            // of weight -- pixel-identical sizing, zero change to the grid's internal scroll/drag-
-            // select math. The Column below is what's actually scrollable: it wraps the
-            // now-fixed-height grid plus Hardware, so the Melderliste keeps looking/behaving
-            // exactly as before, and scrolling past its last row reveals Hardware at the end --
-            // instead of Hardware always occupying its own slice of screen space.
+            // BoxWithConstraints captures the maximum height available for the grid (what it
+            // used to always claim via weight(1f)). The grid is only given that FULL height
+            // when its own content actually needs it (long Auslöseliste -> internal scroll,
+            // Hardware reachable by scrolling past it); for a short list it gets just its
+            // natural content height instead, so Hardware follows immediately with no gap.
             BoxWithConstraints(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
             ) {
-            val gridHeight = maxHeight
+            val maxGridHeight = maxHeight
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
             ) {
+            // Dimensions dynamically scaled at layout-level by zoomScale to resolve all scroll issues.
+            // Hoisted above the Row so the natural (unclipped) content height can be computed
+            // directly, instead of relying on Compose's intrinsic measurement -- the frozen
+            // columns below use weight()/fillMaxHeight() internally, which can't be measured
+            // bottom-up as "wrap content" the way a plain Row's children normally could.
+            val cellWidth = (72 * zoomScale).dp
+            val cellHeight = (48 * zoomScale).dp
+            val grpColWidth = (44 * zoomScale).dp        // frozen: group number only
+            val bezeichnungColWidth = (110 * zoomScale).dp  // frozen: group name
+            val headerRowHeight = (44 * zoomScale).dp
+            val naturalGridHeight = headerRowHeight + cellHeight * rowsList.size
+            val gridHeight = naturalGridHeight.coerceAtMost(maxGridHeight)
+
             // Scrollable Grid Box container restricting scaling artifacts from bleeding
             Row(
                 modifier = Modifier
@@ -466,13 +470,6 @@ fun InspectionScreen(
                     .clipToBounds()
                     .transformable(state = transformState)
             ) {
-                // Dimensions dynamically scaled at layout-level by zoomScale to resolve all scroll issues
-                val cellWidth = (72 * zoomScale).dp
-                val cellHeight = (48 * zoomScale).dp
-                val grpColWidth = (44 * zoomScale).dp        // frozen: group number only
-                val bezeichnungColWidth = (110 * zoomScale).dp  // frozen: group name
-                val headerRowHeight = (44 * zoomScale).dp
-
                 val headerFontSize = (12 * zoomScale).sp
                 val cellFontSize = (11 * zoomScale).sp
                 val subFontSize = (8 * zoomScale).sp
@@ -784,6 +781,51 @@ fun InspectionScreen(
                 )
             }
             }
+            }
+        }
+    }
+}
+
+// ---------------- Aktion-Segmentleiste (Q1-Q4/Def.), inline im Header (breit) oder als
+// angedockte bottomBar (schmal) -- gleicher Inhalt, nur Zellgröße/Schriftgröße unterscheiden
+// sich per "compact", damit sie inline neben den Header-Icons nicht zu breit wird.
+
+@Composable
+private fun AktionSegmentBar(
+    periodValues: List<ValueModel>,
+    activeSelectVal: String,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    compact: Boolean
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 4.dp)
+    ) {
+        periodValues.forEach { valModel ->
+            val isSelected = activeSelectVal == valModel.value
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(if (compact) 6.dp else 8.dp))
+                    .background(
+                        when {
+                            isSelected && valModel.isDefect -> IndustrialError
+                            isSelected -> IndustrialPrimary
+                            valModel.isDefect -> IndustrialErrorContainer.copy(alpha = 0.4f)
+                            else -> LightSurfaceLow
+                        }
+                    )
+                    .clickable { onSelect(valModel.value) }
+                    .padding(vertical = if (compact) 6.dp else 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = valModel.label,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = if (compact) 10.sp else 12.sp,
+                    color = if (isSelected) Color.White else if (valModel.isDefect) IndustrialError else IndustrialOnSurface
+                )
             }
         }
     }

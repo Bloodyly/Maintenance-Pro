@@ -84,6 +84,10 @@ fun SearchScreen(
             TopAppBar(
                 title = { Text("Suche", color = IndustrialPrimary, fontWeight = FontWeight.Bold) },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White),
+                // MainActivity's outer Scaffold already reserves the status-bar inset via its
+                // own innerPadding on the NavHost -- TopAppBar's own default windowInsets would
+                // reserve it a SECOND time, showing up as an empty white gap above the title.
+                windowInsets = WindowInsets(0.dp),
                 navigationIcon = {
                     IconButton(
                         onClick = { viewModel.pullServerUpdates() },

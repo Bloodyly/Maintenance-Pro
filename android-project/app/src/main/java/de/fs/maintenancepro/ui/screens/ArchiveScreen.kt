@@ -79,6 +79,9 @@ fun ArchiveScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.btn_archives), color = IndustrialPrimary, fontWeight = FontWeight.Bold) },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White),
+                // MainActivity's outer Scaffold already reserves the status-bar inset via its
+                // own innerPadding on the NavHost -- see SearchScreen.kt for the full explanation.
+                windowInsets = WindowInsets(0.dp),
                 actions = {
                     StatusHeaderBadge(viewModel)
                 }
