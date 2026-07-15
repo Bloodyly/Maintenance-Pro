@@ -1044,15 +1044,23 @@
                                         <div>
                                             <label class="block text-[10px] font-semibold text-slate-500 mb-1">Meldertypen</label>
                                             <div class="flex items-center gap-1.5 mb-1 px-1">
+                                                <span class="w-3"></span>
                                                 <span class="w-14 text-[9px] font-bold text-slate-400 uppercase">Code</span>
                                                 <span class="flex-1 text-[9px] font-bold text-slate-400 uppercase">Bezeichnung</span>
                                                 <span class="w-12 text-[9px] font-bold text-slate-400 uppercase text-center">Kz.</span>
                                                 <span class="w-5"></span>
                                                 <span class="w-3"></span>
                                             </div>
-                                            <div class="space-y-1 mb-1" x-data="{ newDet: '' }">
+                                            <div class="space-y-1 mb-1" x-data="{ newDet: '', dragDetIdx: null }">
                                                 <template x-for="(d, di) in atForm.meldepunkt_definitionen.detectors" :key="di">
-                                                    <div class="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded px-2 py-1">
+                                                    <div class="flex items-center gap-1.5 bg-slate-50 border rounded px-2 py-1"
+                                                        :class="dragDetIdx === di ? 'border-[#003D9B] opacity-50' : 'border-slate-200'"
+                                                        :draggable="d !== '-'"
+                                                        @dragstart="dragDetIdx = di"
+                                                        @dragend="dragDetIdx = null"
+                                                        @dragover.prevent
+                                                        @drop.prevent="atFormReorderDet(dragDetIdx, di)">
+                                                        <span class="w-3 text-center text-slate-300 text-[11px] shrink-0" :class="d !== '-' ? 'cursor-move' : ''" x-text="d !== '-' ? '⠿' : ''"></span>
                                                         <span class="font-mono font-semibold text-[10px] text-slate-700 w-14 truncate" x-text="d" :title="d"></span>
                                                         <template x-if="d !== '-'">
                                                             <input type="text" x-model="atForm.meldepunkt_definitionen.labels[d]"
@@ -1071,9 +1079,14 @@
                                                                 @input="atForm.meldepunkt_definitionen.colors[d] = $event.target.value">
                                                         </template>
                                                         <template x-if="d === '-'">
-                                                            <span class="flex-1 text-[10px] text-slate-400 italic">(Leerfeld / kein Melder)</span>
+                                                            <span class="flex-1 text-[10px] text-slate-400 italic">(Leerfeld / kein Melder -- Sonderfeld, nicht entfernbar)</span>
                                                         </template>
-                                                        <button type="button" @click="atForm.meldepunkt_definitionen.detectors.splice(di,1)" class="text-slate-400 hover:text-red-500 shrink-0">×</button>
+                                                        <template x-if="d !== '-'">
+                                                            <button type="button" @click="atForm.meldepunkt_definitionen.detectors.splice(di,1)" class="text-slate-400 hover:text-red-500 shrink-0">×</button>
+                                                        </template>
+                                                        <template x-if="d === '-'">
+                                                            <span class="w-3 shrink-0"></span>
+                                                        </template>
                                                     </div>
                                                 </template>
                                                 <div class="flex items-center gap-1 mt-1">
@@ -3246,6 +3259,15 @@
                             if (!(val in mp.colors)) mp.colors[val] = '#94a3b8';
                         }
                     }
+                },
+                atFormReorderDet(fromIdx, toIdx) {
+                    // "-" (Leerfeld) is a fixed special entry -- never draggable and never a
+                    // valid drop target, enforced both here and via :draggable in the markup.
+                    if (fromIdx === null || fromIdx === toIdx) return;
+                    const arr = this.atForm.meldepunkt_definitionen.detectors;
+                    if (arr[fromIdx] === '-' || arr[toIdx] === '-') return;
+                    const moved = arr.splice(fromIdx, 1)[0];
+                    arr.splice(toIdx, 0, moved);
                 },
                 atFormAddVal(val) {
                     val = val.trim();

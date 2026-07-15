@@ -112,13 +112,21 @@ Alte manuelle Typen (ZD, ZB, TDiff, Tmax, RAS, Linear) bleiben erhalten
       `/protocols/definitions` liefert korrekt befüllte
       Farben/Bezeichnungen/Kurzzeichen (siehe Teil C).
 - [x] Build (versionCode 10 / 2.6.0) + Install auf Test-Tablet erfolgreich.
-- [ ] **Noch offen:** echter Live-Test "Anlagentypen neu laden" gegen den
-      PRODUKTIVEN Server — braucht vorherigen Commit+Deploy der Server-
-      Änderungen (aktuell nur lokal, Produktion hat den neuen Endpunkt noch
-      nicht). Bis dahin würde der Button auf dem Tablet (das gegen den
-      echten Server zeigt) einen Fehler melden (korrekt, da der Endpunkt dort
-      noch fehlt) statt den Erfolgsfall zu zeigen. Manuelle Prüfung bleibt
-      beim Nutzer, wie in diesem Projekt üblich.
+- [x] **Bug gefunden + behoben nach erstem Live-Test:** Server lieferte laut
+      Produktions-Logs (via Portainer-API geprüft) durchgehend `200 OK` für
+      `/protocols/definitions`, die App zeigte trotzdem "Server nicht
+      erreichbar". Ursache: `loadSystemDefinitions(): Response<String>` ließ
+      Retrofit/Gson den (von CryptoInterceptor bereits entschlüsselten) JSON-
+      OBJEKT-Body durch Gsons String-TypeAdapter laufen, der nur einen JSON-
+      String-Literal akzeptiert und bei `{` (BEGIN_OBJECT) eine Exception
+      wirft -- die vom Catch-Block als "Server nicht erreichbar" gemeldet
+      wurde. `downloadProtocol()`s gleichnamiges `Response<String>`
+      funktioniert nur zufällig (dessen Payload ist kein gültiges UTF-8-JSON,
+      der CryptoInterceptor scheitert dort schon beim Auto-Decrypt und reicht
+      den rohen verschlüsselten Text unverändert durch, der Aufrufer
+      entschlüsselt selbst manuell -- ein komplett anderer, nicht
+      übertragbarer Pfad). Fix: `Response<ResponseBody>` statt
+      `Response<String>`, umgeht Gson komplett.
 - [x] Regressionstest: `getFallbackDefinitionsJson()`-Pfad in sich
       konsistent (gleiche Struktur wie echter Server-Payload), keine
       Sonderbehandlung nötig -- durch Code-Review bestätigt.
@@ -133,3 +141,48 @@ Alte manuelle Typen (ZD, ZB, TDiff, Tmax, RAS, Linear) bleiben erhalten
 
 - `server_stack/protocol_core/worker.py` (PDF-Melderliste): bleibt
   unverändert, kein Typ/Legende im PDF — separates späteres Vorhaben.
+
+## Nachfassende Verbesserungen (nach erstem Live-Test)
+
+- [x] **1. Android MatrixEditScreen-Palette**: `detChoices` bezieht die
+      Auswahl jetzt zuerst aus `getMeldepunktMeta(systemType)?.detectors`
+      (frisch synchronisiert), Fallback auf `protocolEntity.detectorTypesJson`,
+      dann Hardcoded-Minimum.
+- [x] **2. Melderliste nach Gruppennummer sortieren**: `devices`-Berechnung
+      sortiert `grps` jetzt numerisch-bewusst nach dem Suffix hinter "::" --
+      da das innerhalb von `remember(groupsState, ...)` passiert, sortiert
+      sich die Liste automatisch neu, sobald `groupsState` sich nach einem
+      `updateGroupDetails`/`addGroupToDevice`-Schreibvorgang ändert (kein
+      Neuladen nötig).
+- [x] **3. WebUI Leerfeld ("-") nicht löschbar**: "×"-Button erscheint jetzt
+      nur noch für `d !== '-'`.
+- [x] **4. WebUI Meldepunkttypen per Drag&Drop neu anordnen**: natives HTML5
+      Drag&Drop (kein neues JS-Abhängigkeit), Greifpunkt "⠿" nur bei echten
+      Typen (nicht bei "-", das bleibt fix an erster Stelle und ist weder
+      zieh- noch drop-Ziel). Reihenfolge ist einfach die Array-Reihenfolge
+      von `detectors` -- wirkt sich automatisch überall aus, wo diese Liste
+      gelesen wird (WebUI-Grid-Palette, Android-Palette via Punkt 1, PDF
+      falls später gebraucht), ohne weitere Verdrahtung.
+      Render-Smoke-Test (isolierte webui-Instanz) — 200 OK, neue Markup
+      vorhanden, Brace/Paren-Balance OK.
+- [x] **5. Vorbereitung Lichtruf-Auslöseliste** (nächstes Vorhaben, noch NICHT
+      umgesetzt): `Muster_Lichtrufanlage.xlsx` gesichtet. Struktur ist
+      grundlegend anders als BMA:
+      - Zeilen = **Räume** (Raum-Nr. + Bezeichnung), nicht Meldergruppen.
+      - Spalten = **feste, benannte Bauteil-Typen** pro Raum (ZT, ZL, RT B1,
+        RT B2, RT B3, RT, PT Bad, RT Bad, ZT Bad, AT Bad) statt dynamisch
+        durchnummerierter Melder-Spalten 1..N -- die Spalte selbst ist der
+        Typ, nicht frei pro Zelle wählbar.
+      - Zusätzliche **"o.k."-Spalte** je Raum (ein raumweiter Sammelstatus,
+        kein Bauteil-Einzelwert).
+      - Defekte werden über **nummerierte Fehlercodes** (*1 mech. Defekt, *2
+        Taste klemmt, ... bis *15) statt eines einfachen "Def."/Perioden-
+        Werts eingetragen, mit einer Legende am Blattende.
+      - Datum/Unterschrift-Zeile am Ende statt der BMA-typischen Quartals-
+        Struktur.
+
+      Das heutige Meldergruppen/Melder-Nummer-Datenmodell (dynamische
+      Spaltenzahl, ein Wert pro Zelle aus der Perioden-Palette) passt nicht
+      direkt -- Lichtruf braucht feste benannte Spalten pro Raum plus ein
+      Fehlercode-Vokabular statt eines Zeitraum-Vokabulars. Wird als eigenes
+      Vorhaben separat geplant, sobald angefordert.

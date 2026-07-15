@@ -26,8 +26,8 @@ android {
         applicationId = "de.fs.maintenancepro"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10
-        versionName = "2.6.0"
+        versionCode = 12
+        versionName = "2.6.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

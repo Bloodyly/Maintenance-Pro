@@ -157,16 +157,21 @@ fun MatrixEditScreen(
     val configuredColors = meldepunktMeta?.colors ?: emptyMap()
     val configuredKurzzeichen = meldepunktMeta?.kurzzeichen ?: emptyMap()
 
-    // Paint palette choices: detector types from the protocol definition, with the
-    // eraser ('-') always available as first entry -- same lineup as the WebUI palette.
-    val detChoices = remember(protocolEntity.detectorTypesJson) {
-        val parsed = try {
+    // Paint palette choices: the freshly-synced Anlagentyp detector list wins if present
+    // (same "Anlagentypen neu laden" cache as configuredColors/-Kurzzeichen above, so a
+    // WebUI-side vocabulary change/reorder shows up here without a protocol re-sync) --
+    // falls back to the protocol's own stored list, then a hardcoded minimum. The eraser
+    // ('-') is always available as first entry -- same lineup as the WebUI palette.
+    val detChoices = remember(meldepunktMeta, protocolEntity.detectorTypesJson) {
+        val fromMeta = meldepunktMeta?.detectors.orEmpty()
+        val fromProtocol = try {
             val arr = JSONArray(protocolEntity.detectorTypesJson)
             List(arr.length()) { i -> arr.getString(i) }
         } catch (e: Exception) {
             emptyList()
         }
-        val types = parsed.ifEmpty { listOf("-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR") }
+        val types = fromMeta.ifEmpty { fromProtocol }
+            .ifEmpty { listOf("-", "Normal", "ZD", "ZB", "TDIFF", "TMAX", "RAS", "LINEAR") }
         if (types.contains("-")) types else listOf("-") + types
     }
 
@@ -176,7 +181,18 @@ fun MatrixEditScreen(
 
     val devices = remember(groupsState, cellsState) {
         val cellsByGroup = cellsState.groupBy { it.groupId }
-        groupsState.groupBy { devicePrefixOf(it.groupId) }.map { (prefix, grps) ->
+        groupsState.groupBy { devicePrefixOf(it.groupId) }.map { (prefix, grpsUnsorted) ->
+            // Numeric-aware sort by Gruppennummer (the part after "::") so a newly added
+            // group or a renumbered one always appears in the right position -- this recomputes
+            // (and so re-sorts) automatically whenever groupsState changes, i.e. right after
+            // GrpNumField's onCommit/addGroupToDevice round-trips through the DB, not just on
+            // next screen open.
+            val grps = grpsUnsorted.sortedWith(
+                compareBy(
+                    { it.groupId.substringAfterLast("::").toIntOrNull() ?: Int.MAX_VALUE },
+                    { it.groupId.substringAfterLast("::") }
+                )
+            )
             val slotMaps = grps.associate { g ->
                 g.groupId to cellsByGroup[g.groupId].orEmpty()
                     .mapNotNull { c -> c.slotKey.toIntOrNull()?.let { it to c } }
