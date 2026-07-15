@@ -1488,7 +1488,7 @@ class MainViewModel @Inject constructor(
         return try {
             val response = apiService.loadSystemDefinitions()
             if (response.isSuccessful && response.body() != null) {
-                prefs.edit().putString("system_definitions", response.body()!!).apply()
+                prefs.edit().putString("system_definitions", response.body()!!.string()).apply()
                 DefinitionsSyncResult.SERVER_OK
             } else {
                 seedFallbackIfEmpty()

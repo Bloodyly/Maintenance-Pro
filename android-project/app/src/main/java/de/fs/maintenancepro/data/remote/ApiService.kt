@@ -1,5 +1,6 @@
 package de.fs.maintenancepro.data.remote
 
+import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
@@ -41,8 +42,13 @@ interface ApiService {
         @Body request: LiveSyncRequestDto
     ): Response<LiveSyncResponseDto>
 
+    // Response<String> would route the (already-decrypted-by-CryptoInterceptor) JSON
+    // OBJECT body through Gson's String type adapter, which only accepts a JSON string
+    // literal and throws on BEGIN_OBJECT -- unlike downloadProtocol()'s Response<String>,
+    // whose payload isn't valid UTF-8 JSON at all and so never reaches the interceptor's
+    // auto-decrypt path in the first place. Raw ResponseBody sidesteps Gson entirely.
     @POST("protocols/definitions")
-    suspend fun loadSystemDefinitions(): Response<String>
+    suspend fun loadSystemDefinitions(): Response<ResponseBody>
 
     // ── Offline-Sync Endpoints ──────────────────────────────────────────────
 
