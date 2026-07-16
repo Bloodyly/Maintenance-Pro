@@ -357,9 +357,14 @@ DEFAULT_ANLAGENTYPEN = [
         "taifun_typ_id": 0, "active": True,
         "badge": "LR", "badge_color": "emerald",
         "meldepunkt_definitionen": {
-            "detectors": ["-", "Normal", "AT", "BT", "ZT", "EM", "PN", "Display"],
-            "values": ["CHECK", "Def."],
-            "columns": ["1","2","3","4"]
+            # Zimmermodul-Vokabular aus Muster_Lichtrufanlage.xlsx -- strukturell
+            # wie BMA (Zeilen=Räume statt Meldegruppen, Spalten=freie Modul-Slots
+            # statt Melder-Slots, Prüfwerte identisch: Quartal/Halbjahr/Jahr oder
+            # Defekt), daher dieselbe values-Liste wie BMA.
+            "detectors": ["-", "ZT", "ZL", "RT B1", "RT B2", "RT B3", "RT",
+                          "PT Bad", "RT Bad", "ZT Bad", "AT Bad"],
+            "values": ["CHECK", "H1", "H2", "Def."],
+            "columns": ["1","2","3","4","5","6","7","8","9","10"]
         },
         "zusatz_tabelle": None
     },
@@ -437,6 +442,11 @@ KNOWN_DETECTOR_KURZZEICHEN = {
     "Koppler": "KO", "Konventionell": "KV", "ZD": "ZD", "ZB": "ZB",
     "TDiff": "TD", "TDIFF": "TD", "Tmax": "TM", "TMAX": "TM", "RAS": "RS",
     "Linear": "LN", "LINEAR": "LN", "BWM": "BWM", "ZK": "ZK", "RSK": "RSK",
+    # Lichtruf-Zimmermodule (aus Muster_Lichtrufanlage.xlsx) -- ohne diese
+    # Einträge würde der generische det[:2]-Fallback "RT B1"/"RT B2"/"RT B3"
+    # alle auf "RT" abkürzen, was sie ununterscheidbar machen würde.
+    "ZT": "ZT", "ZL": "ZL", "RT B1": "R1", "RT B2": "R2", "RT B3": "R3",
+    "RT": "RT", "PT Bad": "PB", "RT Bad": "RB", "ZT Bad": "ZB", "AT Bad": "AB",
 }
 
 
@@ -500,7 +510,7 @@ def load_settings(mandant_id=None):
             "BMA": {"name": "Brandmeldeanlage", "xml_name": "BMA", "color": "bg-red-50 text-red-800 border-red-200", "badgeColor": "bg-red-500", "detectors": ["-","Normal","ZD","ZB","TDIFF","TMAX","RAS","LINEAR"], "values": ["CHECK","H1","H2","Def."]},
             "EMA": {"name": "Einbruchmeldeanlage", "xml_name": "EMA", "color": "bg-yellow-50 text-yellow-800 border-yellow-200", "badgeColor": "bg-yellow-500", "detectors": ["-","Normal","BWM","ZK","RSK","Lichtschranke","Glasbruch","Körperschall"], "values": ["CHECK","Def."]},
             "ELA": {"name": "Elektroakustik", "xml_name": "ELA", "color": "bg-blue-50 text-blue-800 border-blue-200", "badgeColor": "bg-blue-500", "detectors": ["-","Normal","Innenlautsprecher","Außenlautsprecher"], "values": ["CHECK","Def."]},
-            "Lichtruf": {"name": "Lichtrufanlage", "xml_name": "Lichtruf", "color": "bg-emerald-50 text-emerald-800 border-emerald-200", "badgeColor": "bg-emerald-500", "detectors": ["-","Normal","AT","BT","ZT","EM","PN","Display"], "values": ["CHECK","Def."]},
+            "Lichtruf": {"name": "Lichtrufanlage", "xml_name": "Lichtruf", "color": "bg-emerald-50 text-emerald-800 border-emerald-200", "badgeColor": "bg-emerald-500", "detectors": ["-", "ZT", "ZL", "RT B1", "RT B2", "RT B3", "RT", "PT Bad", "RT Bad", "ZT Bad", "AT Bad"], "values": ["CHECK","H1","H2","Def."]},
             "SLA": {"name": "Sprechanlage", "xml_name": "SLA", "color": "bg-indigo-50 text-indigo-800 border-indigo-200", "badgeColor": "bg-indigo-500", "detectors": ["-","Normal","SLA"], "values": ["CHECK","Def."]}
         }
     }
@@ -1827,7 +1837,9 @@ def _device_registry_to_grid(registry, cells):
         "v": 1,
         "n_groups": len(registry),
         "n_cols": n_cols or 8,
-        "groups": [[str(g[0]), g[1] if len(g) > 1 else ""] for g in registry],
+        # 3rd element = Bereich-Zuordnung (Sektionsname); "" wenn keine Zuordnung
+        # existiert -- rückwärtskompatibel zu 2-elementigen Alt-Registry-Einträgen.
+        "groups": [[str(g[0]), g[1] if len(g) > 1 else "", g[2] if len(g) > 2 else ""] for g in registry],
         "types": types,
         "values": values,
     }
@@ -1843,12 +1855,17 @@ def _grid_to_device_registry(cursor, protocol_id, group_id, grid):
     n_cols = grid.get("n_cols", 0)
     now = int(datetime.now().timestamp())
 
-    registry = [[str(g[0]) if g else str(i), str(g[1]) if len(g) > 1 else ""] for i, g in enumerate(groups_list, 1)]
+    registry = [
+        [str(g[0]) if g else str(i), str(g[1]) if len(g) > 1 else "", str(g[2]) if len(g) > 2 and g[2] else ""]
+        for i, g in enumerate(groups_list, 1)
+    ]
 
-    # '__hardware__' is a separate, independently-saved table (see
-    # _hardware_rows_to_device) -- must survive a Melderliste save untouched.
+    # '__hardware__' (Hardware-Inventar) und '__bereiche__' (Bereichsliste, siehe
+    # _save_bereiche) sind separate, unabhängig gespeicherte Sentinel-Zeilen --
+    # müssen eine Melderliste-Speicherung unangetastet überstehen, auch wenn der
+    # Client in diesem Request kein "bereiche"/"hardware"-Feld mitschickt.
     cursor.execute(
-        "DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key != '__hardware__'",
+        "DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key NOT IN ('__hardware__', '__bereiche__')",
         (protocol_id, group_id)
     )
     cursor.execute(
@@ -1909,6 +1926,40 @@ def _hardware_rows_to_device(cursor, protocol_id, group_id, hw_rows):
     )
 
 
+def _load_bereiche(cursor, protocol_id, group_id):
+    """Returns the ordered list of Bereich-Namen defined for one device (empty if
+    none have ever been defined) -- mirrors _device_hardware_to_rows."""
+    cursor.execute(
+        "SELECT value FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = '__bereiche__'",
+        (protocol_id, group_id)
+    )
+    cell = cursor.fetchone()
+    if not cell:
+        return []
+    try:
+        return json.loads(cell["value"])
+    except Exception:
+        return []
+
+
+def _save_bereiche(cursor, protocol_id, group_id, names):
+    """Persists the ordered Bereich-Namen-Liste for one device -- mirrors
+    _hardware_rows_to_device. An empty list removes the sentinel row entirely."""
+    now = int(datetime.now().timestamp())
+    if not names:
+        cursor.execute(
+            "DELETE FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = '__bereiche__'",
+            (protocol_id, group_id)
+        )
+        return
+    cursor.execute(
+        "INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at) "
+        "VALUES (?, ?, '__bereiche__', '-', ?, ?) "
+        "ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+        (protocol_id, group_id, json.dumps(names), now)
+    )
+
+
 @app.route("/api/cells/<protocol_id>/<group_id>", methods=["GET"])
 def get_cells(protocol_id, group_id):
     conn = get_db_connection()
@@ -1926,6 +1977,7 @@ def get_cells(protocol_id, group_id):
     conn.commit()  # persist any lazy migration performed while reading
     grid_data = _device_registry_to_grid(registry, cells)
     hardware_rows = _device_hardware_to_rows(cursor, protocol_id, group_id)
+    bereiche = _load_bereiche(cursor, protocol_id, group_id)
     conn.close()
 
     anlage_type = dev["anlage_type"] or "BMA"
@@ -1956,6 +2008,7 @@ def get_cells(protocol_id, group_id):
         "anlage_interval": dev["anlage_interval"] or "Halbjährlich",
         "meldepunkt_definitionen": mp_def,
         "hardware": hardware_rows,
+        "bereiche": bereiche,
         # Only used to pre-check the "Hardware-Tabelle aktivieren" box for a
         # device that has none yet -- an existing hardware_rows list (even a
         # manually-emptied one) always wins over this Anlagentyp-level default.
@@ -1989,6 +2042,11 @@ def save_cells(protocol_id, group_id):
         # off) does delete it, via _hardware_rows_to_device.
         if "hardware" in data:
             _hardware_rows_to_device(cursor, protocol_id, group_id, data["hardware"])
+
+        # Same "only touch what the client actually sent" rule as hardware above --
+        # absence means "editor didn't show/change Bereiche", not "delete them".
+        if "bereiche" in data:
+            _save_bereiche(cursor, protocol_id, group_id, data["bereiche"])
 
         conn.commit()
         conn.close()

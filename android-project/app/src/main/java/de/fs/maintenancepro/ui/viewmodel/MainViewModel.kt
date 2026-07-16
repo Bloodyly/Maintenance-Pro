@@ -16,6 +16,7 @@ import de.fs.maintenancepro.data.remote.ApplicableValueDto
 import de.fs.maintenancepro.data.remote.SyncDeltaRequestDto
 import de.fs.maintenancepro.data.remote.SyncUploadCellsDto
 import de.fs.maintenancepro.data.remote.SyncCellChangeDto
+import de.fs.maintenancepro.data.remote.SyncGroupChangeDto
 import de.fs.maintenancepro.data.remote.SyncProtocolDto
 import de.fs.maintenancepro.data.remote.HardwareTableDto
 import de.fs.maintenancepro.data.remote.HardwareRowDto
@@ -48,6 +49,7 @@ class MainViewModel @Inject constructor(
     private val protocolGroupDao: ProtocolGroupDao,
     private val groupCellDao: GroupCellDao,
     private val hardwareTableDao: HardwareTableDao,
+    private val bereicheTableDao: BereicheTableDao,
     private val syncQueueDao: SyncQueueDao,
     private val serverConfigDao: ServerConfigDao,
     private val apiService: ApiService,
@@ -993,15 +995,13 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    /** Grid editor: remove one device's last Melder-Gruppe including its cells. */
-    fun removeLastGroupFromDevice(protocolId: String, devicePrefix: String) {
+    /** Grid editor: remove one specific Melder-Gruppe (any row, not just the last) including
+     * its cells -- the per-row delete button in MatrixEditScreen, confirmed via dialog first. */
+    fun removeGroupFromDevice(protocolId: String, groupId: String) {
         viewModelScope.launch(Dispatchers.IO) {
             database.withTransaction {
-                val groups = protocolGroupDao.getGroupsOnce(protocolId)
-                val last = groups.lastOrNull { it.groupId.substringBeforeLast("::", "") == devicePrefix }
-                    ?: return@withTransaction
-                groupCellDao.deleteForGroup(protocolId, last.groupId)
-                protocolGroupDao.deleteGroup(protocolId, last.groupId)
+                groupCellDao.deleteForGroup(protocolId, groupId)
+                protocolGroupDao.deleteGroup(protocolId, groupId)
                 protocolDao.updateStatusAndEditedAt(protocolId, "upload_pending", System.currentTimeMillis())
             }
         }
@@ -1277,6 +1277,7 @@ class MainViewModel @Inject constructor(
 
                 // 1. Collect cells modified locally since last sync (a couple of indexed queries, not a JSON scan)
                 val localChanges = collectLocalChanges(since)
+                val localGroupChanges = collectLocalGroupChanges(since)
 
                 // 2. Download server delta
                 val deltaResp = apiService.syncDelta(SyncDeltaRequestDto(since))
@@ -1295,13 +1296,13 @@ class MainViewModel @Inject constructor(
 
                 // 4. Upload local changes to server
                 var uploadedCount = 0
-                if (localChanges.isNotEmpty()) {
-                    _syncState.value = SyncState.InProgress("Lade ${localChanges.size} Änderungen hoch…")
-                    val uploadResp = apiService.uploadCells(SyncUploadCellsDto(localChanges))
+                if (localChanges.isNotEmpty() || localGroupChanges.isNotEmpty()) {
+                    _syncState.value = SyncState.InProgress("Lade ${localChanges.size + localGroupChanges.size} Änderungen hoch…")
+                    val uploadResp = apiService.uploadCells(SyncUploadCellsDto(localChanges, localGroupChanges))
                     if (uploadResp.isSuccessful && uploadResp.body() != null) {
                         uploadedCount = uploadResp.body()!!.applied
                         // Mark successfully uploaded protocols as synchronized
-                        localChanges.map { it.protocol_id }.distinct().forEach { pid ->
+                        (localChanges.map { it.protocol_id } + localGroupChanges.map { it.protocol_id }).distinct().forEach { pid ->
                             protocolDao.updateStatus(pid, "synchronized")
                         }
                     }
@@ -1311,6 +1312,161 @@ class MainViewModel @Inject constructor(
                 _syncState.value = SyncState.Done(downloaded = delta.protocols.size, uploaded = uploadedCount)
             } catch (e: Exception) {
                 _syncState.value = SyncState.Error("Sync-Fehler: ${e.message}")
+            }
+        }
+    }
+
+    /** Collect all Bereich reassignments with updated_at > since across local
+     * upload_pending protocols -- mirrors collectLocalChanges exactly, just for
+     * ProtocolGroupEntity.bereich instead of GroupCellEntity.value. */
+    private suspend fun collectLocalGroupChanges(since: Long): List<SyncGroupChangeDto> {
+        val changes = mutableListOf<SyncGroupChangeDto>()
+        val pendingProtocols = protocolDao.getAllProtocolsFlow().first().filter { it.localStatus == "upload_pending" }
+        for (entity in pendingProtocols) {
+            val changed = protocolGroupDao.getChangedSince(entity.id, since)
+            changed.forEach { g ->
+                changes.add(SyncGroupChangeDto(
+                    protocol_id = entity.id,
+                    group_id = g.groupId,
+                    bereich = g.bereich ?: "",
+                    updated_at = g.updatedAt
+                ))
+            }
+        }
+        return changes
+    }
+
+    /** Ordered Bereich-Namen for one device (Struktur-Editor's picker options) --
+     * empty if none have ever been defined/synced for this device. */
+    fun getBereicheForDevice(protocolId: String, deviceGroupId: String): Flow<List<String>> =
+        bereicheTableDao.getForDeviceFlow(protocolId, deviceGroupId).map { entity ->
+            if (entity == null) emptyList()
+            else {
+                val arr = safeJsonArray(entity.orderJson)
+                List(arr.length()) { arr.getString(it) }
+            }
+        }
+
+    /** All devices' ordered Bereiche for one protocol, keyed by deviceGroupId --
+     * InspectionScreen's Ausfüllliste covers potentially multiple devices in one
+     * flat table, so it needs every device's order at once (not one Flow per
+     * device, which isn't composable-friendly since device ids aren't known
+     * ahead of time). */
+    fun getBereicheMapForProtocol(protocolId: String): Flow<Map<String, List<String>>> =
+        bereicheTableDao.getAllForProtocolFlow(protocolId).map { list ->
+            list.associate { entity ->
+                val arr = safeJsonArray(entity.orderJson)
+                entity.deviceGroupId to List(arr.length()) { arr.getString(it) }
+            }
+        }
+
+    /** Reassigns one Meldegruppe's Bereich from the Struktur-Editor. If `bereich` is a
+     * name not yet known for this device, it's appended to that device's Bereiche-Liste
+     * too -- lets a technician define a brand-new Bereich directly on-site, not just
+     * pick from ones the WebUI already knows about (mirrors the server's
+     * apply_bereich_change_to_device, which does the equivalent auto-add). */
+    fun updateGroupBereich(protocolId: String, groupId: String, bereich: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            val deviceGroupId = groupId.substringBeforeLast("::", groupId)
+            database.withTransaction {
+                protocolGroupDao.updateBereich(protocolId, groupId, bereich, now)
+                if (bereich.isNotBlank()) {
+                    val existing = bereicheTableDao.getForDevice(protocolId, deviceGroupId)
+                    val arr = if (existing != null) safeJsonArray(existing.orderJson) else JSONArray()
+                    val current = List(arr.length()) { arr.getString(it) }
+                    if (bereich !in current) {
+                        bereicheTableDao.upsert(
+                            BereicheTableEntity(
+                                protocolId = protocolId, deviceGroupId = deviceGroupId,
+                                orderJson = JSONArray(current + bereich).toString(), updatedAt = now
+                            )
+                        )
+                    }
+                }
+                protocolDao.updateStatusAndEditedAt(protocolId, "upload_pending", now)
+            }
+        }
+    }
+
+    /** Defines a Bereich for a device WITHOUT assigning it to any group yet -- the
+     * "+ Neu" flow in BereicheAssignDialog: create the Bereich, then let the user tap
+     * groups into it afterward, instead of forcing an arbitrary group to "carry" it. */
+    fun addBereichToDevice(protocolId: String, deviceGroupId: String, bereich: String) {
+        val name = bereich.trim()
+        if (name.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            val existing = bereicheTableDao.getForDevice(protocolId, deviceGroupId)
+            val arr = if (existing != null) safeJsonArray(existing.orderJson) else JSONArray()
+            val current = List(arr.length()) { arr.getString(it) }
+            if (name !in current) {
+                bereicheTableDao.upsert(
+                    BereicheTableEntity(
+                        protocolId = protocolId, deviceGroupId = deviceGroupId,
+                        orderJson = JSONArray(current + name).toString(), updatedAt = now
+                    )
+                )
+            }
+        }
+    }
+
+    /** Renames a Bereich for one device: updates the ordered name list AND every group
+     * currently assigned to it (mirrors the WebUI's rename-propagation in bereicheSave()).
+     * If newName already matches an existing entry, groups merge into it instead of
+     * creating a duplicate list entry. */
+    fun renameBereichForDevice(protocolId: String, deviceGroupId: String, oldName: String, newName: String) {
+        val trimmedNew = newName.trim()
+        if (trimmedNew.isEmpty() || trimmedNew == oldName) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            database.withTransaction {
+                val existing = bereicheTableDao.getForDevice(protocolId, deviceGroupId)
+                val arr = if (existing != null) safeJsonArray(existing.orderJson) else JSONArray()
+                val current = List(arr.length()) { arr.getString(it) }
+                val updatedList = if (trimmedNew in current) {
+                    current.filter { it != oldName }
+                } else {
+                    current.map { if (it == oldName) trimmedNew else it }
+                }
+                bereicheTableDao.upsert(
+                    BereicheTableEntity(
+                        protocolId = protocolId, deviceGroupId = deviceGroupId,
+                        orderJson = JSONArray(updatedList).toString(), updatedAt = now
+                    )
+                )
+                val affected = protocolGroupDao.getGroupsOnce(protocolId)
+                    .filter { it.groupId.substringBeforeLast("::", it.groupId) == deviceGroupId && it.bereich == oldName }
+                if (affected.isNotEmpty()) {
+                    protocolGroupDao.insertOrUpdateAll(affected.map { it.copy(bereich = trimmedNew, updatedAt = now) })
+                }
+                protocolDao.updateStatusAndEditedAt(protocolId, "upload_pending", now)
+            }
+        }
+    }
+
+    /** Deletes a Bereich for one device: removes it from the ordered name list and
+     * unassigns (never deletes) every group currently in it -- mirrors the WebUI's
+     * bereicheDeleteAt()/bereicheSave() unassignment behaviour. */
+    fun deleteBereichForDevice(protocolId: String, deviceGroupId: String, name: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            database.withTransaction {
+                val existing = bereicheTableDao.getForDevice(protocolId, deviceGroupId)
+                val arr = if (existing != null) safeJsonArray(existing.orderJson) else JSONArray()
+                val current = List(arr.length()) { arr.getString(it) }
+                bereicheTableDao.upsert(
+                    BereicheTableEntity(
+                        protocolId = protocolId, deviceGroupId = deviceGroupId,
+                        orderJson = JSONArray(current - name).toString(), updatedAt = now
+                    )
+                )
+                val affected = protocolGroupDao.getGroupsOnce(protocolId)
+                    .filter { it.groupId.substringBeforeLast("::", it.groupId) == deviceGroupId && it.bereich == name }
+                if (affected.isNotEmpty()) {
+                    protocolGroupDao.insertOrUpdateAll(affected.map { it.copy(bereich = "", updatedAt = now) })
+                }
+                protocolDao.updateStatusAndEditedAt(protocolId, "upload_pending", now)
             }
         }
     }
@@ -1379,11 +1535,21 @@ class MainViewModel @Inject constructor(
                 )
             }
 
+            bereicheTableDao.deleteAllForProtocol(proto.id)
+            proto.bereiche.forEach { b ->
+                bereicheTableDao.upsert(
+                    BereicheTableEntity(
+                        protocolId = proto.id, deviceGroupId = b.group_id,
+                        orderJson = JSONArray(b.order).toString(), updatedAt = b.updated_at
+                    )
+                )
+            }
+
             val groups = proto.rows.mapIndexed { i, row ->
                 ProtocolGroupEntity(
                     protocolId = proto.id, groupId = row.group_id, groupName = row.group_name, groupType = row.group_type,
                     anlageId = row.anlage_id, anlageName = row.anlage_name, anlageType = row.anlage_type, anlageInterval = row.anlage_interval,
-                    orderIndex = i
+                    orderIndex = i, bereich = row.bereich
                 )
             }
             val cells = mutableListOf<GroupCellEntity>()
@@ -1430,20 +1596,48 @@ class MainViewModel @Inject constructor(
                 }
             }
 
+            val existingBereiche = bereicheTableDao.getAllForProtocol(proto.id).associateBy { it.deviceGroupId }
+            proto.bereiche.forEach { b ->
+                val existing = existingBereiche[b.group_id]
+                if (existing == null || b.updated_at > existing.updatedAt) {
+                    bereicheTableDao.upsert(
+                        BereicheTableEntity(
+                            protocolId = proto.id, deviceGroupId = b.group_id,
+                            orderJson = JSONArray(b.order).toString(), updatedAt = b.updated_at
+                        )
+                    )
+                }
+            }
+
             val existingGroups = protocolGroupDao.getGroupsOnce(proto.id).associateBy { it.groupId }
             val existingCells = groupCellDao.getCellsOnce(proto.id).associateBy { "${it.groupId}::${it.slotKey}" }
             var nextOrder = (existingGroups.values.maxOfOrNull { it.orderIndex } ?: -1) + 1
 
             val newGroups = mutableListOf<ProtocolGroupEntity>()
+            // Unlike other group fields (group_name etc., historically never re-synced onto
+            // existing local rows), 'bereich' NEEDS this so a WebUI-side (re)assignment
+            // actually reaches an already-downloaded device -- protocol_id's own updated_at
+            // (bumped server-side on any registry write, see sync_upload_cells) is the only
+            // per-row-ish freshness signal the wire format carries for structural fields, so
+            // it's used as the LWW boundary here: only overwrite if it's newer than this
+            // group's own last local edit, protecting un-uploaded local reassignments.
+            val bereichUpdatedGroups = mutableListOf<ProtocolGroupEntity>()
             val newCells = mutableListOf<GroupCellEntity>()
 
             proto.rows.forEach { row ->
-                if (!existingGroups.containsKey(row.group_id)) {
+                val existingGroup = existingGroups[row.group_id]
+                if (existingGroup == null) {
                     newGroups.add(ProtocolGroupEntity(
                         protocolId = proto.id, groupId = row.group_id, groupName = row.group_name, groupType = row.group_type,
                         anlageId = row.anlage_id, anlageName = row.anlage_name, anlageType = row.anlage_type, anlageInterval = row.anlage_interval,
-                        orderIndex = nextOrder++
+                        orderIndex = nextOrder++, bereich = row.bereich
                     ))
+                } else {
+                    val incomingBereich = row.bereich?.takeIf { it.isNotBlank() }
+                    val localBereich = existingGroup.bereich?.takeIf { it.isNotBlank() }
+                    if (incomingBereich != localBereich && proto.updated_at > existingGroup.updatedAt) {
+                        bereichUpdatedGroups.add(existingGroup.copy(bereich = incomingBereich, updatedAt = proto.updated_at))
+                    }
                 }
                 row.cells.forEachIndexed { j, c ->
                     if (c.slot_key == "__grid__") return@forEachIndexed
@@ -1460,6 +1654,7 @@ class MainViewModel @Inject constructor(
                 }
             }
             if (newGroups.isNotEmpty()) protocolGroupDao.insertOrUpdateAll(newGroups)
+            if (bereichUpdatedGroups.isNotEmpty()) protocolGroupDao.insertOrUpdateAll(bereichUpdatedGroups)
             if (newCells.isNotEmpty()) groupCellDao.insertOrUpdateAll(newCells)
         }
     }
@@ -1549,9 +1744,18 @@ class MainViewModel @Inject constructor(
                 columns = listOf("1", "2", "3")
             ))
             put("Lichtruf", typeDef(
-                detectors = listOf("-", "Normal", "AT", "BT", "ZT", "EM", "PN", "Display"),
-                values = listOf("CHECK", "Def."),
-                columns = listOf("1", "2", "3", "4")
+                // Zimmermodul-Vokabular aus Muster_Lichtrufanlage.xlsx -- strukturell
+                // wie BMA (Räume statt Meldegruppen, freie Modul-Slots statt Melder-Slots,
+                // gleiche Prüfwerte-Liste).
+                detectors = listOf("-", "ZT", "ZL", "RT B1", "RT B2", "RT B3", "RT",
+                                    "PT Bad", "RT Bad", "ZT Bad", "AT Bad"),
+                values = listOf("CHECK", "H1", "H2", "Def."),
+                columns = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "10"),
+                kurzzeichen = mapOf(
+                    "ZT" to "ZT", "ZL" to "ZL", "RT B1" to "R1", "RT B2" to "R2",
+                    "RT B3" to "R3", "RT" to "RT", "PT Bad" to "PB", "RT Bad" to "RB",
+                    "ZT Bad" to "ZB", "AT Bad" to "AB"
+                )
             ))
             put("SLA", typeDef(
                 detectors = listOf("-", "Normal", "ZD", "DB", "RAS", "TDIF"),

@@ -186,3 +186,42 @@ Alte manuelle Typen (ZD, ZB, TDiff, Tmax, RAS, Linear) bleiben erhalten
       direkt -- Lichtruf braucht feste benannte Spalten pro Raum plus ein
       Fehlercode-Vokabular statt eines Zeitraum-Vokabulars. Wird als eigenes
       Vorhaben separat geplant, sobald angefordert.
+
+## Nachfassende Verbesserungen, Runde 2: Meldegruppe direkt löschen/hinzufügen
+
+Bisher musste man zum Löschen einer bestimmten Meldegruppe deren Nummer auf
+den höchsten Wert umsortieren und dann den "Gruppen"-Stepper um eins
+verringern (der immer nur die LETZTE Gruppe entfernte). Ersetzt durch:
+direktes Löschen einer beliebigen Zeile (mit Rückfrage) + eine
+"Meldegruppe hinzufügen"-Zeile am Ende statt des Steppers. Für beide Editoren
+(Web + Android).
+
+- [x] **Android `MainViewModel.kt`**: `removeLastGroupFromDevice(protocolId,
+      devicePrefix)` ersetzt durch `removeGroupFromDevice(protocolId,
+      groupId)` -- löscht eine beliebige Gruppe (Cells + Group-Row,
+      transaktional) statt zwingend die letzte. `addGroupToDevice` war
+      bereits korrekt (hängt neue Gruppe ans Ende) -- unverändert.
+- [x] **Android `MatrixEditScreen.kt`**: `showRemoveGroupDialog`
+      (Boolean) ersetzt durch `groupPendingDelete`
+      (`ProtocolGroupEntity?`) -- Dialog jetzt pro Zeile statt fix auf die
+      letzte Gruppe. "Gruppen"-Stepper aus dem Geräte-Header entfernt
+      (Anzahl steht weiterhin in der Subtitle-Zeile). Neue Lösch-Spalte
+      (`deleteColWidth`, Papierkorb-Icon) in der eingefrorenen Spalte pro
+      Zeile, mit Toast-Guard bei `device.groups.size <= 1` (letzte Gruppe
+      kann nicht entfernt werden). Neue "+ Meldegruppe hinzufügen"-Zeile
+      unter dem Grid, ruft `addGroupToDevice` auf (Guard bei >= 200).
+      `./gradlew :app:compileDebugKotlin` -- grün.
+- [x] **WebUI `templates/index.html`**: neue Alpine-Funktionen
+      `gridDeleteGroup(rIdx)` (mit `confirm()`-Rückfrage, re-keyed alle
+      Zellen nach dem gelöschten Index um eins herunter -- `gridCells` sind
+      POSITIONAL nach Zeilenindex geschlüsselt, nicht nach Gruppennummer,
+      das musste beim Löschen einer mittleren Zeile beachtet werden) und
+      `gridAddGroup()` (hängt eine neue Gruppe mit nächsthöherer Nummer ans
+      Ende an). Das alte "Gruppen:"-Zahlenfeld im Toolbar entfernt; neue
+      Papierkorb-Spalte pro Zeile + "Meldegruppe hinzufügen"-Zeile unter der
+      Tabelle (nur im Editier-, nicht im Lesemodus). Render-Smoke-Test
+      (isolierte webui-Instanz, `GET /`) -- 200 OK, neue Funktionen/Markup
+      vorhanden, alte "Gruppen:"-Beschriftung weg.
+- [ ] Manueller Rundlauf-Test im echten Browser + auf dem Testgerät bleibt
+      beim Nutzer.
+- [ ] Commit + Deploy (nur auf explizite Nutzer-Anfrage).

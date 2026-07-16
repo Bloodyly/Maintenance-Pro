@@ -10,9 +10,10 @@ import androidx.room.RoomDatabase
         GroupCellEntity::class,
         SyncQueueEntity::class,
         ServerConfigEntity::class,
-        HardwareTableEntity::class
+        HardwareTableEntity::class,
+        BereicheTableEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class MaintenanceDatabase : RoomDatabase() {
@@ -22,4 +23,5 @@ abstract class MaintenanceDatabase : RoomDatabase() {
     abstract fun syncQueueDao(): SyncQueueDao
     abstract fun serverConfigDao(): ServerConfigDao
     abstract fun hardwareTableDao(): HardwareTableDao
+    abstract fun bereicheTableDao(): BereicheTableDao
 }

@@ -1717,9 +1717,6 @@
                         </div>
                         <!-- Config inputs -->
                         <div class="flex items-center gap-1.5 text-[11px]">
-                            <label class="text-slate-500 font-semibold">Gruppen:</label>
-                            <input type="number" x-model.number="gridConfig.n_groups" min="1" max="200" @change="gridApplyConfig()"
-                                class="w-16 border border-slate-200 rounded px-2 py-1 text-xs text-center font-mono">
                             <label class="text-slate-500 font-semibold">Melder max.:</label>
                             <input type="number" x-model.number="gridConfig.n_cols" min="1" max="60" @change="gridApplyConfig()"
                                 class="w-16 border border-slate-200 rounded px-2 py-1 text-xs text-center font-mono">
@@ -1730,6 +1727,12 @@
                             <span>ETB importieren</span>
                             <input type="file" accept=".etb,.csv,.txt" @change="importEtbFile($event)" class="hidden">
                         </label>
+                        <!-- Bereiche (Sektionen): grouping Meldegruppen for display, WebUI-only -->
+                        <button type="button" @click="openBereicheEditor()"
+                            class="inline-flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg hover:bg-slate-50 transition">
+                            <i data-lucide="layout-list" class="w-3.5 h-3.5"></i>
+                            <span>Bereiche verwalten</span>
+                        </button>
                     </div>
                 </template>
                 <!-- Close -->
@@ -1758,6 +1761,9 @@
                 <div class="p-0 select-none bg-white">
                     <table class="border-collapse text-xs" style="table-layout: fixed; min-width: max-content;">
                         <colgroup>
+                            <template x-if="!cellsEditorReadOnly">
+                                <col style="width:28px; min-width:28px;">
+                            </template>
                             <col style="width:52px; min-width:52px;">
                             <col style="width:180px; min-width:120px;">
                             <template x-for="c in gridConfig.n_cols" :key="c">
@@ -1766,25 +1772,52 @@
                         </colgroup>
                         <thead>
                             <tr>
-                                <th class="sticky top-0 left-0 z-30 bg-slate-800 text-white text-center text-[10px] font-bold border border-slate-700 px-1 py-2">Grp</th>
-                                <th class="sticky top-0 z-30 bg-slate-800 text-white text-left text-[10px] font-bold border border-slate-700 px-2 py-2" style="left:52px;">Bezeichnung</th>
+                                <template x-if="!cellsEditorReadOnly">
+                                    <th class="sticky top-0 left-0 z-30 bg-slate-800 border border-slate-700 px-0 py-2"></th>
+                                </template>
+                                <th class="sticky top-0 z-30 bg-slate-800 text-white text-center text-[10px] font-bold border border-slate-700 px-1 py-2"
+                                    :class="cellsEditorReadOnly ? 'left-0' : ''"
+                                    :style="cellsEditorReadOnly ? '' : 'left:28px;'">Grp</th>
+                                <th class="sticky top-0 z-30 bg-slate-800 text-white text-left text-[10px] font-bold border border-slate-700 px-2 py-2"
+                                    :style="'left:' + (cellsEditorReadOnly ? '52px;' : '80px;')">Bezeichnung</th>
                                 <template x-for="c in gridConfig.n_cols" :key="c">
                                     <th class="sticky top-0 z-20 bg-slate-700 text-white text-center text-[10px] font-bold border border-slate-600 px-0 py-2 w-9" x-text="c"></th>
                                 </template>
                             </tr>
                         </thead>
                         <tbody>
-                            <template x-for="(grp, rIdx) in gridGroups" :key="rIdx">
-                                <tr class="group/row hover:bg-blue-50/30">
+                            <template x-for="entry in gridDisplayRows()" :key="entry.key">
+                                <template x-if="entry.kind === 'header'">
+                                    <tr>
+                                        <td class="border border-slate-400 bg-slate-100 px-2 py-1.5 font-bold text-[11px] text-slate-700"
+                                            :colspan="(cellsEditorReadOnly ? 2 : 3) + gridConfig.n_cols"
+                                            x-text="entry.label"></td>
+                                    </tr>
+                                </template>
+                                <template x-if="entry.kind === 'data'">
+                                    <tr class="group/row hover:bg-blue-50/30" x-data="{ rIdx: entry.rIdx }">
+                                    <!-- Per-row delete -->
+                                    <template x-if="!cellsEditorReadOnly">
+                                        <td class="sticky left-0 z-10 border border-slate-400 p-0 text-center bg-white">
+                                            <button type="button" @click="gridDeleteGroup(rIdx)"
+                                                title="Gruppe löschen"
+                                                class="w-full h-7 flex items-center justify-center text-slate-400 hover:text-red-600 transition">
+                                                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                                            </button>
+                                        </td>
+                                    </template>
                                     <!-- Group number -->
-                                    <td class="sticky left-0 z-10 bg-slate-50 border border-slate-400 text-center p-0">
-                                        <input type="text" x-model="grp.grp_num"
+                                    <td class="sticky z-10 bg-slate-50 border border-slate-400 text-center p-0"
+                                        :class="cellsEditorReadOnly ? 'left-0' : ''"
+                                        :style="cellsEditorReadOnly ? '' : 'left:28px;'">
+                                        <input type="text" x-model="gridGroups[rIdx].grp_num"
                                             class="w-full text-center font-mono font-bold text-[11px] bg-transparent border-0 outline-none px-1 py-1.5"
                                             :readonly="cellsEditorReadOnly">
                                     </td>
                                     <!-- Bezeichnung -->
-                                    <td class="sticky z-10 bg-white border border-slate-400 p-0" style="left:52px;">
-                                        <input type="text" x-model="grp.name" placeholder="Bezeichnung..."
+                                    <td class="sticky z-10 bg-white border border-slate-400 p-0"
+                                        :style="'left:' + (cellsEditorReadOnly ? '52px;' : '80px;')">
+                                        <input type="text" x-model="gridGroups[rIdx].name" placeholder="Bezeichnung..."
                                             class="w-full text-[11px] bg-transparent border-0 outline-none px-2 py-1.5"
                                             :readonly="cellsEditorReadOnly">
                                     </td>
@@ -1811,10 +1844,20 @@
                                             </div>
                                         </td>
                                     </template>
-                                </tr>
+                                    </tr>
+                                </template>
                             </template>
                         </tbody>
                     </table>
+                    <!-- Add-row affordance: appends a Meldegruppe at the end, replacing the
+                         old "bump the Gruppen counter" workflow. -->
+                    <template x-if="!cellsEditorReadOnly">
+                        <button type="button" @click="gridAddGroup()"
+                            class="w-full flex items-center justify-center gap-1.5 py-2 text-[11px] font-semibold text-[#003D9B] hover:bg-blue-50 border border-t-0 border-slate-300 transition">
+                            <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                            Meldegruppe hinzufügen
+                        </button>
+                    </template>
                 </div>
             </template>
 
@@ -1987,6 +2030,145 @@
                 <button @click="isCellsEditorOpen = false" class="px-4 py-2 border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg hover:bg-slate-50 transition">Abbrechen</button>
                 <button @click="saveCells()" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition">
                     <i data-lucide="save" class="w-3.5 h-3.5"></i> Auslöseliste speichern
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 6b. Bereiche-Verwaltung-Modal (nested above the Auslöselisten-Editor) -->
+    <!-- Shuttle-Ansicht: Bereiche (links, weiterhin anlegen/umbenennen/löschen/
+         per Drag&Drop neu anordnen) · Verfügbar · Zugewiesen. Klick auf einen
+         Bereich links wählt ihn für die Zuordnung aus; Melder werden per Pfeil
+         ODER per Drag&Drop zwischen Verfügbar/Zugewiesen verschoben. Ändert nur
+         gridGroups[i].bereich direkt (gleiches Datenmodell wie zuvor die
+         Inline-Dropdown-Spalte) -- kein neuer Server-Vertrag. -->
+    <div x-show="bereicheEditorOpen" style="display:none;"
+         class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl flex flex-col overflow-hidden" style="max-height: 85vh;">
+            <div class="px-6 py-4 bg-slate-800 text-white flex items-center justify-between shrink-0">
+                <div>
+                    <h3 class="text-sm font-bold flex items-center gap-2">
+                        <i data-lucide="layout-list" class="w-4 h-4 text-blue-300"></i>
+                        Bereiche verwalten
+                    </h3>
+                    <p class="text-[11px] text-slate-400 mt-0.5">Gliedert die Auslöseliste in benannte Abschnitte (z.&nbsp;B. "Station 1", "RG", "KG") -- Bereich links auswählen, dann Meldegruppen zuordnen.</p>
+                </div>
+                <button @click="bereicheEditorOpen = false" class="p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-white transition">
+                    <i data-lucide="x" class="w-4 h-4"></i>
+                </button>
+            </div>
+            <div class="p-5 overflow-y-auto" x-data="{
+                    dragIdx: null,
+                    shuttlePickedAvailable: [],
+                    shuttlePickedAssigned: [],
+                    shuttleDragOrigin: null,
+                    shuttleDragGrp: null,
+                    toggle(arr, id) { const i = arr.indexOf(id); if (i >= 0) arr.splice(i, 1); else arr.push(id); }
+                 }">
+                <div class="grid gap-2" style="grid-template-columns: 210px 1fr 32px 1fr; min-height: 280px;">
+                    <!-- Column 1: Bereiche -->
+                    <div class="border border-slate-200 rounded-lg overflow-hidden flex flex-col">
+                        <div class="text-[10px] font-bold uppercase tracking-wide text-slate-400 bg-slate-50 px-2 py-1.5 border-b border-slate-200">Bereiche</div>
+                        <div class="flex-1 overflow-y-auto p-1.5 space-y-1">
+                            <template x-if="bereicheEditorList.length === 0">
+                                <p class="text-[11px] text-slate-400 italic py-4 text-center">Noch keine Bereiche definiert.</p>
+                            </template>
+                            <template x-for="(b, bi) in bereicheEditorList" :key="bi">
+                                <div class="flex items-center gap-1.5 rounded px-2 py-1.5 cursor-pointer border transition"
+                                    :class="bereicheEditorSelectedIdx === bi
+                                        ? 'bg-[#003D9B] border-[#003D9B]'
+                                        : (dragIdx === bi ? 'border-[#003D9B] opacity-50 bg-slate-50' : 'bg-slate-50 border-slate-200 hover:border-slate-300')"
+                                    draggable="true"
+                                    @click="bereicheEditorSelectedIdx = bi"
+                                    @dragstart="dragIdx = bi"
+                                    @dragend="dragIdx = null"
+                                    @dragover.prevent
+                                    @drop.prevent="bereicheReorder(dragIdx, bi)">
+                                    <span class="w-3 text-center text-[11px] cursor-move shrink-0"
+                                        :class="bereicheEditorSelectedIdx === bi ? 'text-white/50' : 'text-slate-300'">⠿</span>
+                                    <input type="text" x-model="b.name" @click.stop
+                                        class="flex-1 min-w-0 border-0 rounded px-1 py-0.5 text-xs bg-transparent"
+                                        :class="bereicheEditorSelectedIdx === bi ? 'text-white' : 'text-slate-700'">
+                                    <button type="button" @click.stop="bereicheDeleteAt(bi)" class="shrink-0 px-0.5"
+                                        :class="bereicheEditorSelectedIdx === bi ? 'text-white/70 hover:text-white' : 'text-slate-400 hover:text-red-500'">
+                                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                                    </button>
+                                </div>
+                            </template>
+                        </div>
+                        <div class="flex items-center gap-1.5 p-1.5 border-t border-slate-100">
+                            <input type="text" x-model="bereicheEditorNewName" placeholder="Neuer Bereich..."
+                                @keydown.enter.prevent="bereicheAdd()"
+                                class="flex-1 min-w-0 border border-slate-200 rounded-lg px-2 py-1.5 text-[11px]">
+                            <button type="button" @click="bereicheAdd()" class="px-2 py-1.5 bg-[#003D9B] text-white rounded-lg text-xs font-bold shrink-0">
+                                <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Column 2: Verfügbar (alles außer dem ausgewählten Bereich, inkl. anderer Bereiche) -->
+                    <div class="border border-slate-200 rounded-lg overflow-hidden flex flex-col">
+                        <div class="text-[10px] font-bold uppercase tracking-wide text-slate-400 bg-slate-50 px-2 py-1.5 border-b border-slate-200">Verfügbar</div>
+                        <div class="flex-1 overflow-y-auto p-1.5 space-y-0.5"
+                            @dragover.prevent
+                            @drop.prevent="if (shuttleDragOrigin === 'assigned') shuttleUnassignGroup(shuttleDragGrp); shuttleDragOrigin = null">
+                            <template x-if="bereicheEditorSelectedIdx === null">
+                                <p class="text-[11px] text-slate-400 italic py-4 text-center">Links zuerst einen Bereich auswählen.</p>
+                            </template>
+                            <template x-for="g in shuttleAvailable()" :key="g.grp_num">
+                                <div class="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] cursor-pointer border transition"
+                                    draggable="true"
+                                    @dragstart="shuttleDragOrigin = 'available'; shuttleDragGrp = g.grp_num"
+                                    @click="toggle(shuttlePickedAvailable, g.grp_num)"
+                                    :class="shuttlePickedAvailable.includes(g.grp_num) ? 'bg-blue-50 border-[#003D9B]' : 'border-transparent hover:bg-slate-50'">
+                                    <span class="font-mono font-bold text-[9px] text-[#003D9B] bg-blue-50 rounded px-1 shrink-0" x-text="g.grp_num"></span>
+                                    <span class="flex-1 truncate" x-text="g.name || '(ohne Bezeichnung)'"></span>
+                                    <span x-show="g.bereich" class="text-[9px] text-slate-400 shrink-0 truncate max-w-[70px]" x-text="g.bereich"></span>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Arrow column -->
+                    <div class="flex flex-col items-center justify-center gap-2">
+                        <button type="button"
+                            @click="shuttlePickedAvailable.forEach(id => shuttleAssignGroup(id)); shuttlePickedAvailable = []"
+                            :disabled="shuttlePickedAvailable.length === 0 || bereicheEditorSelectedIdx === null"
+                            class="w-7 h-7 rounded border border-slate-200 flex items-center justify-center text-slate-500 hover:bg-[#003D9B] hover:text-white hover:border-[#003D9B] disabled:opacity-30 disabled:hover:bg-white disabled:hover:text-slate-500 transition">
+                            <i data-lucide="chevron-right" class="w-4 h-4"></i>
+                        </button>
+                        <button type="button"
+                            @click="shuttlePickedAssigned.forEach(id => shuttleUnassignGroup(id)); shuttlePickedAssigned = []"
+                            :disabled="shuttlePickedAssigned.length === 0"
+                            class="w-7 h-7 rounded border border-slate-200 flex items-center justify-center text-slate-500 hover:bg-[#003D9B] hover:text-white hover:border-[#003D9B] disabled:opacity-30 disabled:hover:bg-white disabled:hover:text-slate-500 transition">
+                            <i data-lucide="chevron-left" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+
+                    <!-- Column 3: Zugewiesen (nur der ausgewählte Bereich) -->
+                    <div class="border border-slate-200 rounded-lg overflow-hidden flex flex-col">
+                        <div class="text-[10px] font-bold uppercase tracking-wide text-slate-400 bg-slate-50 px-2 py-1.5 border-b border-slate-200">Zugewiesen</div>
+                        <div class="flex-1 overflow-y-auto p-1.5 space-y-0.5"
+                            @dragover.prevent
+                            @drop.prevent="if (shuttleDragOrigin === 'available') shuttleAssignGroup(shuttleDragGrp); shuttleDragOrigin = null">
+                            <template x-for="g in shuttleAssigned()" :key="g.grp_num">
+                                <div class="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] cursor-pointer border transition"
+                                    draggable="true"
+                                    @dragstart="shuttleDragOrigin = 'assigned'; shuttleDragGrp = g.grp_num"
+                                    @click="toggle(shuttlePickedAssigned, g.grp_num)"
+                                    :class="shuttlePickedAssigned.includes(g.grp_num) ? 'bg-blue-50 border-[#003D9B]' : 'border-transparent hover:bg-slate-50'">
+                                    <span class="font-mono font-bold text-[9px] text-[#003D9B] bg-blue-50 rounded px-1 shrink-0" x-text="g.grp_num"></span>
+                                    <span class="flex-1 truncate" x-text="g.name || '(ohne Bezeichnung)'"></span>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="px-5 py-4 border-t border-slate-100 flex justify-end gap-2 shrink-0">
+                <button type="button" @click="bereicheEditorOpen = false" class="px-4 py-2 border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg hover:bg-slate-50 transition">Abbrechen</button>
+                <button type="button" @click="bereicheSave()" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition">
+                    <i data-lucide="save" class="w-3.5 h-3.5"></i> Übernehmen
                 </button>
             </div>
         </div>
@@ -2258,6 +2440,13 @@
                 // Hardware table (Zentrale/Ringkarten-Inventar), optional per Gerät
                 hardwareEnabled: false,
                 cellsEditorHardwareRows: [],
+
+                // Bereiche (Sektionen): grouping of Meldegruppen within one Gerät, WebUI-only
+                cellsEditorBereiche: [],
+                bereicheEditorOpen: false,
+                bereicheEditorList: [],   // [{original: str|null, name: str}] while the modal is open
+                bereicheEditorNewName: '',
+                bereicheEditorSelectedIdx: null,  // which Bereich the shuttle (Verfügbar/Zugewiesen) is showing
 
                 // Grid editor state
                 gridFormat: 'flat',
@@ -3459,7 +3648,7 @@
                     this.gridPainting = false; this.gridPaintStart = null; this.gridPaintEnd = null;
                 },
                 gridInitEmpty(n_groups, n_cols) {
-                    this.gridGroups = Array.from({ length: n_groups }, (_, i) => ({ grp_num: String(i + 1).padStart(2, '0'), name: '' }));
+                    this.gridGroups = Array.from({ length: n_groups }, (_, i) => ({ grp_num: String(i + 1).padStart(2, '0'), name: '', bereich: '' }));
                     this.gridCells = {};
                     this.gridConfig = { n_groups, n_cols };
                 },
@@ -3467,9 +3656,47 @@
                     const { n_groups, n_cols } = this.gridConfig;
                     while (this.gridGroups.length < n_groups) {
                         const i = this.gridGroups.length;
-                        this.gridGroups.push({ grp_num: String(i + 1).padStart(2, '0'), name: '' });
+                        this.gridGroups.push({ grp_num: String(i + 1).padStart(2, '0'), name: '', bereich: '' });
                     }
                     this.gridGroups = this.gridGroups.slice(0, n_groups);
+                },
+                // Appends a single Meldegruppe at the end -- replaces the old "bump the
+                // Gruppen-counter" workflow with a direct add. gridCells are keyed
+                // POSITIONALLY ("{rowIdx}_{col}", 1-based), so a plain append at the new
+                // max index is safe without touching any existing cell.
+                gridAddGroup() {
+                    if (this.gridGroups.length >= 200) return;
+                    const nextNum = this.gridGroups.reduce((max, g) => {
+                        const n = parseInt(g.grp_num, 10);
+                        return Number.isFinite(n) ? Math.max(max, n) : max;
+                    }, 0) + 1;
+                    this.gridGroups.push({ grp_num: String(nextNum).padStart(2, '0'), name: '', bereich: '' });
+                    this.gridConfig.n_groups = this.gridGroups.length;
+                    setTimeout(() => { this.safeCreateIcons(); }, 50);
+                },
+                // Removes one specific Meldegruppe row (with confirmation) -- replaces the old
+                // "renumber it to the highest value, then decrement the counter" workaround.
+                // Since gridCells keys are positional, every row AFTER the deleted one must be
+                // re-keyed down by one index, not just the deleted row's cells discarded.
+                gridDeleteGroup(rIdx) {
+                    if (this.gridGroups.length <= 1) return;
+                    const grp = this.gridGroups[rIdx];
+                    const label = grp.grp_num + (grp.name ? ` (${grp.name})` : '');
+                    if (!confirm(`Gruppe "${label}" wirklich löschen? Alle Melder und Prüfwerte dieser Gruppe gehen dabei verloren.`)) return;
+
+                    const deletedRow = rIdx + 1;
+                    const nCols = this.gridConfig.n_cols;
+                    const newCells = {};
+                    for (const [key, cell] of Object.entries(this.gridCells)) {
+                        const [rowStr, colStr] = key.split('_');
+                        const row = parseInt(rowStr, 10);
+                        if (row === deletedRow) continue;
+                        const newRow = row > deletedRow ? row - 1 : row;
+                        newCells[`${newRow}_${colStr}`] = cell;
+                    }
+                    this.gridCells = newCells;
+                    this.gridGroups.splice(rIdx, 1);
+                    this.gridConfig.n_groups = this.gridGroups.length;
                 },
                 // preserveValues merges a freshly-imported grid (e.g. a re-applied ETB)
                 // onto the currently-loaded one instead of a plain full load, so already-
@@ -3484,10 +3711,15 @@
                     const oldRowIdxByLabel = preserve
                         ? new Map(this.gridGroups.map((g, i) => [g.grp_num, i + 1]))
                         : null;
+                    // Bereich-Zuordnung ist WebUI-Metadaten, keine Melderliste -- ein ETB-
+                    // Reimport (preserveValues) darf sie nicht stillschweigend verwerfen.
+                    const oldBereichByLabel = preserve
+                        ? new Map(this.gridGroups.map(g => [g.grp_num, g.bereich || '']))
+                        : null;
                     const oldCells = preserve ? this.gridCells : null;
 
                     this.gridConfig = { n_groups: data.n_groups, n_cols: data.n_cols };
-                    this.gridGroups = (data.groups || []).map(([grp_num, name]) => ({ grp_num, name }));
+                    this.gridGroups = (data.groups || []).map(([grp_num, name, bereich]) => ({ grp_num, name, bereich: bereich || '' }));
                     this.gridCells = {};
                     const types = data.types || {};
                     const values = data.values || {};
@@ -3499,6 +3731,9 @@
                     if (preserve && oldRowIdxByLabel && oldCells) {
                         this.gridGroups.forEach((g, idx) => {
                             const newRowIdx = idx + 1;
+                            if (!g.bereich && oldBereichByLabel?.has(g.grp_num)) {
+                                g.bereich = oldBereichByLabel.get(g.grp_num);
+                            }
                             const oldRowIdx = oldRowIdxByLabel.get(g.grp_num);
                             if (oldRowIdx == null) return; // genuinely new group -- nothing to carry over
                             for (let col = 1; col <= this.gridConfig.n_cols; col++) {
@@ -3522,7 +3757,122 @@
                         if (cell.value) values[k] = cell.value;
                     }
                     return { v: 1, n_groups: this.gridConfig.n_groups, n_cols: this.gridConfig.n_cols,
-                        groups: this.gridGroups.map(g => [g.grp_num, g.name]), types, values };
+                        groups: this.gridGroups.map(g => [g.grp_num, g.name, g.bereich || '']), types, values };
+                },
+                // Flat list of {kind:'header', key, label} / {kind:'data', key, rIdx} in
+                // DISPLAY order -- header and data rows are separate array entries (not
+                // one row that's "sometimes a header"), so each maps to exactly one <tr>
+                // in the x-for template below. rIdx is always the ORIGINAL gridGroups
+                // index -- everything that looks up cells/paints/deletes (gridCell,
+                // gridDeleteGroup, gridStartPaint, ...) must keep using it, never the
+                // position in this array, since gridCells is keyed positionally by the
+                // original index.
+                //
+                // Rows are grouped by Bereich (cellsEditorBereiche's order), unassigned/
+                // unknown-Bereich rows last under "Ohne Bereich". If NO row has a Bereich
+                // at all, this returns plain data entries in original order with zero
+                // header entries -- the common case, byte-identical to before this
+                // feature existed.
+                gridDisplayRows() {
+                    const n = this.gridGroups.length;
+                    const order = Array.from({ length: n }, (_, i) => i);
+                    const anyBereich = this.gridGroups.some(g => g.bereich);
+                    if (!anyBereich) return order.map(rIdx => ({ kind: 'data', key: 'r:' + rIdx, rIdx }));
+
+                    const rank = new Map(this.cellsEditorBereiche.map((name, i) => [name, i]));
+                    const unassignedRank = this.cellsEditorBereiche.length;
+                    const rankOf = (i) => this.gridGroups[i].bereich
+                        ? (rank.get(this.gridGroups[i].bereich) ?? unassignedRank)
+                        : unassignedRank;
+                    order.sort((a, b) => rankOf(a) - rankOf(b));
+
+                    const out = [];
+                    let prevBereich = Symbol('none');
+                    for (const rIdx of order) {
+                        const cur = this.gridGroups[rIdx].bereich || '';
+                        if (cur !== prevBereich) {
+                            const label = cur || 'Ohne Bereich';
+                            out.push({ kind: 'header', key: 'h:' + label, label });
+                            prevBereich = cur;
+                        }
+                        out.push({ kind: 'data', key: 'r:' + rIdx, rIdx });
+                    }
+                    return out;
+                },
+                openBereicheEditor() {
+                    this.bereicheEditorList = this.cellsEditorBereiche.map(n => ({ original: n, name: n }));
+                    this.bereicheEditorNewName = '';
+                    this.bereicheEditorSelectedIdx = this.bereicheEditorList.length > 0 ? 0 : null;
+                    this.bereicheEditorOpen = true;
+                },
+                bereicheAdd() {
+                    const name = (this.bereicheEditorNewName || '').trim();
+                    if (!name || this.bereicheEditorList.some(b => b.name === name)) return;
+                    this.bereicheEditorList.push({ original: null, name });
+                    this.bereicheEditorNewName = '';
+                    // Select the freshly-added Bereich so the shuttle is immediately ready
+                    // to assign Meldegruppen to it, no extra click needed.
+                    this.bereicheEditorSelectedIdx = this.bereicheEditorList.length - 1;
+                },
+                bereicheDeleteAt(idx) {
+                    const b = this.bereicheEditorList[idx];
+                    if (!confirm(`Bereich "${b.name}" wirklich löschen? Zugeordnete Meldegruppen verlieren dadurch ihre Bereichszuordnung (die Gruppen selbst bleiben erhalten).`)) return;
+                    this.bereicheEditorList.splice(idx, 1);
+                    if (this.bereicheEditorSelectedIdx === idx) {
+                        this.bereicheEditorSelectedIdx = this.bereicheEditorList.length > 0 ? 0 : null;
+                    } else if (this.bereicheEditorSelectedIdx > idx) {
+                        this.bereicheEditorSelectedIdx -= 1;
+                    }
+                },
+                bereicheReorder(fromIdx, toIdx) {
+                    if (fromIdx === null || fromIdx === toIdx) return;
+                    const moved = this.bereicheEditorList.splice(fromIdx, 1)[0];
+                    this.bereicheEditorList.splice(toIdx, 0, moved);
+                    // Keep the selection following the same logical Bereich, not the same index slot.
+                    if (this.bereicheEditorSelectedIdx === fromIdx) this.bereicheEditorSelectedIdx = toIdx;
+                },
+                // Shuttle-Ansicht (ersetzt die frühere Inline-Dropdown-Spalte im Grid):
+                // Bereiche links auswählen, dann Meldegruppen per Pfeil/Drag&Drop zwischen
+                // "Verfügbar" und "Zugewiesen" verschieben. Schreibt direkt auf
+                // gridGroups[i].bereich -- gleiches Datenmodell, nur andere Bedien-UI.
+                shuttleSelectedName() {
+                    if (this.bereicheEditorSelectedIdx === null) return null;
+                    return this.bereicheEditorList[this.bereicheEditorSelectedIdx]?.name ?? null;
+                },
+                shuttleAvailable() {
+                    const name = this.shuttleSelectedName();
+                    if (name === null) return [];
+                    return this.gridGroups.filter(g => g.bereich !== name);
+                },
+                shuttleAssigned() {
+                    const name = this.shuttleSelectedName();
+                    if (name === null) return [];
+                    return this.gridGroups.filter(g => g.bereich === name);
+                },
+                shuttleAssignGroup(grpNum) {
+                    const name = this.shuttleSelectedName();
+                    if (name === null) return;
+                    const g = this.gridGroups.find(x => x.grp_num === grpNum);
+                    if (g) g.bereich = name;
+                },
+                shuttleUnassignGroup(grpNum) {
+                    const g = this.gridGroups.find(x => x.grp_num === grpNum);
+                    if (g) g.bereich = '';
+                },
+                bereicheSave() {
+                    // Renames (same entry, name edited in place) are propagated into the
+                    // grid rows BEFORE committing the new canonical list -- gridGroups only
+                    // ever stores the current Bereich NAME (no separate stable id), so a
+                    // rename must rewrite every matching row's 'bereich' string here.
+                    for (const b of this.bereicheEditorList) {
+                        if (b.original && b.original !== b.name) {
+                            this.gridGroups.forEach(g => { if (g.bereich === b.original) g.bereich = b.name; });
+                        }
+                    }
+                    const finalNames = this.bereicheEditorList.map(b => b.name);
+                    this.gridGroups.forEach(g => { if (g.bereich && !finalNames.includes(g.bereich)) g.bereich = ''; });
+                    this.cellsEditorBereiche = finalNames;
+                    this.bereicheEditorOpen = false;
                 },
 
                 openCellsViewer(protocol_id, dev) {
@@ -3545,6 +3895,7 @@
                     this.cellsEditorDef = null;
                     this.cellsEditorHardwareRows = [];
                     this.hardwareEnabled = false;
+                    this.cellsEditorBereiche = [];
                     this.cellsEditorLoading = true;
                     this.isCellsEditorOpen = true;
                     fetch(`/api/cells/${protocol_id}/${dev.id}`)
@@ -3554,6 +3905,7 @@
                             this.cellsEditorDef = data.meldepunkt_definitionen;
                             this.cellsEditorHardwareRows = data.hardware || [];
                             this.hardwareEnabled = this.cellsEditorHardwareRows.length > 0 || !!data.hardware_enabled_default;
+                            this.cellsEditorBereiche = data.bereiche || [];
                             if (data.format === 'grid') {
                                 this.gridFormat = 'grid';
                                 this.gridFromJson(data.grid);
@@ -3604,6 +3956,7 @@
                     // Checkbox off -> send [] so a previously-saved Hardware table gets
                     // removed too; checkbox on -> send whatever rows are currently in the editor.
                     payload.hardware = this.hardwareEnabled ? this.cellsEditorHardwareRows : [];
+                    payload.bereiche = this.cellsEditorBereiche;
                     const body = JSON.stringify(payload);
                     fetch(`/api/cells/${this.cellsEditorProtocolId}/${this.cellsEditorDevice.id}`, {
                         method: 'POST',

@@ -63,6 +63,12 @@ interface ProtocolGroupDao {
     @Query("UPDATE protocol_groups SET groupId = :newGroupId, groupName = :newGroupName, groupType = :newGroupType WHERE protocolId = :protocolId AND groupId = :oldGroupId")
     suspend fun updateGroupDetails(protocolId: String, oldGroupId: String, newGroupId: String, newGroupName: String, newGroupType: String)
 
+    @Query("UPDATE protocol_groups SET bereich = :bereich, updatedAt = :updatedAt WHERE protocolId = :protocolId AND groupId = :groupId")
+    suspend fun updateBereich(protocolId: String, groupId: String, bereich: String, updatedAt: Long)
+
+    @Query("SELECT * FROM protocol_groups WHERE protocolId = :protocolId AND updatedAt > :since")
+    suspend fun getChangedSince(protocolId: String, since: Long): List<ProtocolGroupEntity>
+
     @Query("DELETE FROM protocol_groups WHERE protocolId = :protocolId AND groupId = :groupId")
     suspend fun deleteGroup(protocolId: String, groupId: String)
 
@@ -137,6 +143,28 @@ interface HardwareTableDao {
     suspend fun deleteForDevice(protocolId: String, deviceGroupId: String)
 
     @Query("DELETE FROM hardware_tables WHERE protocolId = :protocolId")
+    suspend fun deleteAllForProtocol(protocolId: String)
+}
+
+/** Ordered Bereich-Namen-Liste per device -- mirrors HardwareTableDao 1:1. */
+@Dao
+interface BereicheTableDao {
+    @Query("SELECT * FROM bereiche_table WHERE protocolId = :protocolId AND deviceGroupId = :deviceGroupId LIMIT 1")
+    fun getForDeviceFlow(protocolId: String, deviceGroupId: String): Flow<BereicheTableEntity?>
+
+    @Query("SELECT * FROM bereiche_table WHERE protocolId = :protocolId AND deviceGroupId = :deviceGroupId LIMIT 1")
+    suspend fun getForDevice(protocolId: String, deviceGroupId: String): BereicheTableEntity?
+
+    @Query("SELECT * FROM bereiche_table WHERE protocolId = :protocolId")
+    suspend fun getAllForProtocol(protocolId: String): List<BereicheTableEntity>
+
+    @Query("SELECT * FROM bereiche_table WHERE protocolId = :protocolId")
+    fun getAllForProtocolFlow(protocolId: String): Flow<List<BereicheTableEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(table: BereicheTableEntity)
+
+    @Query("DELETE FROM bereiche_table WHERE protocolId = :protocolId")
     suspend fun deleteAllForProtocol(protocolId: String)
 }
 

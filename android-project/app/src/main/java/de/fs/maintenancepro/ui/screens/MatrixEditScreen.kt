@@ -14,9 +14,17 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -41,6 +49,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import de.fs.maintenancepro.R
 import de.fs.maintenancepro.data.local.GroupCellEntity
 import de.fs.maintenancepro.data.local.ProtocolGroupEntity
@@ -363,6 +373,12 @@ private fun DeviceEditorSection(
     val colWidth = 40.dp
     val grpColWidth = 56.dp
     val nameColWidth = 150.dp
+    val deleteColWidth = 28.dp
+
+    // Bereiche (Sektionen) dieses Geräts -- synced vom Server oder vor Ort neu angelegt
+    // (siehe updateGroupBereich). Leer, solange noch nie ein Bereich definiert wurde.
+    val bereicheOptions by viewModel.getBereicheForDevice(protocolId, device.prefix)
+        .collectAsState(initial = emptyList())
 
     val colWidthPx = with(density) { colWidth.toPx() }
     val rowHeightPx = with(density) { rowHeight.toPx() }
@@ -372,7 +388,10 @@ private fun DeviceEditorSection(
     val currentPaintType = rememberUpdatedState(paintType)
     val currentNCols = rememberUpdatedState(nCols)
 
-    var showRemoveGroupDialog by remember { mutableStateOf(false) }
+    // Per-row delete: which group (if any) is currently pending the confirm dialog --
+    // replaces the old "decrement the Gruppen-stepper until it happens to hit the group
+    // you want gone" workaround with a direct delete on the specific row.
+    var groupPendingDelete by remember { mutableStateOf<ProtocolGroupEntity?>(null) }
 
     // Rubber-band selection state (content coordinates of the cells box).
     var isPainting by remember { mutableStateOf(false) }
@@ -402,34 +421,44 @@ private fun DeviceEditorSection(
         }
     }
 
-    if (showRemoveGroupDialog) {
-        val lastGroup = device.groups.lastOrNull()
+    groupPendingDelete?.let { pending ->
         AlertDialog(
-            onDismissRequest = { showRemoveGroupDialog = false },
+            onDismissRequest = { groupPendingDelete = null },
             title = { Text("Gruppe löschen", fontWeight = FontWeight.Bold) },
             text = {
-                Text(
-                    "Die letzte Gruppe \"${lastGroup?.groupId?.substringAfterLast("::") ?: ""}\" enthält Melder oder Prüfwerte. Wirklich löschen?"
-                )
+                val label = pending.groupId.substringAfterLast("::") +
+                    (pending.groupName.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: "")
+                Text("Gruppe \"$label\" wirklich löschen? Alle Melder und Prüfwerte dieser Gruppe gehen dabei verloren.")
             },
             confirmButton = {
                 TextButton(onClick = {
-                    showRemoveGroupDialog = false
-                    viewModel.removeLastGroupFromDevice(protocolId, device.prefix)
+                    viewModel.removeGroupFromDevice(protocolId, pending.groupId)
+                    groupPendingDelete = null
                 }) {
                     Text("Löschen", color = IndustrialError, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showRemoveGroupDialog = false }) {
+                TextButton(onClick = { groupPendingDelete = null }) {
                     Text("Abbrechen", color = IndustrialOutline)
                 }
             }
         )
     }
 
+    var showBereicheAssignDialog by remember { mutableStateOf(false) }
+    if (showBereicheAssignDialog) {
+        BereicheAssignDialog(
+            protocolId = protocolId,
+            device = device,
+            options = bereicheOptions,
+            viewModel = viewModel,
+            onDismiss = { showBereicheAssignDialog = false }
+        )
+    }
+
     Column(modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
-        // --- Device header: name + Gruppen/Melder steppers ---
+        // --- Device header: name + Melder-Stepper + Bereiche-Button ---
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -447,26 +476,16 @@ private fun DeviceEditorSection(
                     fontSize = 10.sp, color = IndustrialOutline
                 )
             }
-            StepperControl(
-                label = "Gruppen",
-                value = device.groups.size,
-                onDecrement = {
-                    val last = device.groups.lastOrNull() ?: return@StepperControl
-                    if (device.groups.size <= 1) {
-                        Toast.makeText(context, "Letzte Gruppe kann nicht entfernt werden", Toast.LENGTH_SHORT).show()
-                        return@StepperControl
-                    }
-                    val hasContent = device.cellsBySlot[last.groupId].orEmpty().values
-                        .any { it.detectorType != "-" || it.value.isNotEmpty() }
-                    if (hasContent) showRemoveGroupDialog = true
-                    else viewModel.removeLastGroupFromDevice(protocolId, device.prefix)
-                },
-                onIncrement = {
-                    if (device.groups.size >= 200) return@StepperControl
-                    viewModel.addGroupToDevice(protocolId, device.prefix)
-                }
-            )
-            Spacer(Modifier.width(10.dp))
+            // Dedicated button instead of an inline per-row picker column -- saves
+            // horizontal space in the grid (which was cramped, see StepperControl
+            // above) and keeps Bereich-assignment as one focused screen rather than
+            // yet another frozen column to scroll past.
+            TextButton(onClick = { showBereicheAssignDialog = true }) {
+                Icon(Icons.AutoMirrored.Filled.List, contentDescription = null, tint = IndustrialPrimary, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Bereiche", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = IndustrialPrimary)
+            }
+            Spacer(Modifier.width(4.dp))
             StepperControl(
                 label = "Melder",
                 value = nCols,
@@ -476,21 +495,41 @@ private fun DeviceEditorSection(
         }
 
         // --- Grid ---
+        // Only Grp is frozen -- Bezeichnung now scrolls together with the Melder cells
+        // (it used to be frozen too, but at nameColWidth it left almost no screen width
+        // for the actual Melder columns on a phone, see user report).
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(Color.White)
                 .border(1.dp, IndustrialOutlineVariant)
         ) {
-            // Frozen left columns: Grp + Bezeichnung (both inline-editable).
-            Column(modifier = Modifier.width(grpColWidth + nameColWidth)) {
+            // Frozen left column: Grp (+ delete) only.
+            Column(modifier = Modifier.width(deleteColWidth + grpColWidth)) {
                 Row(modifier = Modifier.height(headerHeight)) {
+                    Spacer(Modifier.width(deleteColWidth).height(headerHeight))
                     GridHeaderCell("Grp", grpColWidth, headerHeight)
-                    GridHeaderCell("Bezeichnung", nameColWidth, headerHeight, alignStart = true)
                 }
                 device.groups.forEach { g ->
                     key(g.groupId) {
-                        Row(modifier = Modifier.height(rowHeight)) {
+                        Row(modifier = Modifier.height(rowHeight), verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = {
+                                    if (device.groups.size <= 1) {
+                                        Toast.makeText(context, "Letzte Gruppe kann nicht entfernt werden", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        groupPendingDelete = g
+                                    }
+                                },
+                                modifier = Modifier.width(deleteColWidth).height(rowHeight)
+                            ) {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = "Gruppe löschen",
+                                    tint = IndustrialError,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
                             GrpNumField(
                                 group = g,
                                 devicePrefix = device.prefix,
@@ -507,26 +546,12 @@ private fun DeviceEditorSection(
                                     )
                                 }
                             )
-                            GroupNameField(
-                                group = g,
-                                width = nameColWidth,
-                                height = rowHeight,
-                                onNameChange = { newName ->
-                                    viewModel.updateGroupDetails(
-                                        protocolId = protocolId,
-                                        oldGroupId = g.groupId,
-                                        newGroupId = g.groupId,
-                                        newGroupName = newName,
-                                        newGroupType = g.groupType
-                                    )
-                                }
-                            )
                         }
                     }
                 }
             }
 
-            // Scrollable Melder columns: numeric header + paintable cells.
+            // Scrollable: Bezeichnung + numbered Melder columns, all moving together.
             val hScroll = rememberScrollState()
             Column(
                 modifier = Modifier
@@ -534,64 +559,89 @@ private fun DeviceEditorSection(
                     .horizontalScroll(hScroll)
             ) {
                 Row(modifier = Modifier.height(headerHeight)) {
+                    GridHeaderCell("Bezeichnung", nameColWidth, headerHeight, alignStart = true)
                     (1..nCols).forEach { c ->
                         GridHeaderCell(c.toString(), colWidth, headerHeight, subdued = true)
                     }
                 }
-                Box(
-                    modifier = Modifier.pointerInput(Unit) {
-                        detectDragGesturesAfterLongPress(
-                            onDragStart = { offset ->
-                                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                                paintStart = offset
-                                paintEnd = offset
-                                isPainting = true
-                            },
-                            onDrag = { change, _ ->
-                                change.consume()
-                                paintEnd = change.position
-                            },
-                            onDragEnd = {
-                                isPainting = false
-                                paintRect(paintStart, paintEnd)
-                            },
-                            onDragCancel = { isPainting = false }
-                        )
-                    }
-                ) {
+                Row {
+                    // Bezeichnung column -- scrolls with everything else now, but stays
+                    // OUTSIDE the pointerInput Box below so paintRect's column-index math
+                    // (x / colWidthPx) is never offset by this column's width.
                     Column {
                         device.groups.forEach { g ->
                             key(g.groupId) {
-                                Row(modifier = Modifier.height(rowHeight)) {
-                                    val slotCells = device.cellsBySlot[g.groupId].orEmpty()
-                                    (1..nCols).forEach { c ->
-                                        val cell = slotCells[c]
-                                        val type = pendingPaint["${g.groupId}::$c"]
-                                            ?: cell?.detectorType ?: "-"
-                                        EditorCell(
-                                            type = type,
-                                            value = cell?.value ?: "",
-                                            width = colWidth,
-                                            height = rowHeight,
-                                            configuredColors = configuredColors,
-                                            configuredKurzzeichen = configuredKurzzeichen,
-                                            onClick = {
-                                                val newType = currentPaintType.value
-                                                pendingPaint["${g.groupId}::$c"] = newType
-                                                viewModel.paintCells(
-                                                    protocolId, mapOf(g.groupId to listOf(c)), newType
-                                                )
-                                            }
+                                GroupNameField(
+                                    group = g,
+                                    width = nameColWidth,
+                                    height = rowHeight,
+                                    onNameChange = { newName ->
+                                        viewModel.updateGroupDetails(
+                                            protocolId = protocolId,
+                                            oldGroupId = g.groupId,
+                                            newGroupId = g.groupId,
+                                            newGroupName = newName,
+                                            newGroupType = g.groupType
                                         )
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Box(
+                        modifier = Modifier.pointerInput(Unit) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = { offset ->
+                                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    paintStart = offset
+                                    paintEnd = offset
+                                    isPainting = true
+                                },
+                                onDrag = { change, _ ->
+                                    change.consume()
+                                    paintEnd = change.position
+                                },
+                                onDragEnd = {
+                                    isPainting = false
+                                    paintRect(paintStart, paintEnd)
+                                },
+                                onDragCancel = { isPainting = false }
+                            )
+                        }
+                    ) {
+                        Column {
+                            device.groups.forEach { g ->
+                                key(g.groupId) {
+                                    Row(modifier = Modifier.height(rowHeight)) {
+                                        val slotCells = device.cellsBySlot[g.groupId].orEmpty()
+                                        (1..nCols).forEach { c ->
+                                            val cell = slotCells[c]
+                                            val type = pendingPaint["${g.groupId}::$c"]
+                                                ?: cell?.detectorType ?: "-"
+                                            EditorCell(
+                                                type = type,
+                                                value = cell?.value ?: "",
+                                                width = colWidth,
+                                                height = rowHeight,
+                                                configuredColors = configuredColors,
+                                                configuredKurzzeichen = configuredKurzzeichen,
+                                                onClick = {
+                                                    val newType = currentPaintType.value
+                                                    pendingPaint["${g.groupId}::$c"] = newType
+                                                    viewModel.paintCells(
+                                                        protocolId, mapOf(g.groupId to listOf(c)), newType
+                                                    )
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    // Rubber-band overlay: all selection state reads happen in DrawScope,
-                    // so dragging only redraws the Canvas, never recomposes the cells.
-                    Canvas(modifier = Modifier.matchParentSize()) {
+                        // Rubber-band overlay: all selection state reads happen in DrawScope,
+                        // so dragging only redraws the Canvas, never recomposes the cells.
+                        Canvas(modifier = Modifier.matchParentSize()) {
                         if (!isPainting) return@Canvas
                         val left = min(paintStart.x, paintEnd.x)
                         val top = min(paintStart.y, paintEnd.y)
@@ -613,7 +663,29 @@ private fun DeviceEditorSection(
                         )
                     }
                 }
+                }
             }
+        }
+
+        // --- Add-row affordance: replaces the old "increment the stepper" workflow
+        // with a direct "append a group at the end" action, mirroring the per-row delete. ---
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    if (device.groups.size >= 200) {
+                        Toast.makeText(context, "Maximale Gruppenanzahl erreicht", Toast.LENGTH_SHORT).show()
+                    } else {
+                        viewModel.addGroupToDevice(protocolId, device.prefix)
+                    }
+                }
+                .padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Add, contentDescription = null, tint = IndustrialPrimary, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("Meldegruppe hinzufügen", fontSize = 12.sp, color = IndustrialPrimary, fontWeight = FontWeight.Medium)
         }
     }
 }
@@ -783,6 +855,231 @@ private fun GroupNameField(
             },
             modifier = Modifier.fillMaxWidth()
         )
+    }
+}
+
+/** Full-screen Bereich-assignment dialog for one device -- a dedicated screen
+ * instead of a per-row picker column, which left almost no width for the
+ * actual Melder grid on a phone. Pick a Bereich as a chip at the top, then tap
+ * rows below to toggle their membership -- the touch equivalent of the WebUI
+ * shuttle's arrow buttons (drag & drop doesn't translate well to a phone-sized
+ * single list, so this uses direct tap-to-toggle instead). */
+@Composable
+private fun BereicheAssignDialog(
+    protocolId: String,
+    device: EditorDevice,
+    options: List<String>,
+    viewModel: MainViewModel,
+    onDismiss: () -> Unit
+) {
+    // No `options` key on remember: `options` is a freshly-collected list on every
+    // sync/rename/delete, and keying on it would reset the selection back to
+    // firstOrNull() on every such change. Selection is instead updated explicitly
+    // wherever it needs to track a rename/delete/add outcome, below.
+    var selectedBereich by remember { mutableStateOf(options.firstOrNull() ?: "") }
+    var newNameInput by remember { mutableStateOf("") }
+    var showNewInput by remember { mutableStateOf(false) }
+    var renameDialogFor by remember { mutableStateOf<String?>(null) }
+    var renameText by remember { mutableStateOf("") }
+    var deleteConfirmFor by remember { mutableStateOf<String?>(null) }
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(modifier = Modifier.fillMaxSize(), color = IndustrialBackground) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().background(Color.White).padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Bereiche zuweisen — ${device.displayName}",
+                        fontWeight = FontWeight.Bold, fontSize = 14.sp, color = IndustrialPrimary,
+                        modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = null, tint = IndustrialPrimary)
+                    }
+                }
+                HorizontalDivider(color = IndustrialOutlineVariant)
+
+                // Bereich chips: tap to select which Bereich the list below toggles membership for.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.White)
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    options.forEach { name ->
+                        val isSelected = name == selectedBereich
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = if (isSelected) IndustrialPrimary else LightSurfaceHigh,
+                            modifier = Modifier.clickable { selectedBereich = name }
+                        ) {
+                            Text(
+                                text = name,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isSelected) Color.White else IndustrialOnSurface,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                            )
+                        }
+                        // Rename/delete only shown for the selected chip -- keeps the
+                        // collapsed chip row compact while still reachable.
+                        if (isSelected) {
+                            IconButton(
+                                onClick = { renameDialogFor = name; renameText = name },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(Icons.Default.Edit, contentDescription = "Bereich umbenennen", tint = IndustrialOutline, modifier = Modifier.size(15.dp))
+                            }
+                            IconButton(
+                                onClick = { deleteConfirmFor = name },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = "Bereich löschen", tint = IndustrialError, modifier = Modifier.size(15.dp))
+                            }
+                        }
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = Color.Transparent,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, IndustrialPrimary),
+                        modifier = Modifier.clickable { showNewInput = true }
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)) {
+                            Icon(Icons.Default.Add, contentDescription = null, tint = IndustrialPrimary, modifier = Modifier.size(13.dp))
+                            Spacer(Modifier.width(3.dp))
+                            Text("Neu", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = IndustrialPrimary)
+                        }
+                    }
+                }
+                if (showNewInput) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = newNameInput,
+                            onValueChange = { newNameInput = it },
+                            singleLine = true,
+                            placeholder = { Text("z.B. Station 4", fontSize = 12.sp) },
+                            textStyle = TextStyle(fontSize = 12.sp),
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = {
+                            val name = newNameInput.trim()
+                            if (name.isNotEmpty()) {
+                                // Defines the Bereich directly -- no second confirmation dialog,
+                                // this text field IS the (only) name prompt.
+                                viewModel.addBereichToDevice(protocolId, device.prefix, name)
+                                selectedBereich = name
+                            }
+                            newNameInput = ""
+                            showNewInput = false
+                        }) { Text("OK", fontWeight = FontWeight.Bold) }
+                        TextButton(onClick = { newNameInput = ""; showNewInput = false }) {
+                            Text("Abbrechen", color = IndustrialOutline)
+                        }
+                    }
+                }
+                HorizontalDivider(color = IndustrialOutlineVariant)
+
+                renameDialogFor?.let { oldName ->
+                    AlertDialog(
+                        onDismissRequest = { renameDialogFor = null },
+                        title = { Text("Bereich umbenennen", fontWeight = FontWeight.Bold) },
+                        text = {
+                            OutlinedTextField(
+                                value = renameText,
+                                onValueChange = { renameText = it },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                val newName = renameText.trim()
+                                if (newName.isNotEmpty() && newName != oldName) {
+                                    viewModel.renameBereichForDevice(protocolId, device.prefix, oldName, newName)
+                                    selectedBereich = newName
+                                }
+                                renameDialogFor = null
+                            }) { Text("Speichern", color = IndustrialPrimary, fontWeight = FontWeight.Bold) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { renameDialogFor = null }) { Text("Abbrechen", color = IndustrialOutline) }
+                        }
+                    )
+                }
+
+                deleteConfirmFor?.let { name ->
+                    AlertDialog(
+                        onDismissRequest = { deleteConfirmFor = null },
+                        title = { Text("Bereich löschen", fontWeight = FontWeight.Bold) },
+                        text = { Text("Bereich \"$name\" wirklich löschen? Zugeordnete Meldegruppen verlieren dadurch ihre Bereichszuordnung (die Gruppen selbst bleiben erhalten).") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                viewModel.deleteBereichForDevice(protocolId, device.prefix, name)
+                                if (selectedBereich == name) selectedBereich = options.firstOrNull { it != name } ?: ""
+                                deleteConfirmFor = null
+                            }) { Text("Löschen", color = IndustrialError, fontWeight = FontWeight.Bold) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { deleteConfirmFor = null }) { Text("Abbrechen", color = IndustrialOutline) }
+                        }
+                    )
+                }
+
+                if (options.isEmpty() && !showNewInput) {
+                    Box(modifier = Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                        Text(
+                            "Noch kein Bereich definiert -- oben \"Neu\" antippen.",
+                            fontSize = 12.sp, color = IndustrialOutline, textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    items(device.groups, key = { it.groupId }) { g ->
+                        val isAssigned = selectedBereich.isNotEmpty() && g.bereich == selectedBereich
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = selectedBereich.isNotEmpty()) {
+                                    viewModel.updateGroupBereich(protocolId, g.groupId, if (isAssigned) "" else selectedBereich)
+                                }
+                                .background(Color.White)
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = g.groupId.substringAfterLast("::") +
+                                        (g.groupName.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""),
+                                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = IndustrialOnSurface,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                                )
+                                if (!g.bereich.isNullOrBlank() && g.bereich != selectedBereich) {
+                                    Text(
+                                        text = "aktuell: ${g.bereich}",
+                                        fontSize = 10.sp, color = IndustrialOutline
+                                    )
+                                }
+                            }
+                            Icon(
+                                imageVector = if (isAssigned) Icons.Default.Check else Icons.Default.Add,
+                                contentDescription = null,
+                                tint = if (isAssigned) Color(0xFF15803D) else IndustrialOutlineVariant
+                            )
+                        }
+                        HorizontalDivider(color = IndustrialOutlineVariant)
+                    }
+                }
+            }
+        }
     }
 }
 

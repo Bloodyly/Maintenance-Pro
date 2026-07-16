@@ -57,6 +57,7 @@ import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -149,9 +150,55 @@ fun InspectionScreen(
             else RowModel(
                 groupId = g.groupId,
                 groupName = g.groupName.ifBlank { g.anlageName ?: "" },
-                cells = cells
+                cells = cells,
+                bereich = g.bereich?.takeIf { it.isNotBlank() } ?: ""
             )
         }
+    }
+
+    // Bereiche (Sektionen): per-device ordered name lists, WebUI/Struktur-Editor-defined
+    // (see MainViewModel.getBereicheMapForProtocol) -- used only to compute display
+    // order/section headers below; never affects rowsList itself or any cell identity.
+    val bereicheMap by viewModel.getBereicheMapForProtocol(protocolId).collectAsState(initial = emptyMap())
+
+    // One entry per Melder-Gruppe, in DISPLAY order, with synthetic section-header
+    // entries interspersed -- mirrors the WebUI grid's identical gridDisplayRows()
+    // approach exactly (header/data as separate list entries, not "one row that's
+    // sometimes a header"), for the same reason: every row-rendering site below
+    // (frozen columns, scrollable melder cells, drag-select hit-testing) can then
+    // just iterate ONE list and treat a Header entry as "draw a bar, no cell logic"
+    // without re-deriving positions in three different places.
+    //
+    // Grouping is per-DEVICE (groupId prefix before "::"), each device sorted by its
+    // OWN Bereich order, unassigned rows last under "Ohne Bereich" -- a device that
+    // never uses Bereiche keeps its exact current row order (no regression). Devices
+    // themselves stay in their original relative order (first-seen in rowsList).
+    val displayEntries = remember(rowsList, bereicheMap) {
+        val deviceOrder = rowsList.map { it.groupId.substringBefore("::") }.distinct()
+        val byDevice = rowsList.groupBy { it.groupId.substringBefore("::") }
+        val out = mutableListOf<DisplayEntry>()
+        deviceOrder.forEach { deviceId ->
+            val deviceRows = byDevice[deviceId].orEmpty()
+            if (deviceRows.none { it.bereich.isNotEmpty() }) {
+                deviceRows.forEach { out.add(DisplayEntry.Data(it)) }
+            } else {
+                val order = bereicheMap[deviceId].orEmpty()
+                val rank = order.withIndex().associate { (i, name) -> name to i }
+                val unassignedRank = order.size
+                val sorted = deviceRows.sortedBy { row ->
+                    if (row.bereich.isEmpty()) unassignedRank else rank[row.bereich] ?: unassignedRank
+                }
+                var prevBereich: String? = null
+                sorted.forEach { row ->
+                    if (row.bereich != prevBereich) {
+                        out.add(DisplayEntry.Header(row.bereich.ifEmpty { "Ohne Bereich" }))
+                        prevBereich = row.bereich
+                    }
+                    out.add(DisplayEntry.Data(row))
+                }
+            }
+        }
+        out
     }
 
     // Optimistic local overlay: cell edits render instantly here, DB write happens in background.
@@ -241,7 +288,7 @@ fun InspectionScreen(
     val cellHeightPx = with(density) { (48f * zoomScale).dp.toPx() }
 
     // Always-current references for use inside long-lived pointerInput coroutine
-    val currentRowsList = rememberUpdatedState(rowsList)
+    val currentDisplayEntries = rememberUpdatedState(displayEntries)
     val currentActiveVal = rememberUpdatedState(activeSelectVal)
     val currentCellWidthPx = rememberUpdatedState(cellWidthPx)
     val currentCellHeightPx = rememberUpdatedState(cellHeightPx)
@@ -257,6 +304,7 @@ fun InspectionScreen(
     // Single horizontal and vertical scroll state for perfect 2D diagonal scrolling without lag/drift!
     val horizontalScrollState = rememberScrollState()
     val verticalScrollState = rememberScrollState()
+    val coroutineScope = rememberCoroutineScope()
 
     // Confirmation dialog state for the header's Abschließen icon (moved up from the old
     // Context Info Strip, which this compact header now replaces entirely).
@@ -441,6 +489,47 @@ fun InspectionScreen(
                 }
             }
 
+            // Bereiche chapter strip: one pill per section, tap to jump straight to it in
+            // the Melderliste below -- only rendered once at least one Header entry exists,
+            // so a protocol that never uses Bereiche looks exactly as before. Position of a
+            // Header entry maps directly onto verticalScrollState's own pixel space (that
+            // scroll only wraps the rows themselves, not the "GRP"/"Bezeichnung"/column-number
+            // header row above it), so no extra offset is needed here.
+            val chapterHeaders = remember(displayEntries) {
+                displayEntries.withIndex().mapNotNull { (i, e) -> (e as? DisplayEntry.Header)?.let { i to it.label } }
+            }
+            if (chapterHeaders.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.White)
+                        .border(1.dp, IndustrialOutlineVariant)
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    chapterHeaders.forEach { (entryIndex, label) ->
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = LightSurfaceHigh,
+                            modifier = Modifier.clickable {
+                                coroutineScope.launch {
+                                    verticalScrollState.animateScrollTo((entryIndex * cellHeightPx).toInt())
+                                }
+                            }
+                        ) {
+                            Text(
+                                text = label,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = IndustrialPrimary,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
             // BoxWithConstraints captures the maximum height available for the grid (what it
             // used to always claim via weight(1f)). The grid is only given that FULL height
             // when its own content actually needs it (long Auslöseliste -> internal scroll,
@@ -467,7 +556,7 @@ fun InspectionScreen(
             val grpColWidth = (44 * zoomScale).dp        // frozen: group number only
             val bezeichnungColWidth = (110 * zoomScale).dp  // frozen: group name
             val headerRowHeight = (44 * zoomScale).dp
-            val naturalGridHeight = headerRowHeight + cellHeight * rowsList.size
+            val naturalGridHeight = headerRowHeight + cellHeight * displayEntries.size
             val gridHeight = naturalGridHeight.coerceAtMost(maxGridHeight)
 
             // Scrollable Grid Box container restricting scaling artifacts from bleeding
@@ -482,9 +571,11 @@ fun InspectionScreen(
                 val cellFontSize = (11 * zoomScale).sp
                 val subFontSize = (8 * zoomScale).sp
 
-                // 1. LEFT FROZEN COLUMNS: GRP (number) + Bezeichnung (name), both non-scrolling horizontally
+                // 1. LEFT FROZEN COLUMN: only GRP (number) stays non-scrolling horizontally --
+                // Bezeichnung used to be frozen here too, but at bezeichnungColWidth it left
+                // almost no screen width for the actual Melder columns on a phone (user report).
+                // It now scrolls together with the Melder cells, see section 2 below.
                 Row(modifier = Modifier.fillMaxHeight()) {
-                    // 1a. GRP column — narrow, shows group number only
                     Column(modifier = Modifier.width(grpColWidth).fillMaxHeight()) {
                         Box(
                             modifier = Modifier.width(grpColWidth).height(headerRowHeight)
@@ -494,74 +585,33 @@ fun InspectionScreen(
                             Text("GRP", fontWeight = FontWeight.ExtraBold, color = IndustrialOutline, fontSize = headerFontSize)
                         }
                         Column(modifier = Modifier.width(grpColWidth).weight(1f).verticalScroll(verticalScrollState)) {
-                            rowsList.forEach { row ->
-                                Box(
-                                    modifier = Modifier.width(grpColWidth).height(cellHeight)
-                                        .background(LightSurfaceLow).border(0.5.dp, IndustrialOutlineVariant),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        // row.groupId is "{device}::{grp_num}" on the wire -- only the
-                                        // Gruppen-Nummer is meaningful to show in this narrow column.
-                                        text = row.groupId.substringAfterLast("::"),
-                                        fontWeight = FontWeight.Bold,
-                                        color = IndustrialPrimary,
-                                        fontSize = cellFontSize
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // 1b. Bezeichnung column — shows group name, clickable for batch-fill
-                    Column(modifier = Modifier.width(bezeichnungColWidth).fillMaxHeight()) {
-                        Box(
-                            modifier = Modifier.width(bezeichnungColWidth).height(headerRowHeight)
-                                .background(LightSurfaceHigh).border(0.5.dp, IndustrialOutlineVariant)
-                                .padding(horizontal = 8.dp),
-                            contentAlignment = Alignment.CenterStart
-                        ) {
-                            Text("Bezeichnung", fontWeight = FontWeight.ExtraBold, color = IndustrialOutline, fontSize = headerFontSize)
-                        }
-                        Column(modifier = Modifier.width(bezeichnungColWidth).weight(1f).verticalScroll(verticalScrollState)) {
-                            rowsList.forEach { row ->
-                                Box(
-                                    modifier = Modifier
-                                        .width(bezeichnungColWidth).height(cellHeight)
-                                        .background(LightSurfaceLow).border(0.5.dp, IndustrialOutlineVariant)
-                                        .clickable {
-                                            if (!protocolEntity.isArchived) {
-                                                val validCells = row.cells.filter { it.detectorType != "-" }
-                                                val targetCells = validCells.filter { it.value.isEmpty() || it.value == activeSelectVal }
-                                                val hasEmptyTargets = targetCells.any { it.value.isEmpty() }
-                                                val batchValues = if (hasEmptyTargets) {
-                                                    targetCells.filter { it.value.isEmpty() }.associate { it.slotKey to activeSelectVal }
-                                                } else {
-                                                    targetCells.filter { it.value == activeSelectVal }.associate { it.slotKey to "" }
-                                                }
-                                                if (batchValues.isNotEmpty()) {
-                                                    viewModel.batchEditGroupCells(protocolId, row.groupId, batchValues)
-                                                } else {
-                                                    Toast.makeText(context, "Keine änderbaren Felder in dieser Reihe", Toast.LENGTH_SHORT).show()
-                                                }
-                                            }
-                                        }
-                                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                                    contentAlignment = Alignment.CenterStart
-                                ) {
-                                    Text(
-                                        text = row.groupName.ifBlank { "—" },
-                                        color = IndustrialOnSurface,
-                                        fontSize = cellFontSize,
-                                        maxLines = 2
-                                    )
+                            displayEntries.forEach { entry ->
+                                when (entry) {
+                                    is DisplayEntry.Header -> Box(
+                                        modifier = Modifier.width(grpColWidth).height(cellHeight)
+                                            .background(LightSurfaceHigh).border(0.5.dp, IndustrialOutlineVariant)
+                                    ) {}
+                                    is DisplayEntry.Data -> Box(
+                                        modifier = Modifier.width(grpColWidth).height(cellHeight)
+                                            .background(LightSurfaceLow).border(0.5.dp, IndustrialOutlineVariant),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            // row.groupId is "{device}::{grp_num}" on the wire -- only the
+                                            // Gruppen-Nummer is meaningful to show in this narrow column.
+                                            text = entry.row.groupId.substringAfterLast("::"),
+                                            fontWeight = FontWeight.Bold,
+                                            color = IndustrialPrimary,
+                                            fontSize = cellFontSize
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                // 2. RIGHT SIDE: Scrollable columns header + scrollable 2D grid cells
+                // 2. RIGHT SIDE: Bezeichnung (now scrolls here too) + Melder columns/cells
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -574,6 +624,17 @@ fun InspectionScreen(
                             .height(headerRowHeight)
                             .horizontalScroll(horizontalScrollState)
                     ) {
+                        Box(
+                            modifier = Modifier
+                                .width(bezeichnungColWidth)
+                                .height(headerRowHeight)
+                                .background(LightSurfaceHigh)
+                                .border(0.5.dp, IndustrialOutlineVariant)
+                                .padding(horizontal = 8.dp),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            Text("Bezeichnung", fontWeight = FontWeight.ExtraBold, color = IndustrialOutline, fontSize = headerFontSize)
+                        }
                         columnsList.forEach { colModel ->
                             Box(
                                 modifier = Modifier
@@ -592,6 +653,12 @@ fun InspectionScreen(
                             }
                         }
                     }
+
+                    // Bezeichnung is now the first column of this SAME horizontally-scrolled
+                    // content (see the Column further down), so all x-coordinate math below
+                    // must subtract its width before dividing by the Melder cell width --
+                    // otherwise every column index would be off by one screen's worth of Bezeichnung.
+                    val bezeichnungColWidthPx = with(density) { bezeichnungColWidth.toPx() }
 
                     // Main Interactive 2D Grid Cells — outer Box handles rubber-band drag-select
                     Box(
@@ -615,9 +682,12 @@ fun InspectionScreen(
                                         val wPx = currentCellWidthPx.value
                                         val hPx = currentCellHeightPx.value
                                         val originRow = (gy / hPx).toInt()
-                                        val originCol = (gx / wPx).toInt()
-                                        val rows = currentRowsList.value
-                                        val originRowModel = rows.getOrNull(originRow)
+                                        val originCol = ((gx - bezeichnungColWidthPx) / wPx).toInt()
+                                        // A Header entry (or out-of-range index) has no cells -- origin
+                                        // stays null, which isClearMode below reads as "fill mode", but
+                                        // onDragEnd's own per-entry Header check is what actually keeps a
+                                        // drag starting/passing through a section bar from touching cells.
+                                        val originRowModel = (currentDisplayEntries.value.getOrNull(originRow) as? DisplayEntry.Data)?.row
                                         val originCell = originRowModel?.cells?.getOrNull(originCol)
                                         val originVal = originCell?.let { c ->
                                             pendingOverrides["${originRowModel.groupId}::${c.slotKey}"] ?: c.value
@@ -645,13 +715,14 @@ fun InspectionScreen(
                                         val clearMode = isClearMode
                                         val allChanges = mutableMapOf<String, MutableMap<String, String>>()
                                         var applied = 0
-                                        currentRowsList.value.forEachIndexed { rowIdx, row ->
-                                            val cTop = rowIdx * hPx
+                                        currentDisplayEntries.value.forEachIndexed { entryIdx, entry ->
+                                            val row = (entry as? DisplayEntry.Data)?.row ?: return@forEachIndexed
+                                            val cTop = entryIdx * hPx
                                             val cBottom = cTop + hPx
                                             if (cTop < selBottom && cBottom > selTop) {
                                                 row.cells.forEachIndexed { colIdx, cell ->
                                                     if (cell.detectorType != "-") {
-                                                        val cLeft = colIdx * wPx
+                                                        val cLeft = bezeichnungColWidthPx + colIdx * wPx
                                                         val cRight = cLeft + wPx
                                                         if (cLeft < selRight && cRight > selLeft) {
                                                             val key = "${row.groupId}::${cell.slotKey}"
@@ -692,8 +763,60 @@ fun InspectionScreen(
                                 .horizontalScroll(horizontalScrollState)
                         ) {
                             Column {
-                                rowsList.forEach { row ->
-                                    Row(modifier = Modifier.height(cellHeight)) {
+                                displayEntries.forEach { entry ->
+                                    if (entry is DisplayEntry.Header) {
+                                        Box(
+                                            modifier = Modifier
+                                                .width(bezeichnungColWidth + cellWidth * columnsList.size)
+                                                .height(cellHeight)
+                                                .background(LightSurfaceHigh)
+                                                .padding(horizontal = 8.dp),
+                                            contentAlignment = Alignment.CenterStart
+                                        ) {
+                                            Text(
+                                                text = entry.label,
+                                                fontWeight = FontWeight.Bold,
+                                                color = IndustrialOnSurface,
+                                                fontSize = cellFontSize,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        return@forEach
+                                    }
+                                    val row = (entry as DisplayEntry.Data).row
+                                    Row(modifier = Modifier.height(cellHeight), verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .width(bezeichnungColWidth).height(cellHeight)
+                                                .background(LightSurfaceLow).border(0.5.dp, IndustrialOutlineVariant)
+                                                .clickable {
+                                                    if (!protocolEntity.isArchived) {
+                                                        val validCells = row.cells.filter { it.detectorType != "-" }
+                                                        val targetCells = validCells.filter { it.value.isEmpty() || it.value == activeSelectVal }
+                                                        val hasEmptyTargets = targetCells.any { it.value.isEmpty() }
+                                                        val batchValues = if (hasEmptyTargets) {
+                                                            targetCells.filter { it.value.isEmpty() }.associate { it.slotKey to activeSelectVal }
+                                                        } else {
+                                                            targetCells.filter { it.value == activeSelectVal }.associate { it.slotKey to "" }
+                                                        }
+                                                        if (batchValues.isNotEmpty()) {
+                                                            viewModel.batchEditGroupCells(protocolId, row.groupId, batchValues)
+                                                        } else {
+                                                            Toast.makeText(context, "Keine änderbaren Felder in dieser Reihe", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    }
+                                                }
+                                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                                            contentAlignment = Alignment.CenterStart
+                                        ) {
+                                            Text(
+                                                text = row.groupName.ifBlank { "—" },
+                                                color = IndustrialOnSurface,
+                                                fontSize = cellFontSize,
+                                                maxLines = 2
+                                            )
+                                        }
                                         row.cells.forEach { cell ->
                                             key(row.groupId, cell.slotKey) {
                                                 val overrideKey = "${row.groupId}::${cell.slotKey}"
@@ -844,8 +967,15 @@ private fun AktionSegmentBar(
 
 data class ColumnModel(val key: String, val label: String)
 data class CellModel(val slotKey: String, val detectorType: String, val value: String)
-data class RowModel(val groupId: String, val groupName: String, val cells: List<CellModel>)
+data class RowModel(val groupId: String, val groupName: String, val cells: List<CellModel>, val bereich: String = "")
 data class ValueModel(val value: String, val label: String, val isDefect: Boolean)
+
+/** One entry of the Melderliste's DISPLAY order: either a Bereich section-header
+ * bar, or one real Melder-Gruppe row. See displayEntries in InspectionScreen. */
+private sealed class DisplayEntry {
+    data class Header(val label: String) : DisplayEntry()
+    data class Data(val row: RowModel) : DisplayEntry()
+}
 data class HardwareRowModel(
     val index: Int,
     val hardware: String,

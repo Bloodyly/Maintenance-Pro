@@ -154,7 +154,10 @@ data class ProtocolCellDto(
 
 data class SyncDeltaRequestDto(val since: Long)
 
-data class SyncUploadCellsDto(val changes: List<SyncCellChangeDto>)
+data class SyncUploadCellsDto(
+    val changes: List<SyncCellChangeDto>,
+    val group_changes: List<SyncGroupChangeDto> = emptyList()
+)
 
 data class SyncCellChangeDto(
     val protocol_id: String,
@@ -162,6 +165,16 @@ data class SyncCellChangeDto(
     val slot_key: String,
     val detector_type: String,
     val value: String,
+    val updated_at: Long
+)
+
+// Bereich (Sektion) reassignment -- whole-registry-blob write on the server side
+// (like a group rename), not a per-cell delta, but travels in the same upload
+// call as `changes` since it's just as small/frequent an edit.
+data class SyncGroupChangeDto(
+    val protocol_id: String,
+    val group_id: String,
+    val bereich: String,
     val updated_at: Long
 )
 
@@ -190,7 +203,16 @@ data class SyncProtocolDto(
     // (settings_{mandant}.json) -- keyed by type_id ("BMA", "EMA", ...).
     val meldepunkt_definitionen: Map<String, MeldepunktDefDto>? = null,
     val rows: List<SyncRowDto> = emptyList(),
-    val hardware: List<HardwareTableDto> = emptyList()
+    val hardware: List<HardwareTableDto> = emptyList(),
+    val bereiche: List<BereicheTableDto> = emptyList()
+)
+
+// Ordered Bereich-Namen-Liste per device -- mirrors HardwareTableDto's shape/rationale
+// (device-scoped, not Melder-Gruppe-scoped, so it's a sibling of `rows` too).
+data class BereicheTableDto(
+    val group_id: String,
+    val updated_at: Long = 0L,
+    val order: List<String> = emptyList()
 )
 
 data class MeldepunktDefDto(
@@ -213,6 +235,7 @@ data class SyncRowDto(
     val anlage_name: String? = null,
     val anlage_type: String? = null,
     val anlage_interval: String? = null,
+    val bereich: String? = null,
     val cells: List<SyncCellDto> = emptyList()
 )
 

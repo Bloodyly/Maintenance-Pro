@@ -145,8 +145,13 @@ def build_device_rows_payload(cursor, protocol_id):
             grp_num, melder_nr = c["slot_key"].split("_", 1)
             cells_by_grp.setdefault(grp_num, []).append((melder_nr, c))
 
-        for grp_num, grp_name in registry:
-            grp_num = str(grp_num)
+        for entry in registry:
+            # Registry-Einträge können ein 3. Feld (Bereich-Zuordnung) tragen --
+            # ein einfaches `for a, b in registry` würde bei 3-elementigen
+            # Einträgen mit ValueError abbrechen, daher defensives Indexing.
+            grp_num = str(entry[0])
+            grp_name = entry[1] if len(entry) > 1 else ""
+            bereich = entry[2] if len(entry) > 2 and entry[2] else ""
             row_cells = []
             for melder_nr, c in cells_by_grp.get(grp_num, []):
                 row_cells.append({
@@ -164,10 +169,95 @@ def build_device_rows_payload(cursor, protocol_id):
                 "anlage_name": (dev["anlage_name"] if "anlage_name" in dev.keys() else "") or "",
                 "anlage_type": (dev["anlage_type"] if "anlage_type" in dev.keys() else "") or "",
                 "anlage_interval": (dev["anlage_interval"] if "anlage_interval" in dev.keys() else "") or "",
+                "bereich": bereich,
                 "cells": row_cells
             })
 
     return rows_data, max_cols
+
+
+def _load_bereiche(cursor, protocol_id, group_id):
+    """Returns the ordered list of Bereich-Namen defined for one device (empty if
+    none have ever been defined). Mirrors webui/app.py's identical helper --
+    kept in sync manually, same convention as _device_registry etc."""
+    cursor.execute(
+        "SELECT value FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = '__bereiche__'",
+        (protocol_id, group_id)
+    )
+    cell = cursor.fetchone()
+    if not cell:
+        return []
+    try:
+        return json.loads(cell["value"])
+    except Exception:
+        return []
+
+
+def build_device_bereiche_payload(cursor, protocol_id):
+    """One entry per device that has ever had a Bereich defined -- mirrors
+    build_device_hardware_payload's shape/rationale exactly (device-scoped,
+    not Melder-Gruppe-scoped, so it travels as a sibling list next to 'rows'
+    instead of being smuggled onto every row)."""
+    cursor.execute("SELECT * FROM protocol_groups WHERE protocol_id = ?", (protocol_id,))
+    devices = cursor.fetchall()
+
+    bereiche_data = []
+    for dev in devices:
+        cursor.execute(
+            "SELECT updated_at FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = '__bereiche__'",
+            (protocol_id, dev["group_id"])
+        )
+        cell = cursor.fetchone()
+        if not cell:
+            continue
+        order = _load_bereiche(cursor, protocol_id, dev["group_id"])
+        if not order:
+            continue
+        bereiche_data.append({
+            "group_id": dev["group_id"],
+            "updated_at": cell["updated_at"] or 0,
+            "order": order
+        })
+    return bereiche_data
+
+
+def apply_bereich_change_to_device(cursor, protocol_id, wire_group_id, bereich, updated_at=None):
+    """Reassigns one Melder-Gruppe's Bereich (WebUI-style registry field --
+    see _device_registry). If `bereich` is a name not yet in this device's
+    __bereiche__ list, it's appended automatically -- this is how a technician
+    can define a brand-new Bereich directly from the Android app, not just
+    pick from ones the WebUI already knows about. Returns True if applied."""
+    if "::" not in str(wire_group_id):
+        return False
+    device_group_id, grp_num = str(wire_group_id).split("::", 1)
+
+    registry, _ = _device_registry(cursor, protocol_id, device_group_id)
+    entry = next((g for g in registry if str(g[0]) == grp_num), None)
+    if entry is None:
+        return False
+    while len(entry) < 3:
+        entry.append("")
+    entry[2] = bereich or ""
+
+    now = updated_at if updated_at else int(datetime.now(timezone.utc).timestamp() * 1000)
+    cursor.execute(
+        "INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at) "
+        "VALUES (?, ?, '__rows__', '-', ?, ?) "
+        "ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+        (protocol_id, device_group_id, json.dumps(registry), now)
+    )
+
+    if bereich:
+        order = _load_bereiche(cursor, protocol_id, device_group_id)
+        if bereich not in order:
+            order.append(bereich)
+            cursor.execute(
+                "INSERT INTO group_cells (protocol_id, group_id, slot_key, detector_type, value, updated_at) "
+                "VALUES (?, ?, '__bereiche__', '-', ?, ?) "
+                "ON CONFLICT(protocol_id, group_id, slot_key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+                (protocol_id, device_group_id, json.dumps(order), now)
+            )
+    return True
 
 
 def build_device_hardware_payload(cursor, protocol_id):
@@ -319,6 +409,11 @@ KNOWN_DETECTOR_KURZZEICHEN = {
     "Koppler": "KO", "Konventionell": "KV", "ZD": "ZD", "ZB": "ZB",
     "TDiff": "TD", "TDIFF": "TD", "Tmax": "TM", "TMAX": "TM", "RAS": "RS",
     "Linear": "LN", "LINEAR": "LN", "BWM": "BWM", "ZK": "ZK", "RSK": "RSK",
+    # Lichtruf-Zimmermodule (aus Muster_Lichtrufanlage.xlsx) -- ohne diese
+    # Einträge würde der generische det[:2]-Fallback "RT B1"/"RT B2"/"RT B3"
+    # alle auf "RT" abkürzen, was sie ununterscheidbar machen würde.
+    "ZT": "ZT", "ZL": "ZL", "RT B1": "R1", "RT B2": "R2", "RT B3": "R3",
+    "RT": "RT", "PT Bad": "PB", "RT Bad": "RB", "ZT Bad": "ZB", "AT Bad": "AB",
 }
 
 DEFAULT_MELDEPUNKT_DEFS = {
@@ -328,7 +423,12 @@ DEFAULT_MELDEPUNKT_DEFS = {
     "EMA": {"detectors": ["-", "Normal", "BWM", "ZK", "RSK", "Lichtschranke", "Glasbruch", "Körperschall"],
             "values": ["CHECK", "Def."]},
     "ELA": {"detectors": ["-", "Normal", "Innenlautsprecher", "Außenlautsprecher"], "values": ["CHECK", "Def."]},
-    "Lichtruf": {"detectors": ["-", "Normal", "AT", "BT", "ZT", "EM", "PN", "Display"], "values": ["CHECK", "Def."]},
+    # Zimmermodul-Vokabular wie webui/app.py's DEFAULT_ANLAGENTYPEN -- strukturell
+    # identisch zu BMA (Räume statt Meldegruppen, freie Modul-Slots statt
+    # Melder-Slots), daher dieselbe values-Liste wie BMA.
+    "Lichtruf": {"detectors": ["-", "ZT", "ZL", "RT B1", "RT B2", "RT B3", "RT",
+                               "PT Bad", "RT Bad", "ZT Bad", "AT Bad"],
+                 "values": ["CHECK", "H1", "H2", "Def."]},
     "SLA": {"detectors": ["-", "Normal", "SLA"], "values": ["CHECK", "Def."]},
 }
 
@@ -1055,6 +1155,7 @@ def _build_protocol_sync_payload(cursor, p):
     # (May lazily migrate legacy storage in place -- caller must conn.commit() afterward.)
     rows_data, sync_n_cols = build_device_rows_payload(cursor, p_id)
     hardware_data = build_device_hardware_payload(cursor, p_id)
+    bereiche_data = build_device_bereiche_payload(cursor, p_id)
 
     try:
         if sync_n_cols > 0:
@@ -1082,6 +1183,7 @@ def _build_protocol_sync_payload(cursor, p):
         "meldepunkt_definitionen": load_meldepunkt_definitionen(p_mandant),
         "rows": rows_data,
         "hardware": hardware_data,
+        "bereiche": bereiche_data,
     }
 
 
@@ -1159,6 +1261,10 @@ def sync_delta():
             hw for hw in build_device_hardware_payload(cursor, p_id)
             if (hw.get("updated_at") or 0) > since
         ]
+        bereiche_data = [
+            b for b in build_device_bereiche_payload(cursor, p_id)
+            if (b.get("updated_at") or 0) > since
+        ]
 
         result.append({
             "id": p["id"], "name": p["name"], "address": p["address"],
@@ -1168,6 +1274,7 @@ def sync_delta():
             "mandant_id": (p["mandant_id"] if "mandant_id" in p.keys() else "") or "standard",
             "rows": rows_data,
             "hardware": hardware_data,
+            "bereiche": bereiche_data,
         })
 
     conn.commit()  # persist any lazy migration performed while reading
@@ -1188,6 +1295,7 @@ def sync_upload_cells():
         body_json = json.loads(decrypt_payload(encrypted_body, SERVER_CODEWORD))
         changes = body_json.get("changes", [])
         hardware_changes = body_json.get("hardware_changes", [])
+        group_changes = body_json.get("group_changes", [])
     except Exception as e:
         return jsonify({"error": "DECRYPTION_FAILED", "message": str(e)}), 400
 
@@ -1238,6 +1346,30 @@ def sync_upload_cells():
             continue
         ts = int(hw_change.get("updated_at", now))
         if apply_wire_hardware_to_device(cursor, p_id, device_group_id, hw_change.get("rows", []), ts):
+            applied += 1
+            updated_devices.add((p_id, device_group_id))
+
+    # Bereich reassignments are whole-registry-blob writes (like a group rename),
+    # not per-cell -- LWW compares against the registry's own updated_at, same
+    # coarse granularity group_name changes already use via apply_wire_row_to_device.
+    for group_change in group_changes:
+        p_id = group_change.get("protocol_id")
+        g_id = group_change.get("group_id")
+        bereich = group_change.get("bereich", "")
+        if not p_id or not g_id or "::" not in str(g_id):
+            continue
+        ts = int(group_change.get("updated_at", now))
+        device_group_id = str(g_id).split("::", 1)[0]
+
+        cursor.execute(
+            "SELECT updated_at FROM group_cells WHERE protocol_id = ? AND group_id = ? AND slot_key = '__rows__'",
+            (p_id, device_group_id)
+        )
+        existing = cursor.fetchone()
+        if existing is not None and (existing["updated_at"] or 0) > ts:
+            continue  # a newer registry state already stored -- last-write-wins keeps it
+
+        if apply_bereich_change_to_device(cursor, p_id, g_id, bereich, ts):
             applied += 1
             updated_devices.add((p_id, device_group_id))
 

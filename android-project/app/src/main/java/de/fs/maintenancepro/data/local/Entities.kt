@@ -64,7 +64,15 @@ data class ProtocolGroupEntity(
     val anlageType: String? = null,
     val anlageInterval: String? = null,
     // Preserves original row order (JSON arrays are ordered, DB tables aren't).
-    val orderIndex: Int = 0
+    val orderIndex: Int = 0,
+    // Bereich (Sektion) assignment, e.g. "Station 1" -- null/"" means unassigned.
+    // See BereicheTableEntity for the ordered list of Bereiche a device defines.
+    val bereich: String? = null,
+    // When `bereich` was last changed locally -- mirrors GroupCellEntity.updatedAt's
+    // role for delta-sync (collectLocalChanges-style "changed since" scanning), since
+    // this is the only structural field that needs incremental (not whole-protocol)
+    // upload today.
+    val updatedAt: Long = 0L
 )
 
 /**
@@ -98,6 +106,23 @@ data class HardwareTableEntity(
     val protocolId: String,
     val deviceGroupId: String,
     val rowsJson: String = "[]",
+    val updatedAt: Long = 0L
+)
+
+/**
+ * Ordered list of Bereich-Namen (Sektionen) defined for one device, e.g.
+ * ["Station 1", "Station 2"] -- mirrors the server's '__bereiche__' sentinel
+ * cell in group_cells. One JSON blob per device, same rationale as
+ * HardwareTableEntity (small list, whole-blob read-modify-write is fine).
+ * Needed as its own table (not just derived from ProtocolGroupEntity.bereich
+ * values in use) so a Bereich the office defined but hasn't assigned to any
+ * group yet still shows up as a pickable option in the Struktur-Editor.
+ */
+@Entity(tableName = "bereiche_table", primaryKeys = ["protocolId", "deviceGroupId"])
+data class BereicheTableEntity(
+    val protocolId: String,
+    val deviceGroupId: String,
+    val orderJson: String = "[]",
     val updatedAt: Long = 0L
 )
 

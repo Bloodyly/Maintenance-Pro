@@ -181,3 +181,29 @@ val MIGRATION_8_9 = object : Migration(8, 9) {
         db.execSQL("ALTER TABLE protocols ADD COLUMN detectorDefsJson TEXT NOT NULL DEFAULT '{}'")
     }
 }
+
+/**
+ * v9 -> v10: Bereiche (Sektionen) -- benannte Abschnitte für Meldegruppen, z.B.
+ * "Station 1/2/3". `bereich` on protocol_groups is the per-group assignment
+ * (WebUI-style registry 3rd field, see PLAN_BEREICHE_LICHTRUF.md); `updatedAt`
+ * lets delta-sync pick up local reassignments the same way group_cells.updatedAt
+ * already does for cell edits. New bereiche_table mirrors hardware_tables'
+ * shape exactly (one ordered-name-list JSON blob per device).
+ */
+val MIGRATION_9_10 = object : Migration(9, 10) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE protocol_groups ADD COLUMN bereich TEXT")
+        db.execSQL("ALTER TABLE protocol_groups ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0")
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS bereiche_table (
+                protocolId TEXT NOT NULL,
+                deviceGroupId TEXT NOT NULL,
+                orderJson TEXT NOT NULL DEFAULT '[]',
+                updatedAt INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(protocolId, deviceGroupId)
+            )
+            """.trimIndent()
+        )
+    }
+}

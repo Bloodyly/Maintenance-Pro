@@ -173,7 +173,15 @@ def expand_device(cursor, protocol_id, group_id):
     table rows (Zentrale/Ringkarten-Inventar, independent of the Melderliste).
     last_changed_at is the newest updated_at across the device's cells (incl.
     the '__rows__' registry cell and the '__hardware__' blob, so structural
-    edits like renames also count as a change)."""
+    edits like renames also count as a change).
+
+    Each row also carries a 'bereich' key (WebUI-only Sektionszuordnung, ""
+    if none was ever defined for this Gerät). If at least one row has a
+    Bereich, `rows` is reordered into Bereich-Reihenfolge (per '__bereiche__',
+    unassigned/unknown last) so build_matrix_table can render section
+    headers just by watching for a 'bereich' change between consecutive
+    rows -- if no row has one, order is left exactly as stored (today's
+    behaviour, no regression for Geräte that never use this feature)."""
     cursor.execute(
         "SELECT slot_key, detector_type, value, updated_at FROM group_cells WHERE protocol_id = ? AND group_id = ?",
         (protocol_id, group_id)
@@ -199,9 +207,18 @@ def expand_device(cursor, protocol_id, group_id):
             hw_rows = []
         last_changed_at = max(last_changed_at, hw_cell["updated_at"] or 0)
 
+    bereiche_order = []
+    bereiche_cell = next((c for c in cells if c["slot_key"] == "__bereiche__"), None)
+    if bereiche_cell:
+        try:
+            bereiche_order = json.loads(bereiche_cell["value"])
+        except Exception:
+            bereiche_order = []
+        last_changed_at = max(last_changed_at, bereiche_cell["updated_at"] or 0)
+
     cells_by_grp = {}
     for c in cells:
-        if c["slot_key"] in ("__rows__", "__hardware__") or "_" not in c["slot_key"]:
+        if c["slot_key"] in ("__rows__", "__hardware__", "__bereiche__") or "_" not in c["slot_key"]:
             continue
         grp_num, melder_nr = c["slot_key"].split("_", 1)
         cells_by_grp.setdefault(grp_num, {})[melder_nr] = c
@@ -212,6 +229,7 @@ def expand_device(cursor, protocol_id, group_id):
     for entry in registry:
         grp_num = str(entry[0])
         grp_name = entry[1] if len(entry) > 1 else ""
+        bereich = entry[2] if len(entry) > 2 and entry[2] else ""
         grp_cells = cells_by_grp.get(grp_num, {})
 
         by_col_idx = {}
@@ -223,7 +241,12 @@ def expand_device(cursor, protocol_id, group_id):
             by_col_idx[col_idx] = c
             max_cols = max(max_cols, col_idx)
 
-        rows.append({"group_id": grp_num, "group_name": grp_name, "cells_by_col": by_col_idx})
+        rows.append({"group_id": grp_num, "group_name": grp_name, "cells_by_col": by_col_idx, "bereich": bereich})
+
+    if any(r["bereich"] for r in rows):
+        order_index = {name: i for i, name in enumerate(bereiche_order)}
+        unassigned_rank = len(bereiche_order)
+        rows.sort(key=lambda r: order_index.get(r["bereich"], unassigned_rank) if r["bereich"] else unassigned_rank)
 
     return rows, max_cols, hw_rows, last_changed_at
 
@@ -378,8 +401,28 @@ def build_matrix_table(rows_data, max_cols, bezeichnung_width, melder_col_width,
     header = ["Grp.", "Bezeichnung", "Anzahl"] + [str(i) for i in range(1, col_span + 1)]
     table_data = [header]
     cell_styles = []
+    section_header_rows = []  # r_idx values that hold a Bereich-Sektionsüberschrift
 
-    for r_idx, row in enumerate(rows_data, start=1):
+    # Bereich-Sektionsüberschriften: rows_data is already sorted into Bereich
+    # order by expand_device (unassigned last) -- here we only watch for the
+    # 'bereich' value changing between consecutive rows to know where to
+    # inject a full-width header. If no row has a 'bereich' at all, this never
+    # fires, so a Gerät without the feature renders byte-identical to before.
+    any_bereich_used = any(row.get("bereich") for row in rows_data)
+    prev_bereich = object()  # sentinel, guaranteed to differ from the first row's value
+
+    r_idx = 0
+    for row in rows_data:
+        if any_bereich_used:
+            cur_bereich = row.get("bereich") or ""
+            if cur_bereich != prev_bereich:
+                r_idx += 1
+                label = cur_bereich or "Ohne Bereich"
+                table_data.append([label] + [""] * (2 + col_span))
+                section_header_rows.append(r_idx)
+            prev_bereich = cur_bereich
+
+        r_idx += 1
         active_count = sum(1 for c in row["cells_by_col"].values() if c["detector_type"] != "-")
         line = [row["group_id"], row["group_name"], str(active_count)]
 
@@ -442,6 +485,16 @@ def build_matrix_table(rows_data, max_cols, bezeichnung_width, melder_col_width,
             style.append(("TEXTCOLOR", (c_idx, r_idx), (c_idx, r_idx), color))
             if bold:
                 style.append(("FONTNAME", (c_idx, r_idx), (c_idx, r_idx), "Courier-Bold"))
+
+    # Bereich-Sektionsüberschriften: full-width, overriding the alternating
+    # ROWBACKGROUNDS/per-column font rules above (appended later, so these win).
+    for header_r_idx in section_header_rows:
+        style.append(("SPAN", (0, header_r_idx), (-1, header_r_idx)))
+        style.append(("BACKGROUND", (0, header_r_idx), (-1, header_r_idx), NO_MELDER_BG))
+        style.append(("TEXTCOLOR", (0, header_r_idx), (-1, header_r_idx), INK))
+        style.append(("FONTNAME", (0, header_r_idx), (-1, header_r_idx), "Helvetica-Bold"))
+        style.append(("FONTSIZE", (0, header_r_idx), (-1, header_r_idx), 8))
+        style.append(("ALIGN", (0, header_r_idx), (-1, header_r_idx), "LEFT"))
 
     t.setStyle(TableStyle(style))
     return t
