@@ -328,3 +328,55 @@ ganze Bildschirmbreite belegten.
       Bereichen, Umbenennen-Propagierung UND Löschen-mit-Auswahl-Anpassung
       -- alle Szenarien PASS, inkl. der Interaktion aus vorherigem
       Zuweisen+Umbenennen+Löschen in derselben Sitzung.
+
+## Teil E: Nachfassende Korrektur -- Lichtruf-Editor-Verhalten (WebUI)
+
+Auslöser: Nutzer-Feedback nach Teil A-D --
+1. ETB-Import kann strukturell nie Lichtruf-Daten liefern (der ESSER-Parser
+   liefert ausschließlich BMA-Meldertypen) und darf daher im Editor für
+   Lichtruf-Geräte gar nicht erst angeboten werden.
+2. Lichtruf ist spaltentechnisch fix wie die Muster-xlsx aufgebaut (Raum-
+   Nr./Bezeichnung + je eine feste Spalte pro Modul: ZT, ZL, RT B1, RT B2,
+   RT B3, RT, PT Bad, RT Bad, ZT Bad, AT Bad). Die Spaltenanzahl wird im
+   Alltag nie verändert -- nur Räume (Meldegruppen) werden manuell
+   angelegt, Module werden per Zeichen-Tool pro Zelle (de)aktiviert.
+3. Der "Bereiche verwalten"-Button fehlte für (mindestens manche)
+   Lichtruf-Geräte komplett.
+
+Root Cause für (3): `openCellsEditorInner()`s Auto-Umschaltung auf
+Grid-Format prüfte nur `dev.type === 'BMA' || dev.type === 'EMA'`. Ein
+Lichtruf-Gerät, das (noch) im alten Flat-Format vorlag, blieb dauerhaft im
+Flat-Modus -- und damit blieb die GESAMTE Grid-Toolbar (inkl. ETB-Import
+UND Bereiche-Button) unsichtbar. Fix für (3) behebt automatisch auch den
+Zugriff auf die Bereiche-Verwaltung für betroffene Lichtruf-Geräte.
+
+- [x] `templates/index.html`: `openCellsEditorInner()` -- Auto-Umschaltung
+      auf Grid-Format um `dev.type === 'Lichtruf'` erweitert; `n_cols` für
+      neu initialisierte Lichtruf-Grids wird aus
+      `cellsEditorDef.detectors.length - 1` (ohne den `-`-Platzhalter)
+      abgeleitet, statt dem BMA/EMA-Standard von 20.
+- [x] `templates/index.html`: "Melder max."-Steller im Grid-Toolbar per
+      `x-if="cellsEditorDevice?.type !== 'Lichtruf'"` für Lichtruf
+      ausgeblendet (Spaltenanzahl bleibt fix an die Modulliste gekoppelt,
+      kein manuelles Verändern nötig/sinnvoll).
+- [x] `templates/index.html`: "ETB importieren"-Button im Grid-Toolbar
+      ebenso per `x-if` für Lichtruf ausgeblendet; Hardware-Tab-Hinweistext
+      ("...oder per ETB-Import automatisch befüllen lassen") für Lichtruf
+      auf eine Variante ohne ETB-Erwähnung umgeschaltet.
+- [x] `templates/index.html`: neue Methode `gridColHeaderLabel(c)` --
+      zeigt für Lichtruf-Geräte den echten Modulnamen (z.B. "RT B1") als
+      Spaltenkopf statt der laufenden Nummer, in exakt der Reihenfolge aus
+      `cellsEditorDef.detectors` (ohne `-`). Andere Anlagentypen (BMA/EMA)
+      zeigen weiterhin die reine Positionsnummer, da ihre Spalten keine
+      feste Modul-Bedeutung haben.
+- [x] Verifikation: Template-Tag-Balance geprüft (109 `<template>`-Öffnungen
+      / 109 Schließungen, unverändert nach den Edits). Neue/geänderte JS-
+      Logik (`gridColHeaderLabel`, die erweiterte Auto-Grid-Umschaltung)
+      per quickjs-Harness real ausgeführt: Lichtruf-Flat-Gerät schaltet
+      jetzt korrekt auf Grid mit `n_cols=10` um, Default-Paint-Type wird
+      korrekt gesetzt, Spaltenköpfe zeigen die 10 Modulnamen in der
+      richtigen Reihenfolge; BMA bleibt unverändert (n_cols=20, numerische
+      Spaltenköpfe) -- alle 4 Szenarien PASS.
+- [ ] Noch nicht deployed -- wie üblich erst nach expliziter Nutzer-
+      Aufforderung ("commit und deploy" o.ä.) commiten/pushen/Portainer-
+      Stack neu ausrollen.

@@ -1715,18 +1715,26 @@
                                 </button>
                             </template>
                         </div>
-                        <!-- Config inputs -->
-                        <div class="flex items-center gap-1.5 text-[11px]">
-                            <label class="text-slate-500 font-semibold">Melder max.:</label>
-                            <input type="number" x-model.number="gridConfig.n_cols" min="1" max="60" @change="gridApplyConfig()"
-                                class="w-16 border border-slate-200 rounded px-2 py-1 text-xs text-center font-mono">
-                        </div>
-                        <!-- ETB import -->
-                        <label class="inline-flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg cursor-pointer hover:bg-slate-50 transition">
-                            <i data-lucide="file-up" class="w-3.5 h-3.5"></i>
-                            <span>ETB importieren</span>
-                            <input type="file" accept=".etb,.csv,.txt" @change="importEtbFile($event)" class="hidden">
-                        </label>
+                        <!-- Config inputs -- Lichtruf-Spalten sind fix (1:1 die Modulliste aus
+                             cellsEditorDef.detectors, siehe Muster-xlsx); nur Meldegruppen
+                             (Räume) werden dort manuell angelegt, daher kein "Melder max."-
+                             Steller für diesen Anlagentyp. -->
+                        <template x-if="cellsEditorDevice?.type !== 'Lichtruf'">
+                            <div class="flex items-center gap-1.5 text-[11px]">
+                                <label class="text-slate-500 font-semibold">Melder max.:</label>
+                                <input type="number" x-model.number="gridConfig.n_cols" min="1" max="60" @change="gridApplyConfig()"
+                                    class="w-16 border border-slate-200 rounded px-2 py-1 text-xs text-center font-mono">
+                            </div>
+                        </template>
+                        <!-- ETB import -- nur BMA/EMA: der ESSER-ETB-Parser liefert ausschließlich
+                             BMA-Meldertypen, ein Lichtruf-Import ist strukturell unmöglich. -->
+                        <template x-if="cellsEditorDevice?.type !== 'Lichtruf'">
+                            <label class="inline-flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg cursor-pointer hover:bg-slate-50 transition">
+                                <i data-lucide="file-up" class="w-3.5 h-3.5"></i>
+                                <span>ETB importieren</span>
+                                <input type="file" accept=".etb,.csv,.txt" @change="importEtbFile($event)" class="hidden">
+                            </label>
+                        </template>
                         <!-- Bereiche (Sektionen): grouping Meldegruppen for display, WebUI-only -->
                         <button type="button" @click="openBereicheEditor()"
                             class="inline-flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 text-xs font-semibold rounded-lg hover:bg-slate-50 transition">
@@ -1781,7 +1789,7 @@
                                 <th class="sticky top-0 z-30 bg-slate-800 text-white text-left text-[10px] font-bold border border-slate-700 px-2 py-2"
                                     :style="'left:' + (cellsEditorReadOnly ? '52px;' : '80px;')">Bezeichnung</th>
                                 <template x-for="c in gridConfig.n_cols" :key="c">
-                                    <th class="sticky top-0 z-20 bg-slate-700 text-white text-center text-[10px] font-bold border border-slate-600 px-0 py-2 w-9" x-text="c"></th>
+                                    <th class="sticky top-0 z-20 bg-slate-700 text-white text-center text-[10px] font-bold border border-slate-600 px-0 py-2 w-9" x-text="gridColHeaderLabel(c)"></th>
                                 </template>
                             </tr>
                         </thead>
@@ -2006,7 +2014,8 @@
                                     </tr>
                                 </template>
                                 <tr x-show="cellsEditorHardwareRows.length === 0">
-                                    <td colspan="7" class="px-4 py-6 text-center text-slate-400">Noch keine Hardware-Einträge. Zeile hinzufügen, oder per ETB-Import automatisch befüllen lassen.</td>
+                                    <td colspan="7" class="px-4 py-6 text-center text-slate-400"
+                                        x-text="cellsEditorDevice?.type === 'Lichtruf' ? 'Noch keine Hardware-Einträge. Zeile hinzufügen.' : 'Noch keine Hardware-Einträge. Zeile hinzufügen, oder per ETB-Import automatisch befüllen lassen.'"></td>
                                 </tr>
                             </tbody>
                         </table>
@@ -3562,6 +3571,17 @@
                         'RAS': 'RS', 'LINEAR': 'LN', 'Linear': 'LN', 'DKM': 'DK', 'Konventionell': 'KV' };
                     return map[type] || (type.length > 3 ? type.slice(0, 2) : type);
                 },
+                // Lichtruf-Spalten sind fix 1:1 den Modultypen zugeordnet (siehe Muster-
+                // xlsx: ZT, ZL, RT B1, ... als benannte Spalten statt laufender Nummern).
+                // Andere Anlagentypen (BMA/EMA) behalten die reine Positions-Nummer, da
+                // ihre Spalten keine feste Modul-Bedeutung haben.
+                gridColHeaderLabel(c) {
+                    if (this.cellsEditorDevice?.type === 'Lichtruf') {
+                        const dets = (this.cellsEditorDef?.detectors || []).filter(d => d !== '-');
+                        return dets[c - 1] || c;
+                    }
+                    return c;
+                },
                 intervalBadgeList(interval) {
                     const iv = (interval || '').toLowerCase();
                     if (iv.includes('quartal')) return ['Q1','Q2','Q3','Q4'];
@@ -3915,10 +3935,15 @@
                             } else {
                                 this.gridFormat = 'flat';
                                 this.cellsEditorRows = data.cells || [];
-                                // Auto-switch to grid for BMA/EMA
-                                if (dev.type === 'BMA' || dev.type === 'EMA') {
+                                // Auto-switch to grid for BMA/EMA/Lichtruf (all three use the
+                                // grid/Melderkreuz format; Lichtruf's column count is fixed to
+                                // its module list length, not the generic BMA default of 20).
+                                if (dev.type === 'BMA' || dev.type === 'EMA' || dev.type === 'Lichtruf') {
                                     this.gridFormat = 'grid';
-                                    this.gridInitEmpty(10, 20);
+                                    const nCols = dev.type === 'Lichtruf'
+                                        ? Math.max(1, (this.cellsEditorDef?.detectors?.length || 11) - 1)
+                                        : 20;
+                                    this.gridInitEmpty(10, nCols);
                                     if (!this.gridPaintType && this.cellsEditorDef?.detectors?.length > 1) {
                                         this.gridPaintType = this.cellsEditorDef.detectors[1];
                                     }
