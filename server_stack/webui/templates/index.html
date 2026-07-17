@@ -1785,7 +1785,8 @@
                                 </template>
                                 <th class="sticky top-0 z-30 bg-slate-800 text-white text-center text-[10px] font-bold border border-slate-700 px-1 py-2"
                                     :class="cellsEditorReadOnly ? 'left-0' : ''"
-                                    :style="cellsEditorReadOnly ? '' : 'left:28px;'">Grp</th>
+                                    :style="cellsEditorReadOnly ? '' : 'left:28px;'"
+                                    x-text="cellsEditorDevice?.type === 'Lichtruf' ? 'Raum' : 'Grp'"></th>
                                 <th class="sticky top-0 z-30 bg-slate-800 text-white text-left text-[10px] font-bold border border-slate-700 px-2 py-2"
                                     :style="'left:' + (cellsEditorReadOnly ? '52px;' : '80px;')">Bezeichnung</th>
                                 <template x-for="c in gridConfig.n_cols" :key="c">
@@ -1860,10 +1861,10 @@
                     <!-- Add-row affordance: appends a Meldegruppe at the end, replacing the
                          old "bump the Gruppen counter" workflow. -->
                     <template x-if="!cellsEditorReadOnly">
-                        <button type="button" @click="gridAddGroup()"
+                        <button type="button" @click="gridAddGroup()" id="gridAddGroupBtn"
                             class="w-full flex items-center justify-center gap-1.5 py-2 text-[11px] font-semibold text-[#003D9B] hover:bg-blue-50 border border-t-0 border-slate-300 transition">
                             <i data-lucide="plus" class="w-3.5 h-3.5"></i>
-                            Meldegruppe hinzufügen
+                            <span x-text="cellsEditorDevice?.type === 'Lichtruf' ? 'Raum hinzufügen' : 'Meldegruppe hinzufügen'"></span>
                         </button>
                     </template>
                 </div>
@@ -3693,6 +3694,13 @@
                     this.gridGroups.push({ grp_num: String(nextNum).padStart(2, '0'), name: '', bereich: '' });
                     this.gridConfig.n_groups = this.gridGroups.length;
                     setTimeout(() => { this.safeCreateIcons(); }, 50);
+                    // Die neue Zeile ist leer (keine Bezeichnung/Melder) und damit optisch
+                    // kaum von Nachbarzeilen zu unterscheiden -- bei langen Listen wirkt der
+                    // Klick sonst wie ein "Nichts passiert". Button (direkt unter der neuen
+                    // Zeile) sichtbar scrollen macht den Effekt sofort erkennbar.
+                    this.$nextTick(() => {
+                        document.getElementById('gridAddGroupBtn')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                    });
                 },
                 // Removes one specific Meldegruppe row (with confirmation) -- replaces the old
                 // "renumber it to the highest value, then decrement the counter" workaround.

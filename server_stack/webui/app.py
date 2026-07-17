@@ -7,6 +7,7 @@ import json
 import base64
 import csv
 import io
+import copy
 import hashlib
 import html as html_module
 import shutil
@@ -490,6 +491,32 @@ def _settings_path_for(mandant_id):
     return os.path.join(os.path.dirname(DB_PATH), f"settings_{mandant_id}.json")
 
 
+# Lichtruf's Meldepunkt-Vokabular wurde von einem generischen Platzhalter
+# (AT/BT/ZT/EM/PN/Display) auf die feste, aus Muster_Lichtrufanlage.xlsx
+# abgeleitete Modulliste (ZT/ZL/RT B1/.../AT Bad) umgestellt, NACHDEM bei
+# bereits laufenden Installationen schon ein settings.json auf Platte lag --
+# DEFAULT_ANLAGENTYPEN seedet nur brandneue Installationen, ein bereits
+# vorhandenes "anlagentypen" wird sonst nie mit neuen Code-Defaults
+# abgeglichen. Migriert deshalb genau den alten, nie im Anlagentypen-Editor
+# angefassten Default -- eine vom Nutzer bereits individuell angepasste
+# Lichtruf-Definition bleibt unangetastet.
+_STALE_LICHTRUF_DETECTORS = ["-", "AT", "BT", "ZT", "EM", "PN", "Display"]
+
+def _migrate_stale_lichtruf_definitions(loaded):
+    changed = False
+    for entry in loaded.get("anlagentypen") or []:
+        if entry.get("type_id") != "Lichtruf":
+            continue
+        mp_def = entry.get("meldepunkt_definitionen") or {}
+        if mp_def.get("detectors") == _STALE_LICHTRUF_DETECTORS:
+            for default_entry in DEFAULT_ANLAGENTYPEN:
+                if default_entry.get("type_id") == "Lichtruf":
+                    entry["meldepunkt_definitionen"] = copy.deepcopy(default_entry["meldepunkt_definitionen"])
+                    changed = True
+                    break
+    return changed
+
+
 def load_settings(mandant_id=None):
     if mandant_id is None:
         mandant_id = get_active_mandant_id()
@@ -520,6 +547,8 @@ def load_settings(mandant_id=None):
                 loaded = json.load(f)
             if "anlagentypen" not in loaded:
                 loaded["anlagentypen"] = DEFAULT_ANLAGENTYPEN
+            if _migrate_stale_lichtruf_definitions(loaded):
+                save_settings(loaded, mandant_id)
             return _fill_settings_colors(loaded)
         except Exception:
             pass

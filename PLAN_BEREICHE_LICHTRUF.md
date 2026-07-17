@@ -380,3 +380,49 @@ Zugriff auf die Bereiche-Verwaltung für betroffene Lichtruf-Geräte.
 - [ ] Noch nicht deployed -- wie üblich erst nach expliziter Nutzer-
       Aufforderung ("commit und deploy" o.ä.) commiten/pushen/Portainer-
       Stack neu ausrollen.
+
+## Teil F: Nachfassende Korrektur -- "Raum hinzufügen", Kopfzeile, Add-Bug, stale Settings
+
+Auslöser: Nutzer-Feedback nach Teil E -- Button "Meldegruppe hinzufügen" soll
+bei Lichtruf "Raum hinzufügen" heißen, Tabellenkopf "Grp" soll bei Lichtruf
+"Raum" heißen, und der Button hatte laut Nutzer "aktuell keinen Effekt".
+
+- [x] `templates/index.html`: "Grp"-Kopfzelle zeigt jetzt
+      `x-text="cellsEditorDevice?.type === 'Lichtruf' ? 'Raum' : 'Grp'"`.
+- [x] `templates/index.html`: Add-Row-Button-Label zeigt jetzt
+      `x-text="cellsEditorDevice?.type === 'Lichtruf' ? 'Raum hinzufügen' : 'Meldegruppe hinzufügen'"`.
+- [x] Root-Cause-Suche zum "keine weitere Zeile einfügbar"-Report: `gridAddGroup()`/
+      `gridDisplayRows()` real (per quickjs) gegen die ECHTEN Live-Daten des
+      Nutzers getestet (Protokoll PRO-15503, Gerät G15503000, via Produktions-
+      API abgerufen: n_groups=11, n_cols=5) -- die Zeile wird technisch
+      korrekt hinzugefügt (12. Gruppe erscheint in `gridGroups`/
+      `gridDisplayRows()`). Live-HTML der Produktion mit dem lokalen Stand
+      abgeglichen (byte-identisch) -- kein Deploy-/Cache-Problem. Keine
+      Ursache im Code gefunden; da eine neue Zeile leer (keine Bezeichnung,
+      keine Melder) und damit optisch kaum von den Nachbarzeilen zu
+      unterscheiden ist, wurde `gridAddGroup()` um automatisches
+      Scrollen zum neuen Zeilenende ergänzt (`$nextTick` +
+      `scrollIntoView({block:'center', behavior:'smooth'})` auf den nun mit
+      `id="gridAddGroupBtn"` versehenen Button) -- macht den Effekt in jedem
+      Fall sofort sichtbar, unabhängig von der tatsächlichen Ursache.
+- [x] **Separater, während der Root-Cause-Suche entdeckter Bug (potenziell
+      wichtiger als der Add-Button selbst):** Die Produktions-`settings_
+      standard.json` trug noch die ALTE, generische Lichtruf-Vokabel-Liste
+      (`AT, BT, ZT, EM, PN, Display`, 4 Spalten) -- die in Teil A
+      umgestellte `DEFAULT_ANLAGENTYPEN`-Definition (10 feste Module aus der
+      Muster-xlsx) hatte darauf NIE Wirkung, weil `load_settings()` ein
+      bereits vorhandenes `anlagentypen` unverändert von Platte lädt und
+      Code-Defaults nur brandneue Installationen seeden. Betraf sowohl
+      WebUI als auch (über dieselbe geteilte settings-Datei) `netlink`s
+      `/protocols/definitions` -- also auch die Android-App. Fix: neue
+      `_migrate_stale_lichtruf_definitions()` in `webui/app.py` erkennt
+      genau die alte, nie im Anlagentypen-Editor angefasste Default-Liste
+      und ersetzt sie einmalig durch die aktuelle `DEFAULT_ANLAGENTYPEN`-
+      Definition, persistiert das Ergebnis zurück auf Platte (wirkt dann
+      automatisch auch für `netlink`, da beide dieselbe Datei lesen). Eine
+      bereits vom Nutzer individuell angepasste Lichtruf-Definition (jeder
+      andere Wert als exakt die alte Default-Liste) bleibt unangetastet.
+      Verifiziert gegen eine Kopie der echten Produktions-Stale-Daten
+      (Migration greift) und gegen eine simulierte Nutzer-Anpassung
+      (Migration greift NICHT, Wert bleibt erhalten) -- beide Szenarien PASS.
+- [ ] Noch nicht deployed.
