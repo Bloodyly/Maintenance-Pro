@@ -409,11 +409,11 @@ KNOWN_DETECTOR_KURZZEICHEN = {
     "Koppler": "KO", "Konventionell": "KV", "ZD": "ZD", "ZB": "ZB",
     "TDiff": "TD", "TDIFF": "TD", "Tmax": "TM", "TMAX": "TM", "RAS": "RS",
     "Linear": "LN", "LINEAR": "LN", "BWM": "BWM", "ZK": "ZK", "RSK": "RSK",
-    # Lichtruf-Zimmermodule (aus Muster_Lichtrufanlage.xlsx) -- ohne diese
-    # Einträge würde der generische det[:2]-Fallback "RT B1"/"RT B2"/"RT B3"
-    # alle auf "RT" abkürzen, was sie ununterscheidbar machen würde.
-    "ZT": "ZT", "ZL": "ZL", "RT B1": "R1", "RT B2": "R2", "RT B3": "R3",
-    "RT": "RT", "PT Bad": "PB", "RT Bad": "RB", "ZT Bad": "ZB", "AT Bad": "AB",
+    # Lichtruf-Zimmermodule (fixe Spaltenliste, siehe webui/app.py's
+    # DEFAULT_ANLAGENTYPEN) -- ohne diese Einträge würde der generische
+    # det[:2]-Fallback "RT B1".."RT B4" alle auf "RT" abkürzen.
+    "ZT": "ZT", "ZL": "ZL", "RT B1": "R1", "RT B2": "R2", "RT B3": "R3", "RT B4": "R4",
+    "AT": "AT", "PT Bad": "PB", "RT Bad": "RB", "ZT Bad": "ZB", "AT Bad": "AB", "Terminal": "TE",
 }
 
 DEFAULT_MELDEPUNKT_DEFS = {
@@ -426,8 +426,8 @@ DEFAULT_MELDEPUNKT_DEFS = {
     # Zimmermodul-Vokabular wie webui/app.py's DEFAULT_ANLAGENTYPEN -- strukturell
     # identisch zu BMA (Räume statt Meldegruppen, freie Modul-Slots statt
     # Melder-Slots), daher dieselbe values-Liste wie BMA.
-    "Lichtruf": {"detectors": ["-", "ZT", "ZL", "RT B1", "RT B2", "RT B3", "RT",
-                               "PT Bad", "RT Bad", "ZT Bad", "AT Bad"],
+    "Lichtruf": {"detectors": ["-", "ZT", "ZL", "RT B1", "RT B2", "RT B3", "RT B4", "AT",
+                               "PT Bad", "RT Bad", "ZT Bad", "AT Bad", "Terminal"],
                  "values": ["CHECK", "H1", "H2", "Def."]},
     "SLA": {"detectors": ["-", "Normal", "SLA"], "values": ["CHECK", "Def."]},
 }

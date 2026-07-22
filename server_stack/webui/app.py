@@ -358,14 +358,18 @@ DEFAULT_ANLAGENTYPEN = [
         "taifun_typ_id": 0, "active": True,
         "badge": "LR", "badge_color": "emerald",
         "meldepunkt_definitionen": {
-            # Zimmermodul-Vokabular aus Muster_Lichtrufanlage.xlsx -- strukturell
-            # wie BMA (Zeilen=Räume statt Meldegruppen, Spalten=freie Modul-Slots
-            # statt Melder-Slots, Prüfwerte identisch: Quartal/Halbjahr/Jahr oder
-            # Defekt), daher dieselbe values-Liste wie BMA.
-            "detectors": ["-", "ZT", "ZL", "RT B1", "RT B2", "RT B3", "RT",
-                          "PT Bad", "RT Bad", "ZT Bad", "AT Bad"],
+            # Fixe Raum-Modul-Spalten (Nutzer-Vorgabe, exakt in dieser Reihenfolge):
+            # Raum-Nr. ; Bezeichnung ; ZT ; ZL ; RT B1 ; RT B2 ; RT B3 ; RT B4 ; AT ;
+            # PT Bad ; RT Bad ; ZT Bad ; AT Bad ; Terminal -- Raum-Nr./Bezeichnung sind
+            # die fixierten Info-Spalten (siehe "columns"/"Grp"+"Bezeichnung" im Grid),
+            # der Rest ("detectors" hier) sind die 12 Auslösespalten. Anders als bei BMA
+            # ist diese Spaltenliste bei Lichtruf FEST -- nie nutzerseitig veränderbar --
+            # und jede Spalte hat genau EINE feste Bedeutung (kein freies Zeichen-Tool-
+            # Vokabular, nur Vorhanden/Nicht-vorhanden je Spalte).
+            "detectors": ["-", "ZT", "ZL", "RT B1", "RT B2", "RT B3", "RT B4", "AT",
+                          "PT Bad", "RT Bad", "ZT Bad", "AT Bad", "Terminal"],
             "values": ["CHECK", "H1", "H2", "Def."],
-            "columns": ["1","2","3","4","5","6","7","8","9","10"]
+            "columns": ["1","2","3","4","5","6","7","8","9","10","11","12"]
         },
         "zusatz_tabelle": None
     },
@@ -443,11 +447,11 @@ KNOWN_DETECTOR_KURZZEICHEN = {
     "Koppler": "KO", "Konventionell": "KV", "ZD": "ZD", "ZB": "ZB",
     "TDiff": "TD", "TDIFF": "TD", "Tmax": "TM", "TMAX": "TM", "RAS": "RS",
     "Linear": "LN", "LINEAR": "LN", "BWM": "BWM", "ZK": "ZK", "RSK": "RSK",
-    # Lichtruf-Zimmermodule (aus Muster_Lichtrufanlage.xlsx) -- ohne diese
-    # Einträge würde der generische det[:2]-Fallback "RT B1"/"RT B2"/"RT B3"
-    # alle auf "RT" abkürzen, was sie ununterscheidbar machen würde.
-    "ZT": "ZT", "ZL": "ZL", "RT B1": "R1", "RT B2": "R2", "RT B3": "R3",
-    "RT": "RT", "PT Bad": "PB", "RT Bad": "RB", "ZT Bad": "ZB", "AT Bad": "AB",
+    # Lichtruf-Zimmermodule (fixe Spaltenliste, siehe DEFAULT_ANLAGENTYPEN) -- ohne
+    # diese Einträge würde der generische det[:2]-Fallback "RT B1".."RT B4" alle auf
+    # "RT" abkürzen, was sie ununterscheidbar machen würde.
+    "ZT": "ZT", "ZL": "ZL", "RT B1": "R1", "RT B2": "R2", "RT B3": "R3", "RT B4": "R4",
+    "AT": "AT", "PT Bad": "PB", "RT Bad": "RB", "ZT Bad": "ZB", "AT Bad": "AB", "Terminal": "TE",
 }
 
 
@@ -491,16 +495,21 @@ def _settings_path_for(mandant_id):
     return os.path.join(os.path.dirname(DB_PATH), f"settings_{mandant_id}.json")
 
 
-# Lichtruf's Meldepunkt-Vokabular wurde von einem generischen Platzhalter
-# (AT/BT/ZT/EM/PN/Display) auf die feste, aus Muster_Lichtrufanlage.xlsx
-# abgeleitete Modulliste (ZT/ZL/RT B1/.../AT Bad) umgestellt, NACHDEM bei
+# Lichtruf's Meldepunkt-Vokabular wurde bereits zweimal umgestellt, NACHDEM bei
 # bereits laufenden Installationen schon ein settings.json auf Platte lag --
 # DEFAULT_ANLAGENTYPEN seedet nur brandneue Installationen, ein bereits
 # vorhandenes "anlagentypen" wird sonst nie mit neuen Code-Defaults
-# abgeglichen. Migriert deshalb genau den alten, nie im Anlagentypen-Editor
-# angefassten Default -- eine vom Nutzer bereits individuell angepasste
-# Lichtruf-Definition bleibt unangetastet.
-_STALE_LICHTRUF_DETECTORS = ["-", "AT", "BT", "ZT", "EM", "PN", "Display"]
+# abgeglichen. Migriert deshalb genau jeden bekannten alten, nie im
+# Anlagentypen-Editor angefassten Default auf den aktuellen -- eine vom Nutzer
+# bereits individuell angepasste Lichtruf-Definition (jede andere Detector-
+# Liste) bleibt unangetastet. Neue Einträge hier anhängen, falls sich die
+# Lichtruf-Spaltenliste nochmal ändert, statt alte Einträge zu entfernen --
+# sonst würden Installationen, die den Zwischenstand nie gesehen haben,
+# übersprungen.
+_STALE_LICHTRUF_DETECTOR_LISTS = [
+    ["-", "AT", "BT", "ZT", "EM", "PN", "Display"],
+    ["-", "ZT", "ZL", "RT B1", "RT B2", "RT B3", "RT", "PT Bad", "RT Bad", "ZT Bad", "AT Bad"],
+]
 
 def _migrate_stale_lichtruf_definitions(loaded):
     changed = False
@@ -508,7 +517,7 @@ def _migrate_stale_lichtruf_definitions(loaded):
         if entry.get("type_id") != "Lichtruf":
             continue
         mp_def = entry.get("meldepunkt_definitionen") or {}
-        if mp_def.get("detectors") == _STALE_LICHTRUF_DETECTORS:
+        if mp_def.get("detectors") in _STALE_LICHTRUF_DETECTOR_LISTS:
             for default_entry in DEFAULT_ANLAGENTYPEN:
                 if default_entry.get("type_id") == "Lichtruf":
                     entry["meldepunkt_definitionen"] = copy.deepcopy(default_entry["meldepunkt_definitionen"])
@@ -537,7 +546,7 @@ def load_settings(mandant_id=None):
             "BMA": {"name": "Brandmeldeanlage", "xml_name": "BMA", "color": "bg-red-50 text-red-800 border-red-200", "badgeColor": "bg-red-500", "detectors": ["-","Normal","ZD","ZB","TDIFF","TMAX","RAS","LINEAR"], "values": ["CHECK","H1","H2","Def."]},
             "EMA": {"name": "Einbruchmeldeanlage", "xml_name": "EMA", "color": "bg-yellow-50 text-yellow-800 border-yellow-200", "badgeColor": "bg-yellow-500", "detectors": ["-","Normal","BWM","ZK","RSK","Lichtschranke","Glasbruch","Körperschall"], "values": ["CHECK","Def."]},
             "ELA": {"name": "Elektroakustik", "xml_name": "ELA", "color": "bg-blue-50 text-blue-800 border-blue-200", "badgeColor": "bg-blue-500", "detectors": ["-","Normal","Innenlautsprecher","Außenlautsprecher"], "values": ["CHECK","Def."]},
-            "Lichtruf": {"name": "Lichtrufanlage", "xml_name": "Lichtruf", "color": "bg-emerald-50 text-emerald-800 border-emerald-200", "badgeColor": "bg-emerald-500", "detectors": ["-", "ZT", "ZL", "RT B1", "RT B2", "RT B3", "RT", "PT Bad", "RT Bad", "ZT Bad", "AT Bad"], "values": ["CHECK","H1","H2","Def."]},
+            "Lichtruf": {"name": "Lichtrufanlage", "xml_name": "Lichtruf", "color": "bg-emerald-50 text-emerald-800 border-emerald-200", "badgeColor": "bg-emerald-500", "detectors": ["-", "ZT", "ZL", "RT B1", "RT B2", "RT B3", "RT B4", "AT", "PT Bad", "RT Bad", "ZT Bad", "AT Bad", "Terminal"], "values": ["CHECK","H1","H2","Def."]},
             "SLA": {"name": "Sprechanlage", "xml_name": "SLA", "color": "bg-indigo-50 text-indigo-800 border-indigo-200", "badgeColor": "bg-indigo-500", "detectors": ["-","Normal","SLA"], "values": ["CHECK","Def."]}
         }
     }

@@ -1526,7 +1526,7 @@ class MainViewModel @Inject constructor(
             groupCellDao.deleteAllForProtocol(proto.id)
 
             hardwareTableDao.deleteAllForProtocol(proto.id)
-            proto.hardware.forEach { hw ->
+            proto.hardware.orEmpty().forEach { hw ->
                 hardwareTableDao.upsert(
                     HardwareTableEntity(
                         protocolId = proto.id, deviceGroupId = hw.group_id,
@@ -1536,7 +1536,7 @@ class MainViewModel @Inject constructor(
             }
 
             bereicheTableDao.deleteAllForProtocol(proto.id)
-            proto.bereiche.forEach { b ->
+            proto.bereiche.orEmpty().forEach { b ->
                 bereicheTableDao.upsert(
                     BereicheTableEntity(
                         protocolId = proto.id, deviceGroupId = b.group_id,
@@ -1545,7 +1545,7 @@ class MainViewModel @Inject constructor(
                 )
             }
 
-            val groups = proto.rows.mapIndexed { i, row ->
+            val groups = proto.rows.orEmpty().mapIndexed { i, row ->
                 ProtocolGroupEntity(
                     protocolId = proto.id, groupId = row.group_id, groupName = row.group_name, groupType = row.group_type,
                     anlageId = row.anlage_id, anlageName = row.anlage_name, anlageType = row.anlage_type, anlageInterval = row.anlage_interval,
@@ -1553,7 +1553,7 @@ class MainViewModel @Inject constructor(
                 )
             }
             val cells = mutableListOf<GroupCellEntity>()
-            proto.rows.forEach { row ->
+            proto.rows.orEmpty().forEach { row ->
                 row.cells.forEachIndexed { j, c ->
                     if (c.slot_key != "__grid__") {
                         cells.add(GroupCellEntity(
@@ -1583,7 +1583,7 @@ class MainViewModel @Inject constructor(
             ))
 
             val existingHardware = hardwareTableDao.getAllForProtocol(proto.id).associateBy { it.deviceGroupId }
-            proto.hardware.forEach { hw ->
+            proto.hardware.orEmpty().forEach { hw ->
                 val existing = existingHardware[hw.group_id]
                 // Server wins only if its data is newer -- protects un-uploaded local pending edits.
                 if (existing == null || hw.updated_at > existing.updatedAt) {
@@ -1597,7 +1597,7 @@ class MainViewModel @Inject constructor(
             }
 
             val existingBereiche = bereicheTableDao.getAllForProtocol(proto.id).associateBy { it.deviceGroupId }
-            proto.bereiche.forEach { b ->
+            proto.bereiche.orEmpty().forEach { b ->
                 val existing = existingBereiche[b.group_id]
                 if (existing == null || b.updated_at > existing.updatedAt) {
                     bereicheTableDao.upsert(
@@ -1624,7 +1624,7 @@ class MainViewModel @Inject constructor(
             val bereichUpdatedGroups = mutableListOf<ProtocolGroupEntity>()
             val newCells = mutableListOf<GroupCellEntity>()
 
-            proto.rows.forEach { row ->
+            proto.rows.orEmpty().forEach { row ->
                 val existingGroup = existingGroups[row.group_id]
                 if (existingGroup == null) {
                     newGroups.add(ProtocolGroupEntity(
@@ -1744,17 +1744,19 @@ class MainViewModel @Inject constructor(
                 columns = listOf("1", "2", "3")
             ))
             put("Lichtruf", typeDef(
-                // Zimmermodul-Vokabular aus Muster_Lichtrufanlage.xlsx -- strukturell
-                // wie BMA (Räume statt Meldegruppen, freie Modul-Slots statt Melder-Slots,
-                // gleiche Prüfwerte-Liste).
-                detectors = listOf("-", "ZT", "ZL", "RT B1", "RT B2", "RT B3", "RT",
-                                    "PT Bad", "RT Bad", "ZT Bad", "AT Bad"),
+                // Feste Raum-Modul-Spalten (Nutzer-Vorgabe, exakte Reihenfolge):
+                // Raum-Nr. ; Bezeichnung ; ZT ; ZL ; RT B1 ; RT B2 ; RT B3 ; RT B4 ; AT ;
+                // PT Bad ; RT Bad ; ZT Bad ; AT Bad ; Terminal. Anders als BMA ist diese
+                // Liste bei Lichtruf nie nutzerseitig veränderbar -- jede Spalte hat genau
+                // eine feste Bedeutung (kein freies Paint-Vokabular, nur vorhanden/nicht).
+                detectors = listOf("-", "ZT", "ZL", "RT B1", "RT B2", "RT B3", "RT B4", "AT",
+                                    "PT Bad", "RT Bad", "ZT Bad", "AT Bad", "Terminal"),
                 values = listOf("CHECK", "H1", "H2", "Def."),
-                columns = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "10"),
+                columns = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"),
                 kurzzeichen = mapOf(
                     "ZT" to "ZT", "ZL" to "ZL", "RT B1" to "R1", "RT B2" to "R2",
-                    "RT B3" to "R3", "RT" to "RT", "PT Bad" to "PB", "RT Bad" to "RB",
-                    "ZT Bad" to "ZB", "AT Bad" to "AB"
+                    "RT B3" to "R3", "RT B4" to "R4", "AT" to "AT", "PT Bad" to "PB",
+                    "RT Bad" to "RB", "ZT Bad" to "ZB", "AT Bad" to "AB", "Terminal" to "TE"
                 )
             ))
             put("SLA", typeDef(

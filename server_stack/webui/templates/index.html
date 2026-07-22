@@ -1700,21 +1700,26 @@
                 <!-- Grid mode toolbar -->
                 <template x-if="gridFormat === 'grid' && !cellsEditorReadOnly">
                     <div class="flex items-center gap-2">
-                        <!-- Detector type palette -->
-                        <div class="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
-                            <template x-for="dt in (cellsEditorDef?.detectors || ['-','Normal','ZD','ZB'])" :key="dt">
-                                <button type="button"
-                                    @click="gridPaintType = dt"
-                                    :title="dt"
-                                    class="px-2 py-1 rounded text-[10px] font-bold transition border"
-                                    :class="gridPaintType === dt
-                                        ? 'text-white border-transparent shadow'
-                                        : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400'"
-                                    :style="gridPaintType === dt ? 'background-color:' + (dt === '-' ? '#64748b' : gridTypeHex(dt)) : ''"
-                                    x-text="dt === '-' ? '✕' : dt">
-                                </button>
-                            </template>
-                        </div>
+                        <!-- Detector type palette -- nicht bei Lichtruf: dort hat jede Spalte
+                             genau EIN festes Modul, ein Klick auf eine Zelle schaltet direkt
+                             zwischen "-" und dem Modul dieser Spalte um (siehe gridCellClick),
+                             ein Typ-Vokabular zum Auswählen ergibt keinen Sinn. -->
+                        <template x-if="cellsEditorDevice?.type !== 'Lichtruf'">
+                            <div class="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+                                <template x-for="dt in (cellsEditorDef?.detectors || ['-','Normal','ZD','ZB'])" :key="dt">
+                                    <button type="button"
+                                        @click="gridPaintType = dt"
+                                        :title="dt"
+                                        class="px-2 py-1 rounded text-[10px] font-bold transition border"
+                                        :class="gridPaintType === dt
+                                            ? 'text-white border-transparent shadow'
+                                            : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400'"
+                                        :style="gridPaintType === dt ? 'background-color:' + (dt === '-' ? '#64748b' : gridTypeHex(dt)) : ''"
+                                        x-text="dt === '-' ? '✕' : dt">
+                                    </button>
+                                </template>
+                            </div>
+                        </template>
                         <!-- Config inputs -- Lichtruf-Spalten sind fix (1:1 die Modulliste aus
                              cellsEditorDef.detectors, siehe Muster-xlsx); nur Meldegruppen
                              (Räume) werden dort manuell angelegt, daher kein "Melder max."-
@@ -1795,18 +1800,29 @@
                             </tr>
                         </thead>
                         <tbody>
+                            <!-- IMPORTANT: x-for's template must have EXACTLY ONE root element
+                                 (same rule as x-if, see feedback memory) -- the previous version
+                                 had TWO sibling <template x-if> tags as direct children here
+                                 ("header" and "data"), which silently produced zero real <tr>
+                                 rows in every real browser (confirmed via Playwright against
+                                 production: tbody.children were all inert, unprocessed
+                                 <template> tags, never any <tr>). This is the actual root cause
+                                 of the long-standing "Zeile hinzufügen hat keinen Effekt"/"keine
+                                 Zeilen sichtbar" reports -- it affected ALL Anlagentypen (BMA
+                                 included), not just Lichtruf, since NO grid device ever rendered
+                                 any data rows at all. Fixed by merging both cases into ONE <tr>
+                                 per item, with the header/data distinction moved to per-<td>
+                                 (or per-<template x-for>) x-if's inside that single <tr> --
+                                 each of those has its own single root child, which IS supported. -->
                             <template x-for="entry in gridDisplayRows()" :key="entry.key">
-                                <template x-if="entry.kind === 'header'">
-                                    <tr>
+                                <tr :class="entry.kind === 'data' ? 'group/row hover:bg-blue-50/30' : ''" x-data="{ rIdx: entry.rIdx }">
+                                    <template x-if="entry.kind === 'header'">
                                         <td class="border border-slate-400 bg-slate-100 px-2 py-1.5 font-bold text-[11px] text-slate-700"
                                             :colspan="(cellsEditorReadOnly ? 2 : 3) + gridConfig.n_cols"
                                             x-text="entry.label"></td>
-                                    </tr>
-                                </template>
-                                <template x-if="entry.kind === 'data'">
-                                    <tr class="group/row hover:bg-blue-50/30" x-data="{ rIdx: entry.rIdx }">
+                                    </template>
                                     <!-- Per-row delete -->
-                                    <template x-if="!cellsEditorReadOnly">
+                                    <template x-if="entry.kind === 'data' && !cellsEditorReadOnly">
                                         <td class="sticky left-0 z-10 border border-slate-400 p-0 text-center bg-white">
                                             <button type="button" @click="gridDeleteGroup(rIdx)"
                                                 title="Gruppe löschen"
@@ -1816,45 +1832,50 @@
                                         </td>
                                     </template>
                                     <!-- Group number -->
-                                    <td class="sticky z-10 bg-slate-50 border border-slate-400 text-center p-0"
-                                        :class="cellsEditorReadOnly ? 'left-0' : ''"
-                                        :style="cellsEditorReadOnly ? '' : 'left:28px;'">
-                                        <input type="text" x-model="gridGroups[rIdx].grp_num"
-                                            class="w-full text-center font-mono font-bold text-[11px] bg-transparent border-0 outline-none px-1 py-1.5"
-                                            :readonly="cellsEditorReadOnly">
-                                    </td>
-                                    <!-- Bezeichnung -->
-                                    <td class="sticky z-10 bg-white border border-slate-400 p-0"
-                                        :style="'left:' + (cellsEditorReadOnly ? '52px;' : '80px;')">
-                                        <input type="text" x-model="gridGroups[rIdx].name" placeholder="Bezeichnung..."
-                                            class="w-full text-[11px] bg-transparent border-0 outline-none px-2 py-1.5"
-                                            :readonly="cellsEditorReadOnly">
-                                    </td>
-                                    <!-- Detector cells -->
-                                    <template x-for="c in gridConfig.n_cols" :key="c">
-                                        <td class="border border-slate-400 p-0 text-center relative"
-                                            :class="cellsEditorReadOnly ? 'cursor-default' : 'cursor-crosshair'"
-                                            :style="gridCellStyle(rIdx+1, c)"
-                                            @mousedown.prevent="if(!cellsEditorReadOnly) gridStartPaint(rIdx+1, c)"
-                                            @mouseenter="if(!cellsEditorReadOnly) gridMovePaint(rIdx+1, c)">
-                                            <div class="w-full h-7 flex items-center justify-center text-[9px] font-bold transition"
-                                                :class="(!gridCell(rIdx+1, c).type || gridCell(rIdx+1, c).type === '-') ? 'bg-slate-100' : ''"
-                                                :style="(!gridCell(rIdx+1, c).type || gridCell(rIdx+1, c).type === '-')
-                                                    ? ''
-                                                    : 'background-color:' + gridTypeHexPale(gridCell(rIdx+1, c).type)">
-                                                <span x-show="(!gridCell(rIdx+1, c).type || gridCell(rIdx+1, c).type === '-') ? false : !gridCell(rIdx+1, c).value"
-                                                      :style="'color:' + gridTypeHex(gridCell(rIdx+1, c).type)"
-                                                      class="opacity-60 font-semibold text-[9px]"
-                                                      x-text="gridTypeText(gridCell(rIdx+1, c).type)"></span>
-                                                <span x-show="!!gridCell(rIdx+1, c).value"
-                                                      :class="gridCell(rIdx+1, c).value === 'Def.' || gridCell(rIdx+1, c).value === 'Fehler' ? 'text-red-700' : 'text-slate-900'"
-                                                      class="font-black text-[8px] leading-none"
-                                                      x-text="gridCell(rIdx+1, c).value"></span>
-                                            </div>
+                                    <template x-if="entry.kind === 'data'">
+                                        <td class="sticky z-10 bg-slate-50 border border-slate-400 text-center p-0"
+                                            :class="cellsEditorReadOnly ? 'left-0' : ''"
+                                            :style="cellsEditorReadOnly ? '' : 'left:28px;'">
+                                            <input type="text" x-model="gridGroups[rIdx].grp_num"
+                                                class="w-full text-center font-mono font-bold text-[11px] bg-transparent border-0 outline-none px-1 py-1.5"
+                                                :readonly="cellsEditorReadOnly">
                                         </td>
                                     </template>
-                                    </tr>
-                                </template>
+                                    <!-- Bezeichnung -->
+                                    <template x-if="entry.kind === 'data'">
+                                        <td class="sticky z-10 bg-white border border-slate-400 p-0"
+                                            :style="'left:' + (cellsEditorReadOnly ? '52px;' : '80px;')">
+                                            <input type="text" x-model="gridGroups[rIdx].name" placeholder="Bezeichnung..."
+                                                class="w-full text-[11px] bg-transparent border-0 outline-none px-2 py-1.5"
+                                                :readonly="cellsEditorReadOnly">
+                                        </td>
+                                    </template>
+                                    <!-- Detector cells -->
+                                    <template x-if="entry.kind === 'data'">
+                                        <template x-for="c in gridConfig.n_cols" :key="c">
+                                            <td class="border border-slate-400 p-0 text-center relative"
+                                                :class="cellsEditorReadOnly ? 'cursor-default' : 'cursor-crosshair'"
+                                                :style="gridCellStyle(rIdx+1, c)"
+                                                @mousedown.prevent="if(!cellsEditorReadOnly) gridStartPaint(rIdx+1, c)"
+                                                @mouseenter="if(!cellsEditorReadOnly) gridMovePaint(rIdx+1, c)">
+                                                <div class="w-full h-7 flex items-center justify-center text-[9px] font-bold transition"
+                                                    :class="(!gridCell(rIdx+1, c).type || gridCell(rIdx+1, c).type === '-') ? 'bg-slate-100' : ''"
+                                                    :style="(!gridCell(rIdx+1, c).type || gridCell(rIdx+1, c).type === '-')
+                                                        ? ''
+                                                        : 'background-color:' + gridTypeHexPale(gridCell(rIdx+1, c).type)">
+                                                    <span x-show="(!gridCell(rIdx+1, c).type || gridCell(rIdx+1, c).type === '-') ? false : !gridCell(rIdx+1, c).value"
+                                                          :style="'color:' + gridTypeHex(gridCell(rIdx+1, c).type)"
+                                                          class="opacity-60 font-semibold text-[9px]"
+                                                          x-text="gridTypeText(gridCell(rIdx+1, c).type)"></span>
+                                                    <span x-show="!!gridCell(rIdx+1, c).value"
+                                                          :class="gridCell(rIdx+1, c).value === 'Def.' || gridCell(rIdx+1, c).value === 'Fehler' ? 'text-red-700' : 'text-slate-900'"
+                                                          class="font-black text-[8px] leading-none"
+                                                          x-text="gridCell(rIdx+1, c).value"></span>
+                                                </div>
+                                            </td>
+                                        </template>
+                                    </template>
+                                </tr>
                             </template>
                         </tbody>
                     </table>
@@ -3583,6 +3604,20 @@
                     }
                     return c;
                 },
+                // Das feste Modul, das Spalte c bei Lichtruf immer repräsentiert (1:1 aus
+                // cellsEditorDef.detectors, ohne den "-"-Platzhalter) -- Gegenstück zu
+                // gridColHeaderLabel, aber für die Zeichen-Logik statt die Anzeige.
+                gridLichtrufColumnType(c) {
+                    const dets = (this.cellsEditorDef?.detectors || []).filter(d => d !== '-');
+                    return dets[c - 1] || '-';
+                },
+                // Lichtruf-Spaltenzahl ist IMMER exakt die Modul-Anzahl aus cellsEditorDef --
+                // nie nutzerseitig veränderbar (kein "Melder max." mehr für diesen Typ) und
+                // nie länger als das, egal was ein älterer Serverstand berechnet hat.
+                gridEnforceLichtrufColumns() {
+                    const dets = (this.cellsEditorDef?.detectors || []).filter(d => d !== '-');
+                    this.gridConfig.n_cols = Math.max(1, dets.length);
+                },
                 intervalBadgeList(interval) {
                     const iv = (interval || '').toLowerCase();
                     if (iv.includes('quartal')) return ['Q1','Q2','Q3','Q4'];
@@ -3659,11 +3694,24 @@
                     if (!this.gridPainting) return;
                     const [minR, maxR] = [Math.min(this.gridPaintStart.r, this.gridPaintEnd.r), Math.max(this.gridPaintStart.r, this.gridPaintEnd.r)];
                     const [minC, maxC] = [Math.min(this.gridPaintStart.c, this.gridPaintEnd.c), Math.max(this.gridPaintStart.c, this.gridPaintEnd.c)];
+                    // Lichtruf hat kein Typ-Vokabular zum Auswählen -- jede Spalte hat ein
+                    // festes Modul, ein Klick/Zug schaltet nur zwischen "-" und diesem Modul
+                    // um. Ob die ganze Auswahl aktiviert oder deaktiviert wird, entscheidet
+                    // der Zustand der zuerst angeklickten Zelle (Ankerzelle) -- sonst würde ein
+                    // Zug über gemischt aktive/inaktive Zellen pro Zelle uneinheitlich reagieren.
+                    const isLichtruf = this.cellsEditorDevice?.type === 'Lichtruf';
+                    let deactivate = false;
+                    if (isLichtruf) {
+                        const anchorType = this.gridLichtrufColumnType(this.gridPaintStart.c);
+                        const anchorCell = this.gridCells[this.gridKey(this.gridPaintStart.r, this.gridPaintStart.c)] || { type: '-', value: '' };
+                        deactivate = anchorCell.type === anchorType;
+                    }
                     for (let r = minR; r <= maxR; r++) {
                         for (let c = minC; c <= maxC; c++) {
                             const key = this.gridKey(r, c);
                             const existing = this.gridCells[key] || { type: '-', value: '' };
-                            this.gridCells[key] = { type: this.gridPaintType, value: existing.value };
+                            const type = isLichtruf ? (deactivate ? '-' : this.gridLichtrufColumnType(c)) : this.gridPaintType;
+                            this.gridCells[key] = { type, value: existing.value };
                         }
                     }
                     this.gridPainting = false; this.gridPaintStart = null; this.gridPaintEnd = null;
@@ -3937,7 +3985,15 @@
                             if (data.format === 'grid') {
                                 this.gridFormat = 'grid';
                                 this.gridFromJson(data.grid);
-                                if (!this.gridPaintType && this.cellsEditorDef?.detectors?.length > 1) {
+                                if (dev.type === 'Lichtruf') {
+                                    // Spaltenzahl bei Lichtruf ist IMMER fix an die Modulliste
+                                    // gekoppelt -- ignoriert bewusst, was der Server evtl. noch
+                                    // aus älteren Ständen (z.B. versehentlich hochgestelltes
+                                    // "Melder max." vor dessen Entfernung) berechnet hat. Beim
+                                    // nächsten Speichern werden dadurch automatisch auch alle
+                                    // Alt-Zellen jenseits der festen Spaltenzahl fallengelassen.
+                                    this.gridEnforceLichtrufColumns();
+                                } else if (!this.gridPaintType && this.cellsEditorDef?.detectors?.length > 1) {
                                     this.gridPaintType = this.cellsEditorDef.detectors[1];
                                 }
                             } else {
@@ -3949,10 +4005,10 @@
                                 if (dev.type === 'BMA' || dev.type === 'EMA' || dev.type === 'Lichtruf') {
                                     this.gridFormat = 'grid';
                                     const nCols = dev.type === 'Lichtruf'
-                                        ? Math.max(1, (this.cellsEditorDef?.detectors?.length || 11) - 1)
+                                        ? Math.max(1, (this.cellsEditorDef?.detectors?.length || 13) - 1)
                                         : 20;
                                     this.gridInitEmpty(10, nCols);
-                                    if (!this.gridPaintType && this.cellsEditorDef?.detectors?.length > 1) {
+                                    if (dev.type !== 'Lichtruf' && !this.gridPaintType && this.cellsEditorDef?.detectors?.length > 1) {
                                         this.gridPaintType = this.cellsEditorDef.detectors[1];
                                     }
                                 }

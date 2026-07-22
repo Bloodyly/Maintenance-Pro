@@ -426,3 +426,133 @@ bei Lichtruf "Raum hinzufügen" heißen, Tabellenkopf "Grp" soll bei Lichtruf
       (Migration greift) und gegen eine simulierte Nutzer-Anpassung
       (Migration greift NICHT, Wert bleibt erhalten) -- beide Szenarien PASS.
 - [ ] Noch nicht deployed.
+
+## Teil G: Lichtruf fixe Spaltenliste (final) + kritischer Grid-Rendering-Bugfix + Android-Parität
+
+Auslöser: Nutzer gab die ENDGÜLTIGE, exakte Lichtruf-Spaltenliste vor:
+"Raum-Nr. ; Bezeichnung; ZT; ZL; RT B1; RT B2; RT B3; RT B4; AT; PT Bad; RT
+Bad; ZT Bad; AT Bad; Terminal" -- 12 feste Auslösespalten (ersetzt die Teil-A/E
+10-Modul-Liste: "RT" wurde durch "RT B4" ersetzt, "AT" und "Terminal" kamen
+neu dazu). Außerdem: "es gibt hier keine Meldertypen zum Zeichnen, nur das -
+für vorhanden oder eben nicht" (kein Paint-Vokabular, nur Ein/Aus pro Spalte)
+und "das Hinzufügen der Räume funktioniert nicht" -- UND die exakt gleiche
+Funktionalität wird für die Android-App verlangt (Raum hinzufügen/löschen/
+umbenennen, Zellen (de)aktivieren).
+
+### KRITISCHER FUND: Grid-Zeilen rendern in KEINEM Browser, für KEINEN Anlagentyp
+
+Root-Cause-Suche zum "Raum hinzufügen funktioniert nicht"-Report (das zweite
+Mal berichtet) führte erstmals zu einem ECHTEN Playwright-Headless-Browser
+(zuvor nur quickjs-Funktionsextraktion -- reine Logikprüfung, keine
+DOM-Prüfung). Ergebnis: `tbody`s `<template x-for="entry in
+gridDisplayRows()">` hatte ZWEI Geschwister-`<template x-if>`-Tags als
+direkte Kinder ("header"/"data") -- Alpine benötigt aber (wie bei `x-if`,
+siehe bestehende feedback-server-Memory) auch bei `x-for` GENAU EIN
+Root-Kind-Element im Template. Verifiziert gegen die ECHTE Produktion
+(read-only "Ansehen" auf einem realen BMA-Gerät): `tbody.children` bestand
+NUR aus unverarbeiteten `<template>`-Tags, NIE aus echten `<tr>` -- der Bug
+betraf JEDEN Anlagentyp, nicht nur Lichtruf, vermutlich seit der
+Bereiche-Header-Einführung (Teil D). Das erklärt den "Zeile hinzufügen hat
+keinen Effekt"-Report vollständig: Zeilen wurden im Datenmodell korrekt
+hinzugefügt (bereits per quickjs bestätigt), aber NIE sichtbar gerendert.
+
+- [x] `templates/index.html`: `tbody`-Template umstrukturiert -- EIN `<tr>`
+      pro `x-for`-Element (statt zwei Geschwister-Templates), "header"/"data"-
+      Unterscheidung jetzt über `x-if` PRO `<td>` (bzw. pro verschachteltem
+      `x-for` für die Melder-Spalten) INNERHALB dieses einen `<tr>`. Jedes
+      `x-if` hat wieder genau ein Root-Kind (`<td>` oder `<template x-for>`),
+      was der unterstützte Alpine-Pattern ist.
+- [x] Verifikation: reale Playwright-Browser-Tests (Chromium, headless,
+      lokal installiert) gegen eine isolierte Instanz mit einer 1:1-Kopie
+      der echten Produktionsdaten (Lichtruf-Gerät PRO-15503/G15503000 UND
+      ein neu angelegtes BMA-Test-Gerät mit Bereichen) -- VOR dem Fix: 0
+      sichtbare `<tr>` trotz 11-13 Einträgen im Datenmodell; NACH dem Fix:
+      alle Zeilen als echte `<tr>` sichtbar, "Raum/Meldegruppe hinzufügen"
+      fügt sichtbar eine neue Zeile an, Speichern+Neuladen erhält den
+      Zustand korrekt, Bereich-Kopfzeilen (BMA) rendern weiterhin korrekt
+      zwischen den Datenzeilen.
+
+### Lichtruf: finale 12-Spalten-Liste + Migration + Toggle-Verhalten
+
+- [x] `webui/app.py`, `netlink/main.py`, Android `getFallbackDefinitionsJson()`:
+      Lichtruf-Detectorliste auf die finale, vom Nutzer vorgegebene Liste
+      aktualisiert: `-, ZT, ZL, RT B1, RT B2, RT B3, RT B4, AT, PT Bad, RT
+      Bad, ZT Bad, AT Bad, Terminal` (12 echte Spalten). Neue Kurzzeichen:
+      RT B4→R4, AT→AT (kein Override nötig, generischer Fallback reicht),
+      Terminal→TE. Alte Einzel-"RT"-Abkürzung entfernt (durch RT B4 ersetzt,
+      keine Kollision mit anderen Anlagentypen).
+- [x] `webui/app.py`: `_migrate_stale_lichtruf_definitions()` erweitert auf
+      eine LISTE bekannter alter Default-Signaturen (jetzt: der ur-alte
+      generische Platzhalter UND die Teil-A/E-10-Modul-Liste) -- beide
+      werden bei bereits vorhandenem `settings.json` automatisch auf die
+      aktuelle Liste angehoben, eine vom Nutzer eigens angepasste Liste
+      bleibt unangetastet. Verifiziert gegen eine Kopie der (inzwischen
+      erneut veralteten) Produktionsdaten.
+- [x] `templates/index.html`: Detector-Paint-Palette per `x-if` komplett
+      ausgeblendet für Lichtruf (kein Typ-Vokabular mehr). Neue Methoden
+      `gridLichtrufColumnType(c)` (Spalte → festes Modul) und
+      `gridEnforceLichtrufColumns()` (setzt `n_cols` IMMER auf die exakte
+      Modulanzahl, unabhängig davon was der Server aus altem
+      Zell-Bestand berechnet hat -- behebt nebenbei einen entdeckten
+      Datenschieflauf: ein reales Lichtruf-Gerät hatte durch Testen VOR
+      dem Ausblenden des "Melder max."-Stellers auf n_cols=32 aufgeblähte
+      Geisterspalten, die beim nächsten Speichern jetzt automatisch
+      wegfallen, da der Server nur noch bis zur vom Client gesendeten,
+      korrekten Spaltenzahl persistiert).
+- [x] `templates/index.html`: `gridEndPaint()` verzweigt für Lichtruf --
+      kein globaler `gridPaintType` mehr, stattdessen pro Spalte ihr festes
+      Modul; Klick/Zug schaltet basierend auf dem Zustand der zuerst
+      berührten Zelle (Anker) die GESAMTE Auswahl ein- oder aus.
+- [x] `templates/index.html`: `gridColHeaderLabel()` (aus Teil E) zeigt
+      weiterhin automatisch die aktuelle (jetzt 12-teilige) Modulliste als
+      Spaltenköpfe -- keine Änderung nötig, da bereits generisch aus
+      `cellsEditorDef.detectors` abgeleitet.
+- [x] Verifikation: Playwright gegen isolierte Instanz -- Spaltenköpfe
+      zeigen exakt "Raum, Bezeichnung, ZT, ZL, RT B1, RT B2, RT B3, RT B4,
+      AT, PT Bad, RT Bad, ZT Bad, AT Bad, Terminal"; Palette unsichtbar (0
+      Paint-Buttons); Toggle-Test auf einer echten Zelle (Spalte 6 = "RT
+      B4"): Klick 1 setzt Typ auf "RT B4", Klick 2 setzt zurück auf "-";
+      Spaltenzahl wird beim Laden eines Alt-Geräts mit n_cols=5 korrekt auf
+      12 erzwungen; nach Speichern+Neuladen bleibt n_cols=12 stabil.
+
+### Android-Parität (MatrixEditScreen.kt)
+
+- [x] Neuer `isLichtruf`-Flag (`protocolEntity.systemType == "Lichtruf"`) und
+      `lichtrufColumns` (Detector-Liste ohne "-") an `DeviceEditorSection`
+      durchgereicht.
+- [x] Paint-Palette (Surface mit Typ-Chips) für Lichtruf komplett
+      ausgeblendet, ebenso der "Melder"-Stepper (Spaltenzahl ist fix =
+      `lichtrufColumns.size`, `colsOverride`/`maxSlot`-Logik wird für
+      diesen Typ ignoriert).
+- [x] Spaltenköpfe zeigen für Lichtruf die festen Modulnamen (zweizeilig,
+      kleinere Schrift, etwas breitere Spalten/Kopfzeile für lange Namen
+      wie "Terminal"/"PT Bad") statt laufender Nummern.
+- [x] Zell-Tap (Einzelklick) UND Drag-Select (`paintRect`) schalten für
+      Lichtruf direkt zwischen "-" und dem festen Modul der jeweiligen
+      Spalte um (kein `paintType`-Auswahlzustand mehr nötig) -- bei
+      Mehrspalten-Drag entscheidet die zuerst berührte Zelle (Anker), ob
+      aktiviert oder deaktiviert wird, exakt wie im WebUI-Pendant.
+      Ansonsten unverändert: `addGroupToDevice`/`removeGroupFromDevice`/
+      `updateGroupDetails` sind bereits typ-agnostisch generisch und
+      brauchten keine Lichtruf-spezifische Änderung.
+- [x] Label-Parität: "Grp"→"Raum", "Meldegruppe hinzufügen"→"Raum
+      hinzufügen", Lösch-Dialog/-Toasts und "Gruppen-Nr."-Validierung
+      ebenfalls auf "Raum"/"Raum-Nr." umgestellt für Lichtruf.
+- [x] `./gradlew :app:compileDebugKotlin` -- BUILD SUCCESSFUL, keine neuen
+      Warnings (alle vorbestehend, per `git diff` bestätigt).
+- [x] `./gradlew :app:assembleDebug` -- APK gebaut, versionCode 19→20 /
+      "2.8.1"→"2.9.0", an Nutzer zum Testen gesendet.
+
+### Verifikations-Infrastruktur (neu für diese Session)
+
+- [x] `playwright` + Chromium (headless shell) im Verifikations-venv
+      installiert (`pip install playwright && playwright install
+      chromium`) -- ERSETZT die bisherige quickjs-Funktionsextraktion als
+      primäre WebUI-Verifikationsmethode, wo es um tatsächliches
+      DOM-Rendering geht (quickjs prüft nur JS-Logik in Isolation, NIE ob
+      Alpine die Templates korrekt in echte DOM-Knoten umsetzt -- genau
+      diese Lücke hat den tbody-Bug bisher jede Verifikation überleben
+      lassen). Siehe [[feedback-server]] für die daraus resultierende
+      Merk-Regel.
+- [ ] Noch nicht deployed (WebUI) / committed (WebUI+Android) -- wie üblich
+      erst nach expliziter Nutzer-Aufforderung.
