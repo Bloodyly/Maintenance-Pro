@@ -179,7 +179,13 @@ fun SettingsScreen(
             modifier = Modifier
                 .padding(innerPadding)
                 .padding(16.dp)
-                .fillMaxSize()
+                // fillMaxSize() together with verticalScroll() is a known Compose anti-pattern:
+                // it forces the Column to always claim the FULL available height regardless of
+                // actual content size, leaving a blank gap below short content instead of the
+                // Column just wrapping its natural (shorter) height -- fillMaxWidth() alone is
+                // enough here, verticalScroll() already handles the case where content DOES
+                // exceed the screen.
+                .fillMaxWidth()
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {

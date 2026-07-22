@@ -10,6 +10,9 @@ import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -191,7 +194,8 @@ fun InspectionScreen(
                 var prevBereich: String? = null
                 sorted.forEach { row ->
                     if (row.bereich != prevBereich) {
-                        out.add(DisplayEntry.Header(row.bereich.ifEmpty { "Ohne Bereich" }))
+                        val label = row.bereich.ifEmpty { "Ohne Bereich" }
+                        out.add(DisplayEntry.Header(label, key = "h:$deviceId:$label"))
                         prevBereich = row.bereich
                     }
                     out.add(DisplayEntry.Data(row))
@@ -303,7 +307,11 @@ fun InspectionScreen(
 
     // Single horizontal and vertical scroll state for perfect 2D diagonal scrolling without lag/drift!
     val horizontalScrollState = rememberScrollState()
-    val verticalScrollState = rememberScrollState()
+    // Backs the Melderliste's single LazyColumn (Grp + Bezeichnung + Melder-Zellen merged
+    // into one Row per item, see the grid section below) -- only visible rows are composed,
+    // regardless of how many Meldegruppen the Vertrag has (was the main slowness cause for
+    // large Verträge, e.g. 900+ Gruppen, when this was a plain Column().verticalScroll()).
+    val lazyListState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
 
     // Confirmation dialog state for the header's Abschließen icon (moved up from the old
@@ -491,10 +499,8 @@ fun InspectionScreen(
 
             // Bereiche chapter strip: one pill per section, tap to jump straight to it in
             // the Melderliste below -- only rendered once at least one Header entry exists,
-            // so a protocol that never uses Bereiche looks exactly as before. Position of a
-            // Header entry maps directly onto verticalScrollState's own pixel space (that
-            // scroll only wraps the rows themselves, not the "GRP"/"Bezeichnung"/column-number
-            // header row above it), so no extra offset is needed here.
+            // so a protocol that never uses Bereiche looks exactly as before. Jumps by LIST
+            // INDEX via the LazyColumn's own state, not a pixel offset.
             val chapterHeaders = remember(displayEntries) {
                 displayEntries.withIndex().mapNotNull { (i, e) -> (e as? DisplayEntry.Header)?.let { i to it.label } }
             }
@@ -514,7 +520,7 @@ fun InspectionScreen(
                             color = LightSurfaceHigh,
                             modifier = Modifier.clickable {
                                 coroutineScope.launch {
-                                    verticalScrollState.animateScrollTo((entryIndex * cellHeightPx).toInt())
+                                    lazyListState.animateScrollToItem(entryIndex)
                                 }
                             }
                         ) {
@@ -559,8 +565,11 @@ fun InspectionScreen(
             val naturalGridHeight = headerRowHeight + cellHeight * displayEntries.size
             val gridHeight = naturalGridHeight.coerceAtMost(maxGridHeight)
 
-            // Scrollable Grid Box container restricting scaling artifacts from bleeding
-            Row(
+            // Grid container: header row (Grp + Bezeichnung/Melder-column headers) on top,
+            // the actual Meldegruppen-rows below via a SINGLE LazyColumn (only visible rows
+            // are composed -- this replaces what used to be a plain Column().verticalScroll()
+            // that eagerly composed/measured every one of possibly 900+ Meldegruppen on open).
+            Column(
                 modifier = Modifier
                     .height(gridHeight)
                     .fillMaxWidth()
@@ -571,53 +580,20 @@ fun InspectionScreen(
                 val cellFontSize = (11 * zoomScale).sp
                 val subFontSize = (8 * zoomScale).sp
 
-                // 1. LEFT FROZEN COLUMN: only GRP (number) stays non-scrolling horizontally --
-                // Bezeichnung used to be frozen here too, but at bezeichnungColWidth it left
-                // almost no screen width for the actual Melder columns on a phone (user report).
-                // It now scrolls together with the Melder cells, see section 2 below.
-                Row(modifier = Modifier.fillMaxHeight()) {
-                    Column(modifier = Modifier.width(grpColWidth).fillMaxHeight()) {
-                        Box(
-                            modifier = Modifier.width(grpColWidth).height(headerRowHeight)
-                                .background(LightSurfaceHigh).border(0.5.dp, IndustrialOutlineVariant),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text("GRP", fontWeight = FontWeight.ExtraBold, color = IndustrialOutline, fontSize = headerFontSize)
-                        }
-                        Column(modifier = Modifier.width(grpColWidth).weight(1f).verticalScroll(verticalScrollState)) {
-                            displayEntries.forEach { entry ->
-                                when (entry) {
-                                    is DisplayEntry.Header -> Box(
-                                        modifier = Modifier.width(grpColWidth).height(cellHeight)
-                                            .background(LightSurfaceHigh).border(0.5.dp, IndustrialOutlineVariant)
-                                    ) {}
-                                    is DisplayEntry.Data -> Box(
-                                        modifier = Modifier.width(grpColWidth).height(cellHeight)
-                                            .background(LightSurfaceLow).border(0.5.dp, IndustrialOutlineVariant),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            // row.groupId is "{device}::{grp_num}" on the wire -- only the
-                                            // Gruppen-Nummer is meaningful to show in this narrow column.
-                                            text = entry.row.groupId.substringAfterLast("::"),
-                                            fontWeight = FontWeight.Bold,
-                                            color = IndustrialPrimary,
-                                            fontSize = cellFontSize
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                // Bezeichnung is now the first column of the shared horizontally-scrolled
+                // content (Grp stays frozen/non-scrolling), so all x-coordinate math below
+                // subtracts its width before dividing by the Melder cell width.
+                val bezeichnungColWidthPx = with(density) { bezeichnungColWidth.toPx() }
 
-                // 2. RIGHT SIDE: Bezeichnung (now scrolls here too) + Melder columns/cells
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                ) {
-                    // Column Headers (Scrolls only horizontally, matches main grid horizontal scroll)
+                // Header row: GRP (frozen) + Bezeichnung/numbered Melder-columns (shared horizontal scroll)
+                Row(modifier = Modifier.height(headerRowHeight)) {
+                    Box(
+                        modifier = Modifier.width(grpColWidth).height(headerRowHeight)
+                            .background(LightSurfaceHigh).border(0.5.dp, IndustrialOutlineVariant),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("GRP", fontWeight = FontWeight.ExtraBold, color = IndustrialOutline, fontSize = headerFontSize)
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -653,117 +629,46 @@ fun InspectionScreen(
                             }
                         }
                     }
+                }
 
-                    // Bezeichnung is now the first column of this SAME horizontally-scrolled
-                    // content (see the Column further down), so all x-coordinate math below
-                    // must subtract its width before dividing by the Melder cell width --
-                    // otherwise every column index would be off by one screen's worth of Bezeichnung.
-                    val bezeichnungColWidthPx = with(density) { bezeichnungColWidth.toPx() }
-
-                    // Main Interactive 2D Grid Cells — outer Box handles rubber-band drag-select
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .pointerInput(zoomScale, protocolEntity.isArchived) {
-                                if (protocolEntity.isArchived) return@pointerInput
-                                detectDragGesturesAfterLongPress(
-                                    onDragStart = { offset ->
-                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        dragScrollX = horizontalScrollState.value.toFloat()
-                                        dragScrollY = verticalScrollState.value.toFloat()
-                                        val gx = offset.x + dragScrollX
-                                        val gy = offset.y + dragScrollY
-                                        dragSelStartGrid = Offset(gx, gy)
-                                        dragSelEndGrid = Offset(gx, gy)
-
-                                        // Mode is decided ONCE from the origin cell: already-filled origin
-                                        // means the gesture clears matching cells, empty origin means it fills.
-                                        val wPx = currentCellWidthPx.value
-                                        val hPx = currentCellHeightPx.value
-                                        val originRow = (gy / hPx).toInt()
-                                        val originCol = ((gx - bezeichnungColWidthPx) / wPx).toInt()
-                                        // A Header entry (or out-of-range index) has no cells -- origin
-                                        // stays null, which isClearMode below reads as "fill mode", but
-                                        // onDragEnd's own per-entry Header check is what actually keeps a
-                                        // drag starting/passing through a section bar from touching cells.
-                                        val originRowModel = (currentDisplayEntries.value.getOrNull(originRow) as? DisplayEntry.Data)?.row
-                                        val originCell = originRowModel?.cells?.getOrNull(originCol)
-                                        val originVal = originCell?.let { c ->
-                                            pendingOverrides["${originRowModel.groupId}::${c.slotKey}"] ?: c.value
-                                        } ?: ""
-                                        isClearMode = originCell != null && originCell.detectorType != "-" && originVal.isNotEmpty()
-
-                                        isDragSelecting = true
-                                    },
-                                    onDrag = { change, _ ->
-                                        change.consume()
-                                        dragSelEndGrid = Offset(
-                                            change.position.x + dragScrollX,
-                                            change.position.y + dragScrollY
+                // Body: LazyColumn (Grp + Bezeichnung + Melder-Zellen merged into one Row per
+                // item -- a LazyListState can't be shared between two independent LazyColumns
+                // the way the old ScrollState was, so both halves now live in the SAME item)
+                // plus a drag-select overlay positioned to start exactly where the scrollable
+                // content begins (Spacer excludes the frozen Grp column -- positionally, not
+                // via a coordinate subtraction).
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    LazyColumn(state = lazyListState, modifier = Modifier.fillMaxSize()) {
+                        items(
+                            displayEntries,
+                            key = { entry -> entry.key }
+                        ) { entry ->
+                            Row(modifier = Modifier.height(cellHeight)) {
+                                when (entry) {
+                                    is DisplayEntry.Header -> Box(
+                                        modifier = Modifier.width(grpColWidth).height(cellHeight)
+                                            .background(LightSurfaceHigh).border(0.5.dp, IndustrialOutlineVariant)
+                                    ) {}
+                                    is DisplayEntry.Data -> Box(
+                                        modifier = Modifier.width(grpColWidth).height(cellHeight)
+                                            .background(LightSurfaceLow).border(0.5.dp, IndustrialOutlineVariant),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            // row.groupId is "{device}::{grp_num}" on the wire -- only the
+                                            // Gruppen-Nummer is meaningful to show in this narrow column.
+                                            text = entry.row.groupId.substringAfterLast("::"),
+                                            fontWeight = FontWeight.Bold,
+                                            color = IndustrialPrimary,
+                                            fontSize = cellFontSize
                                         )
-                                    },
-                                    onDragEnd = {
-                                        isDragSelecting = false
-                                        val selLeft = min(dragSelStartGrid.x, dragSelEndGrid.x)
-                                        val selRight = max(dragSelStartGrid.x, dragSelEndGrid.x)
-                                        val selTop = min(dragSelStartGrid.y, dragSelEndGrid.y)
-                                        val selBottom = max(dragSelStartGrid.y, dragSelEndGrid.y)
-                                        val wPx = currentCellWidthPx.value
-                                        val hPx = currentCellHeightPx.value
-                                        val fillVal = currentActiveVal.value
-                                        val clearMode = isClearMode
-                                        val allChanges = mutableMapOf<String, MutableMap<String, String>>()
-                                        var applied = 0
-                                        currentDisplayEntries.value.forEachIndexed { entryIdx, entry ->
-                                            val row = (entry as? DisplayEntry.Data)?.row ?: return@forEachIndexed
-                                            val cTop = entryIdx * hPx
-                                            val cBottom = cTop + hPx
-                                            if (cTop < selBottom && cBottom > selTop) {
-                                                row.cells.forEachIndexed { colIdx, cell ->
-                                                    if (cell.detectorType != "-") {
-                                                        val cLeft = bezeichnungColWidthPx + colIdx * wPx
-                                                        val cRight = cLeft + wPx
-                                                        if (cLeft < selRight && cRight > selLeft) {
-                                                            val key = "${row.groupId}::${cell.slotKey}"
-                                                            val curVal = pendingOverrides[key] ?: cell.value
-                                                            val newVal: String? = if (clearMode) {
-                                                                // Only clear cells matching the active period; protect other periods' entries
-                                                                if (curVal == fillVal) "" else null
-                                                            } else {
-                                                                // Only fill empty cells; protect already-filled (other period) entries
-                                                                if (curVal.isEmpty()) fillVal else null
-                                                            }
-                                                            if (newVal != null) {
-                                                                pendingOverrides[key] = newVal
-                                                                allChanges.getOrPut(row.groupId) { mutableMapOf() }[cell.slotKey] = newVal
-                                                                applied++
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        viewModel.batchEditMultiGroupCells(protocolId, allChanges)
-                                        if (applied > 0) {
-                                            val msg = if (clearMode) "$applied Melder zurückgesetzt" else "$applied Melder auf $fillVal gesetzt"
-                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                        }
-                                    },
-                                    onDragCancel = { isDragSelecting = false }
-                                )
-                            }
-                    ) {
-                        // Inner scrollable grid
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .fillMaxHeight()
-                                .verticalScroll(verticalScrollState)
-                                .horizontalScroll(horizontalScrollState)
-                        ) {
-                            Column {
-                                displayEntries.forEach { entry ->
+                                    }
+                                }
+
+                                Row(
+                                    modifier = Modifier.horizontalScroll(horizontalScrollState).height(cellHeight),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     if (entry is DisplayEntry.Header) {
                                         Box(
                                             modifier = Modifier
@@ -782,10 +687,8 @@ fun InspectionScreen(
                                                 overflow = TextOverflow.Ellipsis
                                             )
                                         }
-                                        return@forEach
-                                    }
-                                    val row = (entry as DisplayEntry.Data).row
-                                    Row(modifier = Modifier.height(cellHeight), verticalAlignment = Alignment.CenterVertically) {
+                                    } else {
+                                        val row = (entry as DisplayEntry.Data).row
                                         Box(
                                             modifier = Modifier
                                                 .width(bezeichnungColWidth).height(cellHeight)
@@ -850,47 +753,153 @@ fun InspectionScreen(
                                 }
                             }
                         }
+                    }
 
-                        // Selection overlay — always in tree so ALL state reads happen in DrawScope.
-                        // DrawScope state reads → only Canvas redraws, zero cell recomposition.
-                        Canvas(modifier = Modifier.matchParentSize()) {
-                            if (!isDragSelecting) return@Canvas
-                            val selLeft = min(dragSelStartGrid.x, dragSelEndGrid.x)
-                            val selRight = max(dragSelStartGrid.x, dragSelEndGrid.x)
-                            val selTop = min(dragSelStartGrid.y, dragSelEndGrid.y)
-                            val selBottom = max(dragSelStartGrid.y, dragSelEndGrid.y)
-                            val modeColor = if (isClearMode) Color(0xFFDC2626) else Color(0xFF2563EB)
+                    // Drag-select overlay: a plain tap still reaches DetectorCell's own
+                    // .clickable underneath since detectDragGesturesAfterLongPress only
+                    // engages after a long-press (same coexistence already proven by the
+                    // pre-LazyColumn version of this screen).
+                    Row(modifier = Modifier.matchParentSize()) {
+                        Spacer(Modifier.width(grpColWidth))
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .pointerInput(zoomScale, protocolEntity.isArchived) {
+                                    if (protocolEntity.isArchived) return@pointerInput
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = { offset ->
+                                            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            dragScrollX = horizontalScrollState.value.toFloat()
+                                            // LazyListState has no single "total scrolled pixels" value like
+                                            // ScrollState did -- reconstruct it from the first visible item's
+                                            // index + its own scroll offset, valid since every row (header or
+                                            // data) has the exact same height.
+                                            dragScrollY = lazyListState.firstVisibleItemIndex * currentCellHeightPx.value +
+                                                lazyListState.firstVisibleItemScrollOffset
+                                            val gx = offset.x + dragScrollX
+                                            val gy = offset.y + dragScrollY
+                                            dragSelStartGrid = Offset(gx, gy)
+                                            dragSelEndGrid = Offset(gx, gy)
 
-                            // Cell-snapped filled highlight
-                            val colStart = floor(selLeft / cellWidthPx).toInt().coerceAtLeast(0)
-                            val colEnd = ceil(selRight / cellWidthPx).toInt()
-                            val rowStart = floor(selTop / cellHeightPx).toInt().coerceAtLeast(0)
-                            val rowEnd = ceil(selBottom / cellHeightPx).toInt()
-                            val snapLeft = (colStart * cellWidthPx - dragScrollX).coerceAtLeast(0f)
-                            val snapTop = (rowStart * cellHeightPx - dragScrollY).coerceAtLeast(0f)
-                            val snapRight = colEnd * cellWidthPx - dragScrollX
-                            val snapBottom = rowEnd * cellHeightPx - dragScrollY
-                            if (snapRight > snapLeft && snapBottom > snapTop) {
-                                drawRect(
-                                    color = modeColor.copy(alpha = 0.18f),
-                                    topLeft = Offset(snapLeft, snapTop),
-                                    size = Size(snapRight - snapLeft, snapBottom - snapTop)
-                                )
-                            }
+                                            // Mode is decided ONCE from the origin cell: already-filled origin
+                                            // means the gesture clears matching cells, empty origin means it fills.
+                                            val wPx = currentCellWidthPx.value
+                                            val hPx = currentCellHeightPx.value
+                                            val originRow = (gy / hPx).toInt()
+                                            val originCol = ((gx - bezeichnungColWidthPx) / wPx).toInt()
+                                            // A Header entry (or out-of-range index) has no cells -- origin
+                                            // stays null, which isClearMode below reads as "fill mode", but
+                                            // onDragEnd's own per-entry Header check is what actually keeps a
+                                            // drag starting/passing through a section bar from touching cells.
+                                            val originRowModel = (currentDisplayEntries.value.getOrNull(originRow) as? DisplayEntry.Data)?.row
+                                            val originCell = originRowModel?.cells?.getOrNull(originCol)
+                                            val originVal = originCell?.let { c ->
+                                                pendingOverrides["${originRowModel.groupId}::${c.slotKey}"] ?: c.value
+                                            } ?: ""
+                                            isClearMode = originCell != null && originCell.detectorType != "-" && originVal.isNotEmpty()
 
-                            // Dashed rubber-band border (actual drag extent)
-                            val w = selRight - selLeft
-                            val h = selBottom - selTop
-                            if (w > 4f && h > 4f) {
-                                drawRect(
-                                    color = modeColor,
-                                    topLeft = Offset(selLeft - dragScrollX, selTop - dragScrollY),
-                                    size = Size(w, h),
-                                    style = Stroke(
-                                        width = 2.dp.toPx(),
-                                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 5f))
+                                            isDragSelecting = true
+                                        },
+                                        onDrag = { change, _ ->
+                                            change.consume()
+                                            dragSelEndGrid = Offset(
+                                                change.position.x + dragScrollX,
+                                                change.position.y + dragScrollY
+                                            )
+                                        },
+                                        onDragEnd = {
+                                            isDragSelecting = false
+                                            val selLeft = min(dragSelStartGrid.x, dragSelEndGrid.x)
+                                            val selRight = max(dragSelStartGrid.x, dragSelEndGrid.x)
+                                            val selTop = min(dragSelStartGrid.y, dragSelEndGrid.y)
+                                            val selBottom = max(dragSelStartGrid.y, dragSelEndGrid.y)
+                                            val wPx = currentCellWidthPx.value
+                                            val hPx = currentCellHeightPx.value
+                                            val fillVal = currentActiveVal.value
+                                            val clearMode = isClearMode
+                                            val allChanges = mutableMapOf<String, MutableMap<String, String>>()
+                                            var applied = 0
+                                            currentDisplayEntries.value.forEachIndexed { entryIdx, entry ->
+                                                val row = (entry as? DisplayEntry.Data)?.row ?: return@forEachIndexed
+                                                val cTop = entryIdx * hPx
+                                                val cBottom = cTop + hPx
+                                                if (cTop < selBottom && cBottom > selTop) {
+                                                    row.cells.forEachIndexed { colIdx, cell ->
+                                                        if (cell.detectorType != "-") {
+                                                            val cLeft = bezeichnungColWidthPx + colIdx * wPx
+                                                            val cRight = cLeft + wPx
+                                                            if (cLeft < selRight && cRight > selLeft) {
+                                                                val key = "${row.groupId}::${cell.slotKey}"
+                                                                val curVal = pendingOverrides[key] ?: cell.value
+                                                                val newVal: String? = if (clearMode) {
+                                                                    // Only clear cells matching the active period; protect other periods' entries
+                                                                    if (curVal == fillVal) "" else null
+                                                                } else {
+                                                                    // Only fill empty cells; protect already-filled (other period) entries
+                                                                    if (curVal.isEmpty()) fillVal else null
+                                                                }
+                                                                if (newVal != null) {
+                                                                    pendingOverrides[key] = newVal
+                                                                    allChanges.getOrPut(row.groupId) { mutableMapOf() }[cell.slotKey] = newVal
+                                                                    applied++
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            viewModel.batchEditMultiGroupCells(protocolId, allChanges)
+                                            if (applied > 0) {
+                                                val msg = if (clearMode) "$applied Melder zurückgesetzt" else "$applied Melder auf $fillVal gesetzt"
+                                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        onDragCancel = { isDragSelecting = false }
                                     )
-                                )
+                                }
+                        ) {
+                            // Selection overlay — always in tree so ALL state reads happen in DrawScope.
+                            // DrawScope state reads → only Canvas redraws, zero cell recomposition.
+                            Canvas(modifier = Modifier.matchParentSize()) {
+                                if (!isDragSelecting) return@Canvas
+                                val selLeft = min(dragSelStartGrid.x, dragSelEndGrid.x)
+                                val selRight = max(dragSelStartGrid.x, dragSelEndGrid.x)
+                                val selTop = min(dragSelStartGrid.y, dragSelEndGrid.y)
+                                val selBottom = max(dragSelStartGrid.y, dragSelEndGrid.y)
+                                val modeColor = if (isClearMode) Color(0xFFDC2626) else Color(0xFF2563EB)
+
+                                // Cell-snapped filled highlight
+                                val colStart = floor(selLeft / cellWidthPx).toInt().coerceAtLeast(0)
+                                val colEnd = ceil(selRight / cellWidthPx).toInt()
+                                val rowStart = floor(selTop / cellHeightPx).toInt().coerceAtLeast(0)
+                                val rowEnd = ceil(selBottom / cellHeightPx).toInt()
+                                val snapLeft = (colStart * cellWidthPx - dragScrollX).coerceAtLeast(0f)
+                                val snapTop = (rowStart * cellHeightPx - dragScrollY).coerceAtLeast(0f)
+                                val snapRight = colEnd * cellWidthPx - dragScrollX
+                                val snapBottom = rowEnd * cellHeightPx - dragScrollY
+                                if (snapRight > snapLeft && snapBottom > snapTop) {
+                                    drawRect(
+                                        color = modeColor.copy(alpha = 0.18f),
+                                        topLeft = Offset(snapLeft, snapTop),
+                                        size = Size(snapRight - snapLeft, snapBottom - snapTop)
+                                    )
+                                }
+
+                                // Dashed rubber-band border (actual drag extent)
+                                val w = selRight - selLeft
+                                val h = selBottom - selTop
+                                if (w > 4f && h > 4f) {
+                                    drawRect(
+                                        color = modeColor,
+                                        topLeft = Offset(selLeft - dragScrollX, selTop - dragScrollY),
+                                        size = Size(w, h),
+                                        style = Stroke(
+                                            width = 2.dp.toPx(),
+                                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 5f))
+                                        )
+                                    )
+                                }
                             }
                         }
                     }
@@ -964,17 +973,38 @@ private fun AktionSegmentBar(
 }
 
 // ---------------- High Performance Stable Nested Layout Models ----------------
+// @Immutable tells the Compose compiler these are safe to treat as stable even
+// though they hold a raw List<T> (unstable by default, since List doesn't itself
+// guarantee immutability) -- true here because every instance is always freshly
+// rebuilt via remember(...), never mutated in place. Lets Compose skip recomposing
+// a visible row whose data is unchanged instead of always recomposing all of them.
 
+@Immutable
 data class ColumnModel(val key: String, val label: String)
+@Immutable
 data class CellModel(val slotKey: String, val detectorType: String, val value: String)
+@Immutable
 data class RowModel(val groupId: String, val groupName: String, val cells: List<CellModel>, val bereich: String = "")
+@Immutable
 data class ValueModel(val value: String, val label: String, val isDefect: Boolean)
 
 /** One entry of the Melderliste's DISPLAY order: either a Bereich section-header
- * bar, or one real Melder-Gruppe row. See displayEntries in InspectionScreen. */
+ * bar, or one real Melder-Gruppe row. See displayEntries in InspectionScreen.
+ * `key` is what LazyColumn's items(..., key=) uses for item identity -- MUST be
+ * unique across the ENTIRE list, not just within one device: a multi-device
+ * Vertrag where more than one device has an "Ohne Bereich" section (or two
+ * devices happen to use the same Bereich name) would otherwise produce two
+ * Header entries with the identical label, which crashes LazyColumn with a
+ * duplicate-key exception. Data entries are already safe (row.groupId is
+ * globally unique, namespaced "{device}::{grp_num}"), only Header needed a
+ * device-qualified key. */
+@Immutable
 private sealed class DisplayEntry {
-    data class Header(val label: String) : DisplayEntry()
-    data class Data(val row: RowModel) : DisplayEntry()
+    abstract val key: String
+    @Immutable
+    data class Header(val label: String, override val key: String) : DisplayEntry()
+    @Immutable
+    data class Data(val row: RowModel, override val key: String = "r:${row.groupId}") : DisplayEntry()
 }
 data class HardwareRowModel(
     val index: Int,
